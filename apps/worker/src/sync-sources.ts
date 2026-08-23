@@ -9,14 +9,18 @@ const now = nowIso();
 
 const upSrc = db.prepare(`
   INSERT INTO sources (id,name,display_name,category,host_group,harvest_tier,enabled,priority,
-                       mandatory_retention,require_fulltext,config_json,source_version,created_at,updated_at)
+                       mandatory_retention,require_fulltext,config_json,source_version,
+                       managed_by,created_at,updated_at)
   VALUES (@id,@name,@display_name,@category,@host_group,@harvest_tier,@enabled,@priority,
-          @mandatory_retention,@require_fulltext,@config_json,@source_version,@now,@now)
+          @mandatory_retention,@require_fulltext,@config_json,@source_version,
+          'config',@now,@now)
+  -- 只更新 config 归属的来源；后台新增的（managed_by='admin'）不得被覆盖
   ON CONFLICT(id) DO UPDATE SET
     name=@name, display_name=@display_name, category=@category, host_group=@host_group,
     harvest_tier=@harvest_tier, enabled=@enabled, priority=@priority,
     mandatory_retention=@mandatory_retention, require_fulltext=@require_fulltext,
-    config_json=@config_json, source_version=@source_version, updated_at=@now`);
+    config_json=@config_json, source_version=@source_version, updated_at=@now
+  WHERE sources.managed_by = 'config'`);
 
 // 端点用 upsert 而非删重建：fetch_attempts.endpoint_id 外键引用它，
 // 删除会切断审计链路（且触发 FOREIGN KEY constraint failed）。
@@ -49,7 +53,9 @@ db.transaction(() => {
   }
 })();
 
-const n = db.prepare('SELECT count(*) c FROM sources').get() as any;
+const n = db.prepare(`SELECT count(*) c FROM sources WHERE managed_by='config'`).get() as any;
+const a = db.prepare(`SELECT count(*) c FROM sources WHERE managed_by='admin'`).get() as any;
 const m = db.prepare('SELECT count(*) c FROM source_endpoints').get() as any;
-console.log(`已同步 ${n.c} 个来源 / ${m.c} 个端点 (source_version=${cfg.meta.source_version})`);
+console.log(`已同步 ${n.c} 个配置来源 / ${m.c} 个端点 (source_version=${cfg.meta.source_version})`);
+if (a.c) console.log(`另有 ${a.c} 个后台新增的来源，未被本次同步触碰`);
 db.close();

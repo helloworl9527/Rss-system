@@ -18,8 +18,8 @@ import { renderLogin, renderDashboard, renderSources, renderRuns, renderRunDetai
          renderAudit, renderSettings, layout } from '../../../packages/web/src/views.ts';
 import { maskedSecrets, setSecret, setSettings, resolveSettings, vaultHealthy,
          SECRET_NAMES, type SecretName } from '../../../packages/web/src/secrets.ts';
-import { overrideCandidate, toggleSource, planResend, ActionError }
-  from '../../../packages/web/src/actions.ts';
+import { overrideCandidate, toggleSource, planResend, addSource, deleteSource,
+         testSource, ActionError } from '../../../packages/web/src/actions.ts';
 
 const PORT = Number(process.env.ADMIN_PORT ?? 3000);
 const HOST = process.env.ADMIN_HOST ?? '127.0.0.1';
@@ -154,8 +154,10 @@ app.get('/health/ready', async (_req, reply) => {
 // ---------- 页面 ----------
 const q = {
   sources: () => db.prepare(`SELECT id,display_name,category,health,harvest_tier,
-    consecutive_failures,last_success_at,last_http_code,last_error,latest_item_at,enabled
+    consecutive_failures,last_success_at,last_http_code,last_error,latest_item_at,enabled,managed_by
     FROM sources ORDER BY CASE health WHEN 'failing' THEN 0 WHEN 'degraded' THEN 1 ELSE 2 END, id`).all(),
+  tests: () => db.prepare(`SELECT url,outcome,parsed_count,error,started_at
+    FROM source_tests ORDER BY id DESC LIMIT 8`).all(),
   harvests: () => db.prepare(`SELECT * FROM harvest_runs ORDER BY id DESC LIMIT 12`).all(),
   runs: () => db.prepare(`SELECT r.*, (SELECT count(*) FROM candidates c WHERE c.run_id=r.id) cands
     FROM runs r ORDER BY r.id DESC LIMIT 30`).all(),
@@ -183,10 +185,63 @@ app.get('/', async (req, reply) => {
   }));
 });
 
+const sourcesPage = (s: Session, extra: Record<string, unknown> = {}) =>
+  renderSources({ csrf: s.csrf, sources: q.sources() as any, tests: q.tests() as any, ...extra });
+
 app.get('/sources', async (req, reply) => {
   const s = requireAuth(req, reply); if (!s) return;
+  return reply.type('text/html; charset=utf-8').send(sourcesPage(s));
+});
+
+/** 仅测试，不添加（FR-004：不写入正式简报，但保存诊断日志） */
+app.post('/sources/test', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  if (!requireWrite(req, reply, s)) return;
+  const b = (req.body ?? {}) as any;
+  const t = await testSource(db, { url: String(b.url ?? ''), parser: String(b.parser ?? 'rss') });
+  const msg = t.ok
+    ? `测试通过：解析出 ${t.parsedCount} 条，耗时 ${t.latencyMs}ms。` +
+      (t.sample.length ? ` 首条「${t.sample[0]!.title.slice(0, 40)}」` : '')
+    : undefined;
   return reply.type('text/html; charset=utf-8')
-    .send(renderSources({ csrf: s.csrf, sources: q.sources() as any }));
+    .send(sourcesPage(s, t.ok ? { saved: msg } : { error: `测试失败（${t.outcome}）：${t.error}` }));
+});
+
+app.post('/sources/add', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  if (!requireWrite(req, reply, s)) return;
+  const b = (req.body ?? {}) as any;
+  try {
+    const r = await addSource(db, {
+      id: String(b.id ?? ''), name: String(b.name ?? ''), url: String(b.url ?? ''),
+      parser: String(b.parser ?? 'rss'), category: String(b.category ?? 'tech'),
+      tier: String(b.tier ?? 'standard'), priority: Number(b.priority ?? 5),
+      requireFulltext: !!b.require_fulltext, actor: 'owner',
+      skipTest: String(b.skip_test ?? '') === '1',
+    });
+    return reply.type('text/html; charset=utf-8')
+      .send(sourcesPage(s, { saved: `来源「${r.id}」已添加，下一轮采集即生效。` }));
+  } catch (e) {
+    const msg = e instanceof ActionError ? e.message : '内部错误';
+    if (!(e instanceof ActionError)) req.log.error({ err: e }, '新增来源失败');
+    return reply.code(e instanceof ActionError ? e.code : 500)
+      .type('text/html; charset=utf-8').send(sourcesPage(s, { error: msg, form: b }));
+  }
+});
+
+app.post<{ Params: { id: string } }>('/sources/:id/delete', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  if (!requireWrite(req, reply, s)) return;
+  const b = (req.body ?? {}) as any;
+  try {
+    const r = deleteSource(db, req.params.id, String(b.reason ?? ''), 'owner');
+    return reply.type('text/html; charset=utf-8').send(sourcesPage(s, {
+      saved: `来源已删除并停用。已抓取的 ${r.retainedItems} 条内容按审计要求保留。` }));
+  } catch (e) {
+    const msg = e instanceof ActionError ? e.message : '内部错误';
+    return reply.code(e instanceof ActionError ? e.code : 500)
+      .type('text/html; charset=utf-8').send(sourcesPage(s, { error: msg }));
+  }
 });
 
 app.get('/runs', async (req, reply) => {

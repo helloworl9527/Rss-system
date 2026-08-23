@@ -191,9 +191,26 @@ export function renderDashboard(o: {
   return layout('仪表盘', body, o.csrf);
 }
 
-export function renderSources(o: { csrf: string; sources: Src[] }): string {
-  const rows = o.sources.map(s => `<tr>
-    <td>${esc(s.display_name)}<div class="muted">${esc(s.id)}</div></td>
+const PARSERS = [['rss','RSS / Atom'],['telegram_web','Telegram 网页版 (t.me/s/…)'],
+                 ['deepseek_page','DeepSeek 更新日志页']];
+const CATS = [['ai','AI 与科技'],['developer','开发者与产品'],['tech','技术资讯'],
+              ['article','优质文章'],['society','社会与生活'],['forum','论坛']];
+const TIERS = [['standard','标准 60 分钟'],['ranking_feed','榜单型 20 分钟'],
+               ['official_changelog','官方日志 120 分钟'],['slow','低频 240 分钟']];
+const opts = (list: string[][], cur = '') =>
+  list.map(([v, l]) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(l)}</option>`).join('');
+
+export function renderSources(o: {
+  csrf: string; sources: Array<Src & { managed_by?: string }>;
+  tests?: Array<{ url: string; outcome: string; parsed_count: number | null; error: string | null; started_at: string }>;
+  form?: Record<string, string>; saved?: string; error?: string;
+}): string {
+  const f = o.form ?? {};
+  const admin = o.sources.filter(s => s.managed_by === 'admin');
+
+  const manageRows = o.sources.map(s => `<tr>
+    <td>${esc(s.display_name)}<div class="muted">${esc(s.id)}
+      ${s.managed_by === 'admin' ? '<span class="pill accent">后台新增</span>' : ''}</div></td>
     <td>${healthDot(s.health)}</td>
     <td>${esc(ago(s.last_success_at))}</td>
     <td>
@@ -204,13 +221,72 @@ export function renderSources(o: { csrf: string; sources: Src[] }): string {
         <input name="reason" placeholder="理由（必填）" required minlength="4">
         <button>${s.enabled ? '停用' : '启用'}</button>
       </form>
+      ${s.managed_by === 'admin' ? `<form method="post" action="/sources/${esc(s.id)}/delete" class="inline" style="margin-top:5px">
+        <input type="hidden" name="csrf" value="${esc(o.csrf)}">
+        <input type="hidden" name="redirect" value="/sources">
+        <input name="reason" placeholder="删除理由（必填）" required minlength="4">
+        <button>删除</button></form>` : ''}
     </td></tr>`).join('');
-  return layout('来源', `<h2>来源（${o.sources.length}）</h2>${sourceTable(o.sources)}
-    <h2>启停</h2>
-    <p class="muted">停用后采集器将跳过该源。操作需填理由并写入审计（PRD 19.2）。</p>
-    <table><tr><th>来源</th><th>健康</th><th>最近成功</th><th>操作</th></tr>${rows}</table>
-    <p class="muted">来源的 URL、端点与采集档配置在 config/sources.yaml，改后执行 npm run sync 同步。</p>`,
-    o.csrf);
+
+  const testRows = (o.tests ?? []).map(t => `<tr>
+    <td class="${t.outcome === 'ok' ? 'ok' : 'bad'}"><span class="dot" style="background:currentColor"></span>${esc(t.outcome)}</td>
+    <td style="word-break:break-all">${esc(t.url.slice(0, 70))}</td>
+    <td>${t.parsed_count ?? '—'}</td>
+    <td class="muted">${esc(String(t.error ?? '').slice(0, 70))}</td>
+    <td class="muted">${esc(ago(t.started_at))}</td></tr>`).join('');
+
+  const body = `
+  ${o.saved ? `<div class="note">${esc(o.saved)}</div>` : ''}
+  ${o.error ? `<div class="err">${esc(o.error)}</div>` : ''}
+
+  <h2>新增来源</h2>
+  <p class="sub">添加前会先做一次测试抓取：URL 需为 https，且不得指向内网或云元数据地址。
+    新增的来源由后台管理，不受 config/sources.yaml 同步影响。</p>
+  <form method="post" action="/sources/add">
+    <input type="hidden" name="csrf" value="${esc(o.csrf)}">
+    <table><tr><th>字段</th><th>值</th><th>说明</th></tr>
+      <tr><td>ID</td><td><input name="id" value="${esc(f.id ?? '')}" placeholder="如 hacker_news" required style="width:200px"></td>
+          <td class="muted">小写字母/数字/下划线，2–32 位，创建后不可改</td></tr>
+      <tr><td>名称</td><td><input name="name" value="${esc(f.name ?? '')}" placeholder="如 Hacker News 首页" required style="width:260px"></td>
+          <td class="muted">显示在简报与后台里</td></tr>
+      <tr><td>URL</td><td><input name="url" value="${esc(f.url ?? '')}" placeholder="https://…" required style="width:100%;min-width:280px"></td>
+          <td class="muted">RSS/Atom 地址或页面地址</td></tr>
+      <tr><td>解析器</td><td><select name="parser">${opts(PARSERS, f.parser ?? 'rss')}</select></td>
+          <td class="muted">多数订阅源选 RSS / Atom</td></tr>
+      <tr><td>分类</td><td><select name="category">${opts(CATS, f.category ?? 'tech')}</select></td>
+          <td class="muted">决定进简报的哪个分区</td></tr>
+      <tr><td>采集频率</td><td><select name="tier">${opts(TIERS, f.tier ?? 'standard')}</select></td>
+          <td class="muted">榜单型条目轮转快，需更密</td></tr>
+      <tr><td>优先级</td><td><input name="priority" type="number" min="1" max="9" value="${esc(f.priority ?? '5')}" style="width:70px"></td>
+          <td class="muted">1 最高，影响多来源同事件时选谁为主</td></tr>
+      <tr><td>需抓全文</td><td><input type="checkbox" name="require_fulltext" ${f.require_fulltext ? 'checked' : ''}></td>
+          <td class="muted">RSS 只给摘要时勾选，会额外打开原文</td></tr>
+    </table>
+    <p>
+      <button class="primary">测试并添加</button>
+      <button name="skip_test" value="1" title="跳过测试强制添加">跳过测试添加</button>
+    </p>
+  </form>
+
+  <h2>仅测试（不添加）</h2>
+  <form method="post" action="/sources/test" class="inline" style="margin-bottom:6px">
+    <input type="hidden" name="csrf" value="${esc(o.csrf)}">
+    <input name="url" placeholder="https://…" required style="width:340px">
+    <select name="parser">${opts(PARSERS, 'rss')}</select>
+    <button>测试抓取</button>
+  </form>
+
+  ${testRows ? `<h2>最近测试记录</h2>
+    <table><tr><th>结果</th><th>URL</th><th>条数</th><th>错误</th><th>时间</th></tr>${testRows}</table>` : ''}
+
+  <h2>全部来源（${o.sources.length}，其中后台新增 ${admin.length}）</h2>
+  ${sourceTable(o.sources)}
+
+  <h2>启停与删除</h2>
+  <p class="sub">操作需填理由并写入审计。config/sources.yaml 里的来源只能停用，
+    要改 URL 或删除请编辑配置文件后执行同步。</p>
+  <table><tr><th>来源</th><th>健康</th><th>最近成功</th><th>操作</th></tr>${manageRows}</table>`;
+  return layout('来源', body, o.csrf);
 }
 
 function runsTable(runs: any[]): string {

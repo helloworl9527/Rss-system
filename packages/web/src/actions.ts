@@ -1,5 +1,8 @@
 import type { DB } from '../../db/src/index.ts';
 import { nowIso } from '../../db/src/index.ts';
+import { checkUrlSafe } from '../../connectors/src/ssrf.ts';
+import { fetchSmart } from '../../connectors/src/fetch.ts';
+import { parseBy } from '../../connectors/src/parsers.ts';
 
 /**
  * 后台写操作（PRD 16.4 / 16.5 / FR-054 / FR-062 / 19.2）。
@@ -193,4 +196,143 @@ export async function executeResend(
 
   return { ok: res.ok, sequence: plan.nextSequence,
            providerId: res.providerId, error: res.error };
+}
+
+// ---------- 来源管理（FR-001 / FR-004） ----------
+
+export const PARSERS = ['rss', 'atom', 'telegram_web', 'deepseek_page'] as const;
+export const CATEGORIES = ['ai', 'developer', 'tech', 'article', 'society', 'forum'] as const;
+export const TIERS = ['ranking_feed', 'standard', 'official_changelog', 'slow'] as const;
+
+export type SourceInput = {
+  id: string; name: string; url: string; parser: string;
+  category: string; tier: string; priority?: number;
+  requireFulltext?: boolean; mandatoryRetention?: boolean;
+  actor?: string;
+};
+
+const SOURCE_ID = /^[a-z][a-z0-9_]{1,31}$/;
+
+/**
+ * 测试抓取（FR-004：不得写入正式简报，但保存诊断日志）。
+ * 先过 SSRF 校验 —— 这个接口让用户指定 URL 由服务器发起请求，
+ * 不校验就是把内网探测能力开放给了任何登录者（PRD 4.4）。
+ */
+export async function testSource(
+  db: DB, o: { url: string; parser: string; sourceId?: string | null; actor?: string },
+): Promise<{ ok: boolean; outcome: string; httpCode?: number; bytes?: number;
+             parsedCount?: number; sample: Array<{ title: string; link: string | null; publishedRaw: string | null }>;
+             error?: string; latencyMs: number }> {
+  const t0 = Date.now();
+  const log = (r: any) => {
+    db.prepare(`INSERT INTO source_tests
+      (source_id,url,started_at,latency_ms,outcome,http_code,bytes,parsed_count,parser,sample_json,error,actor)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(o.sourceId ?? null, o.url, nowIso(), Date.now() - t0, r.outcome,
+           r.httpCode ?? null, r.bytes ?? null, r.parsedCount ?? null, o.parser,
+           r.sample?.length ? JSON.stringify(r.sample) : null, r.error ?? null, o.actor ?? 'owner');
+    return { ...r, latencyMs: Date.now() - t0 };
+  };
+
+  const safe = await checkUrlSafe(o.url);
+  if (!safe.ok) return log({ ok: false, outcome: 'blocked', sample: [], error: safe.reason });
+
+  if (!PARSERS.includes(o.parser as any))
+    return log({ ok: false, outcome: 'blocked', sample: [], error: `未知解析器 ${o.parser}` });
+
+  let res;
+  try {
+    res = await fetchSmart(safe.url, { timeoutMs: 20000, maxBytes: 5 * 1024 * 1024,
+      userAgent: 'BriefingBot/1.0 (+personal daily digest; source test)' });
+  } catch (e: any) {
+    return log({ ok: false, outcome: 'fetch_failed', sample: [], error: String(e?.message ?? e).slice(0, 300) });
+  }
+  if (res.outcome !== 'ok' || !res.body)
+    return log({ ok: false, outcome: 'fetch_failed', httpCode: res.httpCode, sample: [],
+                 error: res.errorMessage ?? res.outcome });
+
+  try {
+    const ch = /telegram\/channel\/([^/?]+)|t\.me\/s\/([^/?]+)/.exec(safe.url);
+    const items = parseBy(o.parser, res.body, { channel: ch?.[1] ?? ch?.[2] });
+    const sample = items.slice(0, 3).map(i => ({
+      title: String(i.title ?? '').slice(0, 90), link: i.link, publishedRaw: i.publishedRaw }));
+    if (!items.length)
+      return log({ ok: false, outcome: 'parse_failed', httpCode: res.httpCode, bytes: res.bytes,
+                   parsedCount: 0, sample: [], error: '抓取成功但解析出 0 条 —— 解析器可能不匹配' });
+    return log({ ok: true, outcome: 'ok', httpCode: res.httpCode, bytes: res.bytes,
+                 parsedCount: items.length, sample });
+  } catch (e: any) {
+    return log({ ok: false, outcome: 'parse_failed', httpCode: res.httpCode, bytes: res.bytes,
+                 sample: [], error: String(e?.message ?? e).slice(0, 300) });
+  }
+}
+
+/** 新增来源（FR-001）。新增前强制通过测试抓取，避免加进去一个死链。 */
+export async function addSource(db: DB, o: SourceInput & { skipTest?: boolean }) {
+  const id = String(o.id ?? '').trim().toLowerCase();
+  if (!SOURCE_ID.test(id))
+    throw new ActionError(400, 'ID 需为 2–32 位小写字母/数字/下划线，且以字母开头');
+  if (db.prepare('SELECT 1 FROM sources WHERE id=?').get(id))
+    throw new ActionError(409, `来源 ID「${id}」已存在`);
+  const name = String(o.name ?? '').trim();
+  if (name.length < 2) throw new ActionError(400, '名称至少 2 个字');
+  if (!PARSERS.includes(o.parser as any)) throw new ActionError(400, '未知解析器');
+  if (!CATEGORIES.includes(o.category as any)) throw new ActionError(400, '未知分类');
+  if (!TIERS.includes(o.tier as any)) throw new ActionError(400, '未知采集档');
+
+  const safe = await checkUrlSafe(o.url);
+  if (!safe.ok) throw new ActionError(400, `URL 不可用：${safe.reason}`);
+
+  if (!o.skipTest) {
+    const t = await testSource(db, { url: safe.url, parser: o.parser, actor: o.actor });
+    if (!t.ok) throw new ActionError(400, `测试抓取未通过：${t.error} —— 修正后再添加，或勾选「跳过测试」强制添加`);
+  }
+
+  const cfg = {
+    id, name, display_name: name, category: o.category,
+    host_group: 'direct', harvest_tier: o.tier, enabled: true,
+    priority: o.priority ?? 5,
+    require_fulltext: !!o.requireFulltext,
+    mandatory_retention: !!o.mandatoryRetention,
+    endpoints: [{ url: safe.url, parser: o.parser, priority: 1 }],
+  };
+  const now = nowIso();
+
+  db.transaction(() => {
+    db.prepare(`INSERT INTO sources (id,name,display_name,category,host_group,harvest_tier,
+      enabled,priority,mandatory_retention,require_fulltext,config_json,source_version,
+      managed_by,created_by,created_at,updated_at)
+      VALUES (?,?,?,?,'direct',?,1,?,?,?,?,0,'admin',?,?,?)`)
+      .run(id, name, name, o.category, o.tier, o.priority ?? 5,
+           o.mandatoryRetention ? 1 : 0, o.requireFulltext ? 1 : 0,
+           JSON.stringify(cfg), o.actor ?? 'owner', now, now);
+    db.prepare(`INSERT INTO source_endpoints (source_id,priority,url,parser,enabled)
+      VALUES (?,1,?,?,1)`).run(id, safe.url, o.parser);
+    audit(db, { entityType: 'source', entityId: id, action: 'source_added',
+      payload: { name, url: safe.url, parser: o.parser, category: o.category,
+                 tier: o.tier, actor: o.actor ?? 'owner', reason: `新增来源 ${name}` } });
+  })();
+  return { ok: true as const, id };
+}
+
+/** 删除来源。只允许删后台新增的 —— 配置来源应改 sources.yaml。 */
+export function deleteSource(db: DB, id: string, reason: string, actor = 'owner') {
+  const r = requireReason(reason);
+  const s = db.prepare('SELECT id, managed_by, name FROM sources WHERE id=?').get(id) as any;
+  if (!s) throw new ActionError(404, '来源不存在');
+  if (s.managed_by !== 'admin')
+    throw new ActionError(400, '该来源来自 config/sources.yaml，请改配置文件后执行同步；后台只能删除自己新增的来源');
+
+  const items = (db.prepare('SELECT count(*) c FROM feed_items WHERE source_id=?').get(id) as any).c;
+  db.transaction(() => {
+    // 已抓到的内容不删 —— 审计要求可追溯（PRD 13.3）。只停用并标记。
+    db.prepare(`UPDATE sources SET enabled=0, health='disabled', updated_at=? WHERE id=?`)
+      .run(nowIso(), id);
+    db.prepare(`UPDATE source_endpoints SET enabled=0 WHERE source_id=?`).run(id);
+    db.prepare(`INSERT INTO manual_overrides (target_type,target_id,action,reason,scope,actor,created_at)
+      VALUES ('source',?,'delete',?,'permanent',?,?)`).run(id, r, actor, nowIso());
+    audit(db, { entityType: 'source', entityId: id, action: 'source_deleted',
+      payload: { reason: r, actor, name: s.name, retainedItems: items } });
+  })();
+  return { ok: true as const, retainedItems: items };
 }
