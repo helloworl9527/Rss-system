@@ -1,7 +1,14 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Throttler } from './throttle.ts';
 
+const execFileAsync = promisify(execFile);
+
 export type FetchOutcome =
-  | 'ok' | 'not_modified' | 'fetch_failed' | 'source_anomaly' | 'parse_failed';
+  | 'ok' | 'not_modified' | 'fetch_failed' | 'source_anomaly' | 'parse_failed'
+  // 限流与内容失败必须分开：限流不是「这条内容抓不到」，
+  // 不该消耗重试次数，否则条目会被永久放弃。
+  | 'rate_limited';
 
 export type FetchResult = {
   outcome: FetchOutcome;
@@ -84,6 +91,86 @@ export async function fetchOnce(
     return { outcome: 'fetch_failed', latencyMs: Date.now() - t0,
              errorClass: ERR_CLASS(e), errorMessage: String(e?.message ?? e) };
   } finally { clearTimeout(timer); }
+}
+
+/**
+ * curl 传输通道。
+ *
+ * 【为什么需要】linux.do 在 Cloudflare bot management 之后，对 Node 内置
+ * fetch(undici) 一律返回 403 `cf-mitigated: challenge`，而 curl 即便带
+ * 机器人 UA 也稳定 200。实测：undici + 完整浏览器请求头（sec-ch-ua、
+ * sec-fetch-* 全给）仍是 403 —— 判定依据是 TLS/HTTP2 指纹，不是请求头，
+ * 所以补 header 无解。curl 已随系统安装，零新依赖，且全文抓取量很小
+ * （linux.do 约 39 次/天），进程开销可忽略。
+ *
+ * 注意：本通道不做条件 GET（全文按 item_version 只抓一次，用不到 ETag）。
+ */
+export async function fetchViaCurl(
+  url: string,
+  opts: { timeoutMs: number; userAgent: string; maxBytes: number },
+): Promise<FetchResult> {
+  const t0 = Date.now();
+  const SEP = '\n__CURL_META__';
+  try {
+    const { stdout } = await execFileAsync('curl', [
+      '-sS', '-L', '--compressed',
+      '--max-time', String(Math.ceil(opts.timeoutMs / 1000)),
+      '--max-redirs', '3',
+      '-A', opts.userAgent,
+      '-w', `${SEP}%{http_code}`,
+      url,
+    ], { maxBuffer: opts.maxBytes + 4096, timeout: opts.timeoutMs + 2000, encoding: 'utf8' });
+
+    const i = stdout.lastIndexOf(SEP);
+    if (i < 0) return { outcome: 'fetch_failed', latencyMs: Date.now() - t0,
+                        errorClass: 'network', errorMessage: 'curl 未返回状态码' };
+    const body = stdout.slice(0, i);
+    const code = Number(stdout.slice(i + SEP.length).trim());
+    const latencyMs = Date.now() - t0;
+
+    if (code === 304) return { outcome: 'not_modified', httpCode: 304, latencyMs };
+    // Cloudflare 限流返回 429 且无 Retry-After，响应体是「Just a moment」质询页；
+    // 403 + 同样的质询页也属同一类。都归为 rate_limited。
+    const isChallenge = /Just a moment|cf-mitigated|__cf_chl/i.test(body.slice(0, 600));
+    if (code === 429 || (code === 403 && isChallenge))
+      return { outcome: 'rate_limited', httpCode: code, latencyMs,
+               errorClass: 'rate_limited', errorMessage: `HTTP ${code} 限流/质询` };
+    if (code < 200 || code >= 300)
+      return { outcome: 'fetch_failed', httpCode: code, latencyMs,
+               errorClass: code >= 500 ? 'http_5xx' : 'http_4xx', errorMessage: `HTTP ${code}` };
+    if (!body.trim())
+      return { outcome: 'source_anomaly', httpCode: code, bytes: 0, latencyMs,
+               errorClass: 'empty', errorMessage: '200 但响应体为空' };
+    if (Buffer.byteLength(body) > opts.maxBytes)
+      return { outcome: 'fetch_failed', httpCode: code, latencyMs,
+               errorClass: 'too_large', errorMessage: `响应超过 ${opts.maxBytes} 字节上限` };
+
+    return { outcome: 'ok', httpCode: code, body, bytes: Buffer.byteLength(body), latencyMs };
+  } catch (e: any) {
+    const timedOut = e?.killed || /ETIMEDOUT|timeout/i.test(String(e?.message));
+    return { outcome: 'fetch_failed', latencyMs: Date.now() - t0,
+             errorClass: timedOut ? 'timeout' : 'network',
+             errorMessage: String(e?.stderr || e?.message || e).slice(0, 300) };
+  }
+}
+
+/**
+ * 自动通道选择：先走 undici；若被 Cloudflare 质询（403 + cf-mitigated），
+ * 自动改走 curl 重试一次。这样无需事先枚举哪些主机需要 curl。
+ */
+export async function fetchSmart(
+  url: string,
+  opts: { timeoutMs: number; userAgent: string; maxBytes: number; transport?: 'auto' | 'curl' | 'undici' },
+): Promise<FetchResult & { transport: string }> {
+  if (opts.transport === 'curl')
+    return { ...await fetchViaCurl(url, opts), transport: 'curl' };
+
+  const r = await fetchOnce(url, { ...opts, etag: null, lastModified: null });
+  const challenged = r.httpCode === 403 && (r.outcome === 'fetch_failed' || r.outcome === 'rate_limited');
+  if (opts.transport === 'undici' || !challenged) return { ...r, transport: 'undici' };
+
+  const c = await fetchViaCurl(url, opts);
+  return { ...c, transport: 'curl-after-403' };
 }
 
 export type Endpoint = {

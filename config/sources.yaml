@@ -44,6 +44,26 @@ host_groups:
     timeout_ms: 20000
     max_retries: 2
     note: "6 个 X 源单点依赖；公共 RSSHub 的 twitter 路由实测全部 503，无替代"
+  fulltext_discourse:
+    # linux.do 走 /t/topic/{id}.json（59KB）而非 HTML（422KB）。
+    # 【实测限流】36 次请求以 2s 间隔突发后被 Cloudflare 判定限流，
+    # 返回 429 + 「Just a moment」质询页且无 Retry-After，之后连 2s
+    # 间隔也持续 429。故降到 10s 间隔、单轮 5 条：
+    # 5 条 × 72 轮/天 = 360 条/天配额，远超每天新增的 20-40 条需求。
+    # 另注：linux.do 对 Node 内置 fetch(undici) 一律 403 质询，
+    # 必须走 curl 通道（TLS 指纹差异，补请求头无效）。
+    hosts: [linux.do]
+    concurrency: 1
+    min_interval_ms: 10000
+    timeout_ms: 25000
+    max_retries: 1
+  fulltext_v2ex:
+    # v2ex 走 /api/topics/show.json（3.4KB）而非 HTML（120KB），未见限流。
+    hosts: [v2ex.com, www.v2ex.com]
+    concurrency: 1
+    min_interval_ms: 2000
+    timeout_ms: 25000
+    max_retries: 1
   direct:
     hosts: [linuxdorss.longpink.com, elsewhere.news, api-docs.deepseek.com]
     concurrency: 2
