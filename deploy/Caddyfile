@@ -1,0 +1,34 @@
+# 十六源简报后台反向代理（计划 3.3）
+# 前提：brief.xmcode.tech 的 A 记录指向本机且为 Cloudflare 灰云（DNS only）——
+# 橙云代理会让 ACME HTTP-01 挑战无法完成。
+
+brief.xmcode.tech {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+	}
+
+	# 健康检查不写访问日志，避免噪声
+	@health path /health/*
+	log_skip @health
+
+	reverse_proxy 127.0.0.1:3000 {
+		header_up X-Real-IP {remote_host}
+		health_uri /health/live
+		health_interval 30s
+	}
+
+	log {
+		output file /var/log/caddy/brief.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format json
+	}
+}

@@ -10,7 +10,8 @@ import { runTriage } from '../packages/ai/src/triage.ts';
 import { extractSignals, prescreenMandatory } from '../packages/domain/src/signals.ts';
 
 const argv = process.argv.slice(2);
-const ALL = argv.includes('--include-unconfirmed');
+// 默认包含机器预标注。人工确认后可加 --confirmed-only 得到更严格的基线。
+const ALL = !argv.includes('--confirmed-only');
 const basePath = argv.includes('--baseline') ? argv[argv.indexOf('--baseline')+1] : null;
 const savePath = argv.includes('--save') ? argv[argv.indexOf('--save')+1] : null;
 
@@ -42,7 +43,13 @@ const cands = samples.map(s => {
     contentHash: s.id };
 });
 
-console.log(`供应商 ${cfg.provider}${cfg.model ? '/'+cfg.model : ''} | 样本 ${samples.length} 条${ALL ? '（含未确认）' : ''}\n`);
+const conf = raw.filter(s => s.labelSource === 'human_confirmed').length;
+console.log(`供应商 ${cfg.provider}${cfg.model ? '/'+cfg.model : ''} | 样本 ${samples.length} 条` +
+  (ALL ? `（其中人工确认 ${conf} 条）` : '') + '\n');
+if (ALL && conf < samples.length)
+  console.log('注意：机器预标注的期望值来自程序预判，因此本报告衡量的是\n' +
+              '「模型是否与确定性预判一致」，不是真实召回率。它能抓出模型\n' +
+              '推翻硬证据的情形（主要漏项风险），但无法验证预判本身是否正确。\n');
 
 const usage = [];
 const rep = await runTriage(cands, {
