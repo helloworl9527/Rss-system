@@ -26,48 +26,94 @@ const ago = (t: unknown): string => {
 };
 
 const CSS = `
-:root{color-scheme:light dark}
+:root{
+  color-scheme:light dark;
+  --page:#f2f5f8; --card:#fff; --line:#e2e7ee; --line-soft:#eef1f5;
+  --ink:#161b22; --body:#39424e; --muted:#6b7684; --faint:#8b95a3;
+  --accent:#1c5fa8; --accent-soft:#e7eef7;
+  --ok:#12764a; --warn:#96590a; --bad:#b3261e;
+  --nav:#1a1f27;
+}
+@media(prefers-color-scheme:dark){:root{
+  --page:#12161b; --card:#1a2027; --line:#2b333d; --line-soft:#232a32;
+  --ink:#e8edf3; --body:#c3cbd5; --muted:#8b95a3; --faint:#6b7684;
+  --accent:#7fb0e8; --accent-soft:#1d2a3a;
+  --ok:#4cc38a; --warn:#e0a33e; --bad:#f3796e; --nav:#0f1318;
+}}
 *{box-sizing:border-box}
-body{margin:0;font:15px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;
- background:#f4f6f8;color:#1f2933}
-header{background:#1f2933;color:#fff;padding:10px 18px;display:flex;gap:18px;align-items:center;flex-wrap:wrap}
-header a{color:#c9d6e2;text-decoration:none;font-size:14px}
-header a:hover{color:#fff;text-decoration:underline}
-header .brand{font-weight:700;color:#fff;margin-right:8px}
+body{margin:0;background:var(--page);color:var(--body);
+  font:15px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  -webkit-font-smoothing:antialiased}
+
+header{background:var(--nav);padding:0 22px;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+header .brand{font-weight:700;color:#fff;font-size:15px;letter-spacing:-.01em;margin-right:18px;padding:14px 0}
+header a{color:#9aa7b5;text-decoration:none;font-size:14px;padding:15px 12px;display:block;
+  border-bottom:2px solid transparent;transition:color .12s}
+header a:hover{color:#fff}
 header form{margin-left:auto}
-main{max-width:1100px;margin:0 auto;padding:18px}
-h2{font-size:17px;margin:22px 0 10px}
-table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dfe4ea;border-radius:6px;overflow:hidden}
-th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #eef1f4;font-size:14px;vertical-align:top}
-th{background:#eceff2;font-weight:600;font-size:13px}
+header form button{background:transparent;border:1px solid #39424e;color:#9aa7b5;font-size:13px;padding:5px 13px}
+header form button:hover{color:#fff;border-color:#5b6875}
+
+main{max-width:1120px;margin:0 auto;padding:26px 22px 60px}
+h2{font-size:12px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted);
+  font-weight:700;margin:34px 0 12px}
+h2:first-child{margin-top:0}
+.sub{font-size:13px;color:var(--muted);margin:-6px 0 14px}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px;margin:0 0 6px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:15px 17px}
+.card .n{font-size:26px;font-weight:700;color:var(--ink);letter-spacing:-.02em;
+  font-variant-numeric:tabular-nums;line-height:1.2}
+.card .l{font-size:12px;color:var(--muted);margin-top:3px}
+
+table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);
+  border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th{background:transparent;font-weight:600;font-size:11px;letter-spacing:.07em;text-transform:uppercase;
+  color:var(--faint);padding:11px 14px;text-align:left;border-bottom:1px solid var(--line)}
+td{padding:11px 14px;font-size:14px;border-bottom:1px solid var(--line-soft);vertical-align:top;color:var(--body)}
 tr:last-child td{border-bottom:none}
-.cards{display:flex;gap:10px;flex-wrap:wrap;margin:0 0 8px}
-.card{background:#fff;border:1px solid #dfe4ea;border-radius:6px;padding:12px 14px;min-width:130px;flex:1}
-.card .n{font-size:22px;font-weight:700}
-.card .l{font-size:12px;color:#5b6875}
-.ok{color:#1a7f4b}.warn{color:#a86400}.bad{color:#b3261e}.muted{color:#5b6875;font-size:13px}
-.pill{display:inline-block;padding:1px 7px;border:1px solid #dfe4ea;border-radius:3px;font-size:12px;color:#5b6875}
-button{font:inherit;padding:5px 12px;border:1px solid #c5ced6;background:#fff;border-radius:4px;cursor:pointer}
-form.login{max-width:340px;margin:9vh auto;background:#fff;border:1px solid #dfe4ea;border-radius:8px;padding:22px}
-form.login input{width:100%;padding:9px;margin:6px 0 12px;border:1px solid #c5ced6;border-radius:4px;font:inherit}
-form.login button{width:100%;padding:9px;background:#1b5fa8;color:#fff;border-color:#1b5fa8}
-.err{background:#fdecea;border:1px solid #f5c2bd;color:#b3261e;padding:8px 10px;border-radius:4px;font-size:14px;margin:0 0 12px}
-.note{background:#fff8e1;border:1px solid #f0e0a8;padding:8px 10px;border-radius:4px;font-size:13px;margin:0 0 12px}
-a{color:#1b5fa8}
-form.inline{display:flex;gap:5px;align-items:center;margin:0}
-form input[type=password],form input[type=text],form input:not([type]){padding:4px 6px;border:1px solid #c5ced6;border-radius:3px;font:inherit;font-size:13px}
-form.inline input[name=reason]{padding:4px 6px;border:1px solid #c5ced6;border-radius:3px;font:inherit;font-size:13px;width:150px}
-form.inline select{padding:4px;border:1px solid #c5ced6;border-radius:3px;font:inherit;font-size:13px}
-form.inline button{padding:4px 10px;font-size:13px}
-@media(prefers-color-scheme:dark){
- body{background:#161b21;color:#e6eaee}
- table,.card,form.login{background:#1e242b;border-color:#2e3742}
- th{background:#252c34}td{border-color:#252c34}
- .note{background:#2a2617;border-color:#4a4227}
- form.inline input,form.inline select{background:#252c34;color:#e6eaee;border-color:#3a4450}
- button{background:#2a323b;color:#e6eaee;border-color:#3a4450}
- .err{background:#3a1f1c;border-color:#5c2f2a;color:#f3b7b1}
- a,header a:hover{color:#8ab4e8}
+tbody tr:hover td,table tr:hover td{background:var(--line-soft)}
+td a{color:var(--accent);text-decoration:none}
+td a:hover{text-decoration:underline}
+
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+.muted{color:var(--muted);font-size:12.5px;line-height:1.55}
+.pill{display:inline-block;padding:2px 8px;border-radius:11px;font-size:11px;
+  background:var(--line-soft);color:var(--muted)}
+.pill.accent{background:var(--accent-soft);color:var(--accent)}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px}
+
+button{font:inherit;font-size:13px;padding:6px 14px;border:1px solid var(--line);
+  background:var(--card);color:var(--body);border-radius:7px;cursor:pointer;transition:border-color .12s}
+button:hover{border-color:var(--muted)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:500}
+button.primary:hover{opacity:.9}
+
+input,select{font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--line);
+  border-radius:7px;background:var(--card);color:var(--ink)}
+input:focus,select:focus{outline:2px solid var(--accent-soft);outline-offset:0;border-color:var(--accent)}
+input::placeholder{color:var(--faint)}
+form.inline{display:flex;gap:6px;align-items:center;margin:0;flex-wrap:wrap}
+form.inline input[name=reason]{width:158px}
+
+form.login{max-width:352px;margin:11vh auto;background:var(--card);border:1px solid var(--line);
+  border-radius:14px;padding:30px 28px}
+form.login h2{font-size:19px;text-transform:none;letter-spacing:-.01em;color:var(--ink);margin:0 0 4px}
+form.login .hint{font-size:13px;color:var(--muted);margin:0 0 20px}
+form.login label{display:block;font-size:12px;color:var(--muted);margin:14px 0 5px;font-weight:500}
+form.login input{width:100%;padding:10px 12px;font-size:14px}
+form.login button{width:100%;padding:11px;margin-top:22px;font-size:14px}
+
+.err,.note{padding:11px 14px;border-radius:9px;font-size:13.5px;line-height:1.6;margin:0 0 16px}
+.err{background:color-mix(in srgb,var(--bad) 10%,transparent);border:1px solid color-mix(in srgb,var(--bad) 32%,transparent);color:var(--bad)}
+.note{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 24%,transparent);color:var(--body)}
+a{color:var(--accent)}
+@media(max-width:640px){
+  main{padding:18px 14px 40px}
+  header{padding:0 14px}
+  th,td{padding:9px 10px;font-size:13px}
+  form.inline input[name=reason]{width:110px}
 }`;
 
 export function layout(title: string, body: string, csrf: string): string {
@@ -86,18 +132,22 @@ export function renderLogin(o: { configured: boolean; needTotp: boolean; error?:
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>登录 · 十六源简报后台</title><style>${CSS}</style></head><body>
 <form class="login" method="post" action="/login">
-  <h2 style="margin-top:0">十六源简报后台</h2>
+  <h2>十六源简报</h2>
+  <div class="hint">管理后台</div>
   ${o.error ? `<div class="err">${esc(o.error)}</div>` : ''}
   ${o.configured ? '' : '<div class="note">尚未设置 ADMIN_PASSWORD_HASH，当前为只读演示模式，无法登录。</div>'}
   <label>口令</label>
   <input type="password" name="password" autocomplete="current-password" required>
   ${o.needTotp ? '<label>动态验证码</label><input name="totp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" required>' : ''}
-  <button type="submit">登录</button>
+  <button type="submit" class="primary">登录</button>
 </form></body></html>`;
 }
 
 const healthCls = (h: string) => h === 'healthy' ? 'ok' : h === 'degraded' ? 'warn' : h === 'failing' ? 'bad' : 'muted';
 const healthTxt = (h: string) => ({ healthy: '正常', degraded: '降级', failing: '失败' }[h] ?? '未知');
+/** 状态用圆点+文字双重编码，不靠颜色单独表达含义。 */
+const healthDot = (h: string) =>
+  `<span class="${healthCls(h)}"><span class="dot" style="background:currentColor"></span>${healthTxt(h)}</span>`;
 
 type Src = { id: string; display_name: string; category: string; health: string;
   harvest_tier: string; consecutive_failures: number; last_success_at: string | null;
@@ -109,7 +159,7 @@ function sourceTable(sources: Src[]): string {
     sources.map(s => `<tr>
       <td>${esc(s.display_name)}<div class="muted">${esc(s.id)}</div></td>
       <td>${esc(s.category)}</td><td>${esc(s.harvest_tier)}</td>
-      <td class="${healthCls(s.health)}">${healthTxt(s.health)}${s.enabled ? '' : ' <span class="pill">已停用</span>'}</td>
+      <td>${healthDot(s.health)}${s.enabled ? '' : ' <span class="pill">已停用</span>'}</td>
       <td>${esc(ago(s.last_success_at))}</td><td>${esc(ago(s.latest_item_at))}</td>
       <td>${s.consecutive_failures || ''}</td>
       <td class="muted">${esc(String(s.last_error ?? '').slice(0, 60))}</td>
@@ -145,7 +195,7 @@ export function renderDashboard(o: {
 export function renderSources(o: { csrf: string; sources: Src[] }): string {
   const rows = o.sources.map(s => `<tr>
     <td>${esc(s.display_name)}<div class="muted">${esc(s.id)}</div></td>
-    <td class="${healthCls(s.health)}">${healthTxt(s.health)}</td>
+    <td>${healthDot(s.health)}</td>
     <td>${esc(ago(s.last_success_at))}</td>
     <td>
       <form method="post" action="/sources/${esc(s.id)}/toggle" class="inline">
@@ -170,7 +220,7 @@ function runsTable(runs: any[]): string {
     runs.map(r => `<tr>
       <td><a href="/runs/${esc(r.id)}">${esc(r.id)}</a></td>
       <td>${esc(r.window_key)} <span class="pill">${esc(r.window_label)}</span></td>
-      <td class="${r.status === 'succeeded' ? 'ok' : r.status === 'failed' ? 'bad' : 'warn'}">${esc(r.status)}</td>
+      <td class="${r.status === 'succeeded' ? 'ok' : r.status === 'failed' ? 'bad' : 'warn'}"><span class="dot" style="background:currentColor"></span>${esc(r.status)}</td>
       <td>${esc(r.stage ?? '—')}</td><td>${esc(r.cands ?? 0)}</td>
       <td>${esc(ago(r.started_at))}</td></tr>`).join('') + '</table>';
 }
@@ -178,7 +228,7 @@ function runsTable(runs: any[]): string {
 export function renderRuns(o: { csrf: string; runs: any[]; harvests: any[] }): string {
   const h = `<h2>采集轮次</h2><table><tr><th>#</th><th>状态</th><th>来源</th><th>新条目</th><th>新版本</th><th>开始</th></tr>` +
     o.harvests.map(x => `<tr><td>${esc(x.id)}</td>
-      <td class="${x.status === 'succeeded' ? 'ok' : x.status === 'failed' ? 'bad' : 'warn'}">${esc(x.status)}</td>
+      <td class="${x.status === 'succeeded' ? 'ok' : x.status === 'failed' ? 'bad' : 'warn'}"><span class="dot" style="background:currentColor"></span>${esc(x.status)}</td>
       <td>${esc(x.sources_ok)}/${esc(x.sources_attempted)}</td>
       <td>${esc(x.new_items)}</td><td>${esc(x.new_versions)}</td>
       <td>${esc(ago(x.started_at))}</td></tr>`).join('') + '</table>';
@@ -266,7 +316,7 @@ export function renderSettings(o: {
       <input type="hidden" name="csrf" value="${esc(o.csrf)}">
       <input type="hidden" name="name" value="${esc(k.name)}">
       <input type="password" name="value" placeholder="粘贴新 key（留空则清除）" autocomplete="off" style="width:230px">
-      <button>保存</button>
+      <button class="primary">保存</button>
     </form></td></tr>`).join('');
 
   const body = `
@@ -291,7 +341,7 @@ export function renderSettings(o: {
         <td><input name="l3_provider" value="${esc(o.settings.l3Provider ?? '')}" placeholder="留空则同 L1" style="width:130px"></td>
         <td><input name="l3_model" value="${esc(o.settings.l3Model ?? '')}" placeholder="留空则同 L1" style="width:200px"></td></tr>
     </table>
-    <p><button ${o.vaultOk ? '' : 'disabled'}>保存供应商设置</button></p>
+    <p><button class="primary" ${o.vaultOk ? '' : 'disabled'}>保存供应商设置</button></p>
   </form>
 
   <h2>API Key</h2>

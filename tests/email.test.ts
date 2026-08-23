@@ -97,7 +97,9 @@ console.log('\n审计区（PRD 9.3）：\n');
   ok('抓取失败与来源异常分别标明',
      html.includes('抓取失败') && html.includes('来源异常'));
   ok('抓取失败未被写成「无更新」', !/x_claudeai[\s\S]{0,80}无更新/.test(html));
-  ok('普通过滤按类别计数', html.includes('已过滤 12'));
+  // 剥标签后再比对：断言内容而非标记结构，改样式不该让测试误报
+  const plain = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  ok('普通过滤按类别计数', /已过滤\s*12/.test(plain) && /无更新\s*3/.test(plain));
   ok('纯文本含全部审计信息',
      text.includes('某开源项目') && text.includes('抓取失败') && text.includes('来源异常'));
 }
