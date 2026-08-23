@@ -173,3 +173,41 @@ export function windowOf(at: Date = new Date()): Win {
   const next = shiftDay(datePart, 1);
   return { key: `${next}:morning`, label: '早报', start: at_(datePart, 22), end: at_(next, 8) };
 }
+
+/** 从窗口键（YYYY-MM-DD:label）反解出区间。用于按 key 查询历史窗口。 */
+export function windowFromKey(key: string): Win {
+  const [ymd, label] = key.split(':');
+  if (!ymd || !label) throw new Error(`非法窗口键: ${key}`);
+  const at = (d: string, h: number) => new Date(`${d}T${String(h).padStart(2, '0')}:00:00+08:00`);
+  const shift = (d: string, n: number) => {
+    const x = new Date(`${d}T00:00:00Z`); x.setUTCDate(x.getUTCDate() + n);
+    return x.toISOString().slice(0, 10);
+  };
+  switch (label) {
+    case 'morning': return { key, label: '早报', start: at(shift(ymd, -1), 22), end: at(ymd, 8) };
+    case 'noon':    return { key, label: '午报', start: at(ymd, 8),  end: at(ymd, 12) };
+    case 'evening': return { key, label: '晚报', start: at(ymd, 12), end: at(ymd, 22) };
+    default: throw new Error(`未知窗口标签: ${label}`);
+  }
+}
+
+/**
+ * 当前窗口之前最近 n 个「已结束」的窗口，由近及远（PRD 6.4 第 1 步）。
+ * 已结束 = end <= 当前窗口的 start。
+ */
+export function previousWindows(current: Win, n = 3): Win[] {
+  const order = ['morning', 'noon', 'evening'] as const;
+  const [ymd, label] = current.key.split(':') as [string, typeof order[number]];
+  const shift = (d: string, k: number) => {
+    const x = new Date(`${d}T00:00:00Z`); x.setUTCDate(x.getUTCDate() + k);
+    return x.toISOString().slice(0, 10);
+  };
+  let day = ymd, idx = order.indexOf(label);
+  const out: Win[] = [];
+  for (let i = 0; i < n; i++) {
+    idx -= 1;
+    if (idx < 0) { idx = order.length - 1; day = shift(day, -1); }
+    out.push(windowFromKey(`${day}:${order[idx]}`));
+  }
+  return out;
+}

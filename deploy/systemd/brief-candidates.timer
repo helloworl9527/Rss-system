@@ -1,0 +1,18 @@
+[Unit]
+Description=三个固定窗口触发候选构建（早报/午报/晚报）
+
+[Timer]
+# PRD 5.1 的三个固定窗口时刻，内联台北时区（systemd 249 支持）。
+# 阶段 1 形态：只构建候选，不调 AI、不发邮件。
+# 阶段 2/3 完成后本 unit 由 brief-run@ 取代。
+OnCalendar=*-*-* 08:00:00 Asia/Taipei
+OnCalendar=*-*-* 12:00:00 Asia/Taipei
+OnCalendar=*-*-* 22:00:00 Asia/Taipei
+# PRD 5.3：计划时间后 0–10 分钟触发仍属正常
+RandomizedDelaySec=120
+Persistent=true
+AccuracySec=30s
+Unit=brief-candidates.service
+
+[Install]
+WantedBy=timers.target

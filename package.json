@@ -7,12 +7,13 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "node tests/window.test.ts && node scripts/test-fingerprint.mjs && node scripts/validate-rules.mjs",
+    "test": "node tests/window.test.ts && node tests/filters.test.ts && node tests/late-discovery.test.ts && node scripts/test-fingerprint.mjs && node scripts/validate-rules.mjs",
     "migrate": "node apps/worker/src/migrate.ts",
     "sync": "node apps/worker/src/sync-sources.ts",
     "harvest": "node apps/worker/src/harvest.ts",
     "typecheck": "tsc --noEmit",
-    "status": "node scripts/status.mjs"
+    "status": "node scripts/status.mjs",
+    "candidates": "node apps/worker/src/candidates.ts"
   },
   "keywords": [],
   "author": "",
