@@ -7,14 +7,17 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "node tests/window.test.ts && node tests/filters.test.ts && node tests/late-discovery.test.ts && node tests/cluster.test.ts && node tests/provider.test.ts && node tests/triage.test.ts && node tests/review.test.ts && node tests/compose.test.ts && node tests/email.test.ts && node tests/delivery.test.ts && node scripts/test-fingerprint.mjs && node scripts/validate-rules.mjs",
+    "test": "node tests/window.test.ts && node tests/filters.test.ts && node tests/late-discovery.test.ts && node tests/cluster.test.ts && node tests/provider.test.ts && node tests/triage.test.ts && node tests/review.test.ts && node tests/compose.test.ts && node tests/email.test.ts && node tests/delivery.test.ts && node tests/golden.test.ts && node scripts/test-fingerprint.mjs && node scripts/validate-rules.mjs",
     "migrate": "node apps/worker/src/migrate.ts",
     "sync": "node apps/worker/src/sync-sources.ts",
     "harvest": "node apps/worker/src/harvest.ts",
     "typecheck": "tsc --noEmit",
     "status": "node scripts/status.mjs",
     "candidates": "node apps/worker/src/candidates.ts",
-    "triage": "node apps/worker/src/triage.ts"
+    "triage": "node apps/worker/src/triage.ts",
+    "golden:seed": "node scripts/golden-seed.mjs",
+    "golden:label": "node scripts/golden-label.mjs",
+    "golden:eval": "node scripts/golden-eval.mjs"
   },
   "keywords": [],
   "author": "",
