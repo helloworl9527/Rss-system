@@ -5,7 +5,9 @@ import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { openDb } from '../packages/db/src/index.ts';
 import { extractSignals, prescreenMandatory } from '../packages/domain/src/signals.ts';
 
-const OUT = 'tests/golden/samples.json';
+const OUT = process.env.GOLDEN_PATH
+  ?? (process.env.DATABASE_PATH?.startsWith('/var/lib/') ? '/var/lib/briefing/golden.json'
+                                                        : 'tests/golden/samples.json');
 const limit = process.argv.includes('--limit')
   ? Number(process.argv[process.argv.indexOf('--limit') + 1]) : 400;
 

@@ -17,7 +17,11 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { openDb } from '../packages/db/src/index.ts';
 import { extractSignals, prescreenMandatory } from '../packages/domain/src/signals.ts';
 
-const FILE = 'tests/golden/samples.json';
+// 黄金集是运行时数据，不是代码 —— 放 /var/lib/briefing（brief 可写），
+// 而非 git 仓库所在的 /opt（root 只读）。开发时默认回落到仓库内路径。
+const FILE = process.env.GOLDEN_PATH
+  ?? (process.env.DATABASE_PATH?.startsWith('/var/lib/') ? '/var/lib/briefing/golden.json'
+                                                        : 'tests/golden/samples.json');
 const argv = process.argv.slice(2);
 const cmd = argv[0];
 const clsIdx = argv.indexOf('--class');

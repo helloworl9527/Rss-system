@@ -15,7 +15,10 @@ const ALL = !argv.includes('--confirmed-only');
 const basePath = argv.includes('--baseline') ? argv[argv.indexOf('--baseline')+1] : null;
 const savePath = argv.includes('--save') ? argv[argv.indexOf('--save')+1] : null;
 
-const raw = loadGolden('tests/golden/samples.json');
+const GOLDEN = process.env.GOLDEN_PATH
+  ?? (process.env.DATABASE_PATH?.startsWith('/var/lib/') ? '/var/lib/briefing/golden.json'
+                                                        : 'tests/golden/samples.json');
+const raw = loadGolden(GOLDEN);
 const samples = ALL ? raw : confirmedOnly(raw);
 if (!samples.length) {
   console.log(`黄金集中没有${ALL ? '' : '人工确认的'}样本。`);
