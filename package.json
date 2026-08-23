@@ -24,7 +24,8 @@
     "mail:test": "node scripts/test-mail.mjs",
     "shadow:report": "node scripts/shadow-report.mjs",
     "reapply": "node apps/worker/src/reapply.ts",
-    "review": "node apps/worker/src/review.ts"
+    "review": "node apps/worker/src/review.ts",
+    "run": "node apps/worker/src/run.ts"
   },
   "keywords": [],
   "author": "",
