@@ -30,6 +30,25 @@ const fb = A(`SELECT source_id, endpoint_priority p, count(*) c FROM fetch_attem
 console.log(fb.length ? `\n近 24h 回退：${fb.map(x => `${x.source_id}→P${x.p}×${x.c}`).join(', ')}`
                       : '\n近 24h 无端点回退');
 
-const pend = G(`SELECT count(*) c FROM item_versions WHERE is_excerpt=1 AND fulltext_status IS NULL`);
-if (pend.c) console.log(`待抓原帖全文：${pend.c} 条（forum_fulltext 抓取器尚未实现）`);
+console.log('\n全文抓取进度：');
+for (const r of A(`SELECT f.source_id sid, coalesce(v.fulltext_status,'待抓') st, count(*) c
+                   FROM item_versions v JOIN feed_items f ON f.id=v.item_id
+                   JOIN sources s ON s.id=f.source_id
+                   WHERE s.require_fulltext=1 GROUP BY 1,2 ORDER BY 1,2`))
+  console.log(`  ${r.sid.padEnd(11)}${r.st.padEnd(11)}${r.c}`);
+
+const gain = A(`SELECT f.source_id sid, count(*) n, sum(length(v.clean_text)) ex,
+                       sum(length(v.fulltext_text)) ft
+                FROM item_versions v JOIN feed_items f ON f.id=v.item_id
+                WHERE v.fulltext_status='ok' GROUP BY 1`);
+if (gain.length) {
+  console.log('内容增益（摘要→全文）：');
+  for (const r of gain)
+    console.log(`  ${r.sid.padEnd(11)}${r.n} 条  ${r.ex} → ${r.ft} 字  (${(r.ft / r.ex).toFixed(1)}x)`);
+}
+
+const pres = A(`SELECT prescreen_json p FROM item_versions WHERE prescreen_json IS NOT NULL`);
+const t = { A: 0, B: 0, C: 0, D: 0, none: 0 };
+for (const r of pres) { const c = JSON.parse(r.p); c.length ? c.forEach(x => t[x]++) : t.none++; }
+console.log(`A–D 程序预判：已判定 ${pres.length} 条 → A=${t.A} B=${t.B} C=${t.C} D=${t.D} 无命中=${t.none}`);
 db.close();
