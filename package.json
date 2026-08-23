@@ -7,7 +7,7 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "node tests/window.test.ts && node tests/filters.test.ts && node tests/late-discovery.test.ts && node tests/cluster.test.ts && node tests/provider.test.ts && node tests/triage.test.ts && node tests/review.test.ts && node tests/compose.test.ts && node scripts/test-fingerprint.mjs && node scripts/validate-rules.mjs",
+    "test": "node tests/window.test.ts && node tests/filters.test.ts && node tests/late-discovery.test.ts && node tests/cluster.test.ts && node tests/provider.test.ts && node tests/triage.test.ts && node tests/review.test.ts && node tests/compose.test.ts && node tests/email.test.ts && node tests/delivery.test.ts && node scripts/test-fingerprint.mjs && node scripts/validate-rules.mjs",
     "migrate": "node apps/worker/src/migrate.ts",
     "sync": "node apps/worker/src/sync-sources.ts",
     "harvest": "node apps/worker/src/harvest.ts",
