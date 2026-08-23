@@ -22,7 +22,8 @@
     "admin:setup": "node scripts/admin-setup.mjs",
     "brief": "node apps/worker/src/brief.ts",
     "mail:test": "node scripts/test-mail.mjs",
-    "shadow:report": "node scripts/shadow-report.mjs"
+    "shadow:report": "node scripts/shadow-report.mjs",
+    "reapply": "node apps/worker/src/reapply.ts"
   },
   "keywords": [],
   "author": "",
