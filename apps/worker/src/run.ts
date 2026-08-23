@@ -14,13 +14,13 @@
  */
 import { spawn } from 'node:child_process';
 import { openDb, nowIso, type DB } from '../../../packages/db/src/index.ts';
-import { windowOf, windowFromKey } from '../../../packages/domain/src/normalize.ts';
+import { windowToReport, windowFromKey } from '../../../packages/domain/src/normalize.ts';
 
 const argv = process.argv.slice(2);
 const winArg = argv.includes('--window') ? argv[argv.indexOf('--window') + 1] : null;
 const passThrough = argv.filter(a => ['--no-send', '--shadow', '--regenerate'].includes(a));
 
-const win = winArg && winArg !== 'auto' ? windowFromKey(winArg) : windowOf();
+const win = winArg && winArg !== 'auto' ? windowFromKey(winArg) : windowToReport();
 const db: DB = openDb(process.env.DATABASE_PATH ?? './data/brief.db');
 
 /** 跑一个子步骤，实时透传输出。返回退出码。 */

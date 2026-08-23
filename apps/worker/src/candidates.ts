@@ -10,7 +10,7 @@
  */
 import { openDb, nowIso, type DB } from '../../../packages/db/src/index.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
-import { windowOf, windowFromKey, previousWindows, type Win } from '../../../packages/domain/src/normalize.ts';
+import { windowToReport, windowFromKey, previousWindows, type Win } from '../../../packages/domain/src/normalize.ts';
 import { extractSignals, prescreenMandatory } from '../../../packages/domain/src/signals.ts';
 import { applyDeterministicFilters } from '../../../packages/domain/src/filters.ts';
 import { itemsInWindow, findLateDiscoveries, type ItemRow } from '../../../packages/db/src/queries.ts';
@@ -21,7 +21,7 @@ const winArg = argv.includes('--window') ? argv[argv.indexOf('--window') + 1] : 
 
 const db: DB = openDb(process.env.DATABASE_PATH ?? './data/brief.db');
 const rules = loadRules();
-const win: Win = winArg && winArg !== 'auto' ? windowFromKey(winArg) : windowOf();
+const win: Win = winArg && winArg !== 'auto' ? windowFromKey(winArg) : windowToReport();
 const prev = previousWindows(win, 3);
 
 console.log(`窗口 ${win.key} ${win.label}  [${win.start.toISOString()} → ${win.end.toISOString()})`);
