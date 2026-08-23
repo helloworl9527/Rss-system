@@ -11,7 +11,8 @@
     "migrate": "node apps/worker/src/migrate.ts",
     "sync": "node apps/worker/src/sync-sources.ts",
     "harvest": "node apps/worker/src/harvest.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "status": "node scripts/status.mjs"
   },
   "keywords": [],
   "author": "",
