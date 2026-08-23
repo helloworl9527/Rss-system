@@ -10,6 +10,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { openDb, nowIso, sha256, type DB } from '../../../packages/db/src/index.ts';
+import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
 import { runTriage, type Candidate, type TriageDeps } from '../../../packages/ai/src/triage.ts';
@@ -18,6 +19,10 @@ import type { TriageResult } from '../../../packages/ai/src/schema.ts';
 const argv = process.argv.slice(2);
 const DRY = argv.includes('--dry');
 const runArg = argv.includes('--run') ? Number(argv[argv.indexOf('--run') + 1]) : null;
+
+// 把后台设置的供应商与 API key 注入 env（环境变量优先）
+const vault = hydrateEnv();
+if (vault.error) console.warn(`密钥保管库不可用：${vault.error}`);
 
 const db: DB = openDb(process.env.DATABASE_PATH ?? './data/brief.db');
 const rules = loadRules();

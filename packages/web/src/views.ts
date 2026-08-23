@@ -55,6 +55,7 @@ form.login button{width:100%;padding:9px;background:#1b5fa8;color:#fff;border-co
 .note{background:#fff8e1;border:1px solid #f0e0a8;padding:8px 10px;border-radius:4px;font-size:13px;margin:0 0 12px}
 a{color:#1b5fa8}
 form.inline{display:flex;gap:5px;align-items:center;margin:0}
+form input[type=password],form input[type=text],form input:not([type]){padding:4px 6px;border:1px solid #c5ced6;border-radius:3px;font:inherit;font-size:13px}
 form.inline input[name=reason]{padding:4px 6px;border:1px solid #c5ced6;border-radius:3px;font:inherit;font-size:13px;width:150px}
 form.inline select{padding:4px;border:1px solid #c5ced6;border-radius:3px;font:inherit;font-size:13px}
 form.inline button{padding:4px 10px;font-size:13px}
@@ -75,7 +76,7 @@ export function layout(title: string, body: string, csrf: string): string {
 <title>${esc(title)} · 十六源简报后台</title><style>${CSS}</style></head><body>
 <header>
   <span class="brand">十六源简报</span>
-  <a href="/">仪表盘</a><a href="/sources">来源</a><a href="/runs">运行</a><a href="/audit">审计</a>
+  <a href="/">仪表盘</a><a href="/sources">来源</a><a href="/runs">运行</a><a href="/audit">审计</a><a href="/settings">设置</a>
   <form method="post" action="/logout"><input type="hidden" name="csrf" value="${esc(csrf)}"><button>登出</button></form>
 </header><main>${body}</main></body></html>`;
 }
@@ -231,4 +232,71 @@ export function renderAudit(o: { csrf: string; events: any[] }): string {
         <td class="muted">${esc(String(e.payload_json ?? '').slice(0, 120))}</td></tr>`).join('') + '</table>'
     : '<p class="muted">尚无审计事件。</p>';
   return layout('审计', `<h2>审计事件</h2>${t}`, o.csrf);
+}
+
+const PROVIDERS = [
+  ['mock', 'mock（本地假响应，不花钱）'],
+  ['deepseek', 'DeepSeek'],
+  ['openai', 'OpenAI'],
+  ['qwen', 'Qwen（DashScope 兼容模式）'],
+  ['anthropic', 'Anthropic'],
+  ['gemini', 'Gemini'],
+];
+const KEY_LABEL: Record<string, string> = {
+  OPENAI_API_KEY: 'OpenAI', DEEPSEEK_API_KEY: 'DeepSeek', DASHSCOPE_API_KEY: 'Qwen / DashScope',
+  ANTHROPIC_API_KEY: 'Anthropic', GEMINI_API_KEY: 'Gemini',
+};
+
+export function renderSettings(o: {
+  csrf: string;
+  vaultOk: boolean; vaultReason?: string;
+  secrets: Array<{ name: string; set: boolean; hint: string }>;
+  settings: Record<string, string | undefined>;
+  envOverrides: string[];
+  saved?: string; error?: string;
+}): string {
+  const cur = o.settings.aiProvider ?? 'mock';
+  const providerOpts = PROVIDERS.map(([v, label]) =>
+    `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(label)}</option>`).join('');
+
+  const keyRows = o.secrets.map(k => `<tr>
+    <td>${esc(KEY_LABEL[k.name] ?? k.name)}<div class="muted">${esc(k.name)}</div></td>
+    <td>${k.set ? `<span class="ok">已设置</span> <span class="muted">${esc(k.hint)}</span>` : '<span class="muted">未设置</span>'}</td>
+    <td><form method="post" action="/settings/secret" class="inline">
+      <input type="hidden" name="csrf" value="${esc(o.csrf)}">
+      <input type="hidden" name="name" value="${esc(k.name)}">
+      <input type="password" name="value" placeholder="粘贴新 key（留空则清除）" autocomplete="off" style="width:230px">
+      <button>保存</button>
+    </form></td></tr>`).join('');
+
+  const body = `
+  ${o.saved ? `<div class="note">${esc(o.saved)}</div>` : ''}
+  ${o.error ? `<div class="err">${esc(o.error)}</div>` : ''}
+  ${o.vaultOk ? '' : `<div class="err">密钥保管库不可用：${esc(o.vaultReason ?? '')}<br>
+    需在 /etc/briefing/env 设置 APP_ENCRYPTION_KEY 并重启 brief-web。</div>`}
+  ${o.envOverrides.length ? `<div class="note">以下项被环境变量覆盖，页面上的设置对它们无效：
+    ${o.envOverrides.map(esc).join('、')}</div>` : ''}
+
+  <h2>AI 供应商</h2>
+  <form method="post" action="/settings/ai">
+    <input type="hidden" name="csrf" value="${esc(o.csrf)}">
+    <table><tr><th>层级</th><th>用途</th><th>供应商</th><th>模型 ID</th></tr>
+      <tr><td>L1</td><td class="muted">批量判定，单期约 80 条 —— 花钱大头</td>
+        <td><select name="ai_provider">${providerOpts}</select></td>
+        <td><input name="l1_model" value="${esc(o.settings.l1Model ?? '')}" placeholder="模型 ID" style="width:200px"></td></tr>
+      <tr><td>L2</td><td class="muted">复核，单期最多 5 条</td>
+        <td><input name="l2_provider" value="${esc(o.settings.l2Provider ?? '')}" placeholder="留空则同 L1" style="width:130px"></td>
+        <td><input name="l2_model" value="${esc(o.settings.l2Model ?? '')}" placeholder="留空则同 L1" style="width:200px"></td></tr>
+      <tr><td>L3</td><td class="muted">高风险，单期最多 2 条</td>
+        <td><input name="l3_provider" value="${esc(o.settings.l3Provider ?? '')}" placeholder="留空则同 L1" style="width:130px"></td>
+        <td><input name="l3_model" value="${esc(o.settings.l3Model ?? '')}" placeholder="留空则同 L1" style="width:200px"></td></tr>
+    </table>
+    <p><button ${o.vaultOk ? '' : 'disabled'}>保存供应商设置</button></p>
+  </form>
+
+  <h2>API Key</h2>
+  <p class="muted">加密存于 /var/lib/briefing/secrets.enc（0600），主密钥在 root 控制的
+    /etc/briefing/env 中。页面只显示末四位，任何情况下不回显明文。</p>
+  <table><tr><th>厂商</th><th>状态</th><th>设置</th></tr>${keyRows}</table>`;
+  return layout('设置', body, o.csrf);
 }

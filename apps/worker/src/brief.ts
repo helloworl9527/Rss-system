@@ -11,6 +11,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { openDb, nowIso, type DB } from '../../../packages/db/src/index.ts';
+import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
 import { windowFromKey } from '../../../packages/domain/src/normalize.ts';
 import { clusterCandidates, selectForBrief, type ClusterInput }
@@ -26,6 +27,10 @@ const argv = process.argv.slice(2);
 const NO_SEND = argv.includes('--no-send');
 const SHADOW = argv.includes('--shadow');
 const runArg = argv.includes('--run') ? Number(argv[argv.indexOf('--run') + 1]) : null;
+
+// 把后台设置的供应商与 API key 注入 env（环境变量优先）
+const vault = hydrateEnv();
+if (vault.error) console.warn(`密钥保管库不可用：${vault.error}`);
 
 const db: DB = openDb(process.env.DATABASE_PATH ?? './data/brief.db');
 const rules = loadRules();

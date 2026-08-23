@@ -11,11 +11,13 @@
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
-import { openDb, type DB } from '../../../packages/db/src/index.ts';
+import { openDb, nowIso, type DB } from '../../../packages/db/src/index.ts';
 import { verifyPassword, verifyTotp, SessionStore, csrfOk, LoginLimiter, type Session }
   from '../../../packages/web/src/auth.ts';
 import { renderLogin, renderDashboard, renderSources, renderRuns, renderRunDetail,
-         renderAudit, layout } from '../../../packages/web/src/views.ts';
+         renderAudit, renderSettings, layout } from '../../../packages/web/src/views.ts';
+import { maskedSecrets, setSecret, setSettings, resolveSettings, vaultHealthy,
+         SECRET_NAMES, type SecretName } from '../../../packages/web/src/secrets.ts';
 import { overrideCandidate, toggleSource, planResend, ActionError }
   from '../../../packages/web/src/actions.ts';
 
@@ -268,6 +270,71 @@ app.get<{ Params: { id: string }; Querystring: { to?: string } }>(
   if (!to) return reply.code(400).send({ error: '缺少收件人' });
   const r = handleAction(reply, () => planResend(db, Number(req.params.id), to));
   return r ? r.result : undefined;
+});
+
+// ---------- 设置（AI 供应商与 API Key） ----------
+const envOverrides = () => {
+  const names = ['AI_PROVIDER','AI_L1_MODEL','AI_L2_MODEL','AI_L3_MODEL',
+                 'AI_L2_PROVIDER','AI_L3_PROVIDER', ...SECRET_NAMES];
+  return names.filter(n => !!process.env[n]);
+};
+
+function settingsPage(s: Session, extra: { saved?: string; error?: string } = {}) {
+  const h = vaultHealthy();
+  return renderSettings({
+    csrf: s.csrf, vaultOk: h.ok, vaultReason: h.reason,
+    secrets: maskedSecrets(), settings: resolveSettings() as any,
+    envOverrides: envOverrides(), ...extra,
+  });
+}
+
+app.get('/settings', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  return reply.type('text/html; charset=utf-8').send(settingsPage(s));
+});
+
+app.post('/settings/ai', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  if (!requireWrite(req, reply, s)) return;
+  const b = (req.body ?? {}) as any;
+  try {
+    setSettings({
+      aiProvider: String(b.ai_provider ?? '').trim(),
+      l1Model: String(b.l1_model ?? '').trim(),
+      l2Model: String(b.l2_model ?? '').trim(),
+      l3Model: String(b.l3_model ?? '').trim(),
+      l2Provider: String(b.l2_provider ?? '').trim(),
+      l3Provider: String(b.l3_provider ?? '').trim(),
+    });
+    db.prepare(`INSERT INTO audit_events (entity_type,entity_id,action,payload_json,created_at)
+      VALUES ('settings','ai','ai_settings_updated',?,?)`)
+      .run(JSON.stringify({ provider: b.ai_provider, l1: b.l1_model, actor: 'owner' }), nowIso());
+    return reply.type('text/html; charset=utf-8').send(settingsPage(s, { saved: '供应商设置已保存。worker 下次运行即生效。' }));
+  } catch (e: any) {
+    return reply.code(500).type('text/html; charset=utf-8').send(settingsPage(s, { error: String(e?.message ?? e) }));
+  }
+});
+
+app.post('/settings/secret', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  if (!requireWrite(req, reply, s)) return;
+  const b = (req.body ?? {}) as any;
+  const name = String(b.name ?? '') as SecretName;
+  if (!SECRET_NAMES.includes(name))
+    return reply.code(400).type('text/html; charset=utf-8').send(settingsPage(s, { error: '未知的密钥名' }));
+  try {
+    const val = String(b.value ?? '');
+    setSecret(name, val);
+    // 审计只记「哪个 key 被改了」，绝不记值本身（PRD 19.2）
+    db.prepare(`INSERT INTO audit_events (entity_type,entity_id,action,payload_json,created_at)
+      VALUES ('secret',?,?,?,?)`)
+      .run(name, val.trim() ? 'secret_set' : 'secret_cleared',
+           JSON.stringify({ actor: 'owner', length: val.trim().length }), nowIso());
+    return reply.type('text/html; charset=utf-8')
+      .send(settingsPage(s, { saved: `${name} 已${val.trim() ? '保存' : '清除'}。worker 下次运行即生效。` }));
+  } catch (e: any) {
+    return reply.code(500).type('text/html; charset=utf-8').send(settingsPage(s, { error: String(e?.message ?? e) }));
+  }
 });
 
 app.setErrorHandler((err, req, reply) => {
