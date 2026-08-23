@@ -47,8 +47,11 @@ export type BriefData = {
    * 稳定运行后可通过 BRIEF_EVAL_APPENDIX=false 关闭。
    */
   evalAppendix?: {
-    filtered: Array<{ title: string; source: string; url: string | null; reason: string }>;
-    pending: Array<{ title: string; source: string; url: string | null; reason: string }>;
+    /** ref 是可引用编号（如 c123）—— 人工回复「保留 c123 c145」即可精确定位 */
+    filtered: Array<{ ref: string; title: string; source: string; url: string | null; reason: string }>;
+    pending: Array<{ ref: string; title: string; source: string; url: string | null; reason: string }>;
+    /** 附录被截断时的说明 */
+    truncatedNote?: string | null;
   } | null;
 };
 
@@ -88,6 +91,7 @@ const C = {
   accent: '#1c5fa8',
   accentSoft: '#e7eef7',
   auditBg: '#f5f7f9',
+  warn: '#8a5a00',
 };
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif";
 
@@ -251,7 +255,11 @@ export function renderHtml(d: BriefData): string {
   if (ea && (ea.filtered.length || ea.pending.length)) {
     const list = (rows: typeof ea.filtered) => rows.map(x => {
       const u = safeUrl(x.url);
-      return `<tr><td style="padding:0 0 8px;font-size:13px;line-height:1.6;">
+      return `<tr>
+        <td valign="top" style="padding:0 8px 8px 0;font-size:12px;line-height:1.6;
+          color:${C.accent};font-family:ui-monospace,Menlo,Consolas,monospace;
+          white-space:nowrap;">${esc(x.ref)}</td>
+        <td style="padding:0 0 8px;font-size:13px;line-height:1.6;">
         <span style="color:${C.ink};">${esc(x.title)}</span>
         ${u ? ` <a href="${esc(u)}" style="color:${C.accent};text-decoration:none;">原文</a>` : ''}
         <div style="color:${C.muted};font-size:12.5px;">${esc(x.source)} · ${esc(x.reason)}</div>
@@ -266,7 +274,10 @@ export function renderHtml(d: BriefData): string {
         <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;
           color:${C.muted};font-weight:700;">评估附录 · 影子运行期</div>
         <div style="margin:6px 0 0;font-size:12.5px;color:${C.faint};line-height:1.6;">
-          以下条目未进入正文。若你认为其中有该收录的，说明筛选规则需要调整。</div>
+          以下条目未进入正文。若你认为其中有该收录的，回复左侧编号即可
+          （例如「保留 c123 c145」），这些反馈会成为评估基线，用于校准筛选规则。</div>
+        ${ea.truncatedNote ? `<div style="margin:6px 0 0;font-size:12.5px;color:${C.warn ?? C.muted};">
+          ${esc(ea.truncatedNote)}</div>` : ''}
         ${ea.filtered.length ? sub('已过滤', ea.filtered.length) +
           `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${list(ea.filtered)}</table>` : ''}
         ${ea.pending.length ? sub('待复核（名额不足或需人工）', ea.pending.length) +
@@ -312,18 +323,19 @@ export function renderText(d: BriefData): string {
   const ea = d.evalAppendix;
   if (ea && (ea.filtered.length || ea.pending.length)) {
     L.push('【评估附录 · 影子运行期】');
-    L.push('以下条目未进入正文。若认为其中有该收录的，说明筛选规则需要调整。');
+    L.push('以下条目未进入正文。若认为其中有该收录的，回复左侧编号即可（例如「保留 c123 c145」）。');
+    if (ea.truncatedNote) L.push(ea.truncatedNote);
     if (ea.filtered.length) {
       L.push(`— 已过滤（${ea.filtered.length}）`);
       for (const x of ea.filtered) {
-        L.push(`  ${x.title}`);
+        L.push(`  [${x.ref}] ${x.title}`);
         L.push(`    ${x.source} · ${x.reason}${safeUrl(x.url) ? ' ' + safeUrl(x.url) : ''}`);
       }
     }
     if (ea.pending.length) {
       L.push(`— 待复核（${ea.pending.length}）`);
       for (const x of ea.pending) {
-        L.push(`  ${x.title}`);
+        L.push(`  [${x.ref}] ${x.title}`);
         L.push(`    ${x.source} · ${x.reason}${safeUrl(x.url) ? ' ' + safeUrl(x.url) : ''}`);
       }
     }

@@ -181,16 +181,26 @@ const sourceIssues = (db.prepare(`SELECT id, health, last_error, consecutive_fai
                status: s.health === 'failing' ? '抓取失败' : '来源异常',
                detail: `${String(s.last_error ?? '').slice(0, 80)}（连续 ${s.consecutive_failures} 次）` }));
 
-// 评估附录（影子运行期默认开启，稳定后可用 BRIEF_EVAL_APPENDIX=false 关闭）
+/**
+ * 评估附录（影子运行期默认开启，稳定后可用 BRIEF_EVAL_APPENDIX=false 关闭）。
+ *
+ * 全量列出被过滤与待复核的条目，每条带可引用编号（c<候选ID>）。
+ * 人工回复「保留 c123 c145」后用 scripts/golden-mark.mjs 写入黄金集，
+ * 这些标注就是 PRD 24.1「强制保留召回率 ≥98%」的评估基线 ——
+ * 在有黄金集之前，召回率无从验证。
+ */
 const wantAppendix = (process.env.BRIEF_EVAL_APPENDIX ?? 'true') !== 'false';
-const brief_ = (r: Row, reason: string) =>
-  ({ title: r.title, source: r.source_id, url: r.url, reason });
-const evalAppendix = wantAppendix ? {
-  filtered: rows.filter(r => r.decision === 'filter')
-    .map(r => brief_(r, r.filter_reason ?? r.filter_rule_id ?? '未记录原因')).slice(0, 40),
-  pending: rows.filter(r => r.decision === 'escalate')
-    .map(r => brief_(r, '待复核：名额不足或需人工判断')).slice(0, 40),
-} : null;
+const entry = (r: Row, reason: string) =>
+  ({ ref: `c${r.cid}`, title: r.title, source: r.source_id, url: r.url, reason });
+
+let evalAppendix: BriefData['evalAppendix'] = null;
+if (wantAppendix) {
+  const allFiltered = rows.filter(r => r.decision === 'filter')
+    .map(r => entry(r, r.filter_reason ?? r.filter_rule_id ?? '未记录原因'));
+  const allPending = rows.filter(r => r.decision === 'escalate')
+    .map(r => entry(r, '待复核：名额不足或需人工判断'));
+  evalAppendix = { filtered: allFiltered, pending: allPending, truncatedNote: null };
+}
 
 const data: BriefData = {
   date: run.window_key.slice(0, 10),
@@ -215,7 +225,38 @@ const data: BriefData = {
 };
 
 // ---------- 5. 渲染与校验 ----------
-const html = renderHtml(data), text = renderText(data), subject = subjectOf(data);
+/**
+ * 渲染并保证不超体积。
+ * Gmail 在约 100 KB 处截断，超了会把正文尾部连同审计区一起吃掉。
+ * 附录是辅助信息，正文与审计区是主体 —— 超限时只裁附录，
+ * 并在邮件里说明被裁掉多少、去哪里看全量（后台运行详情页）。
+ */
+function renderWithinLimit(d: BriefData) {
+  const cap = (rules.brief?.email?.html_size_max_kb ?? 100) * 1024;
+  let html = renderHtml(d), text = renderText(d);
+  if (!d.evalAppendix || Buffer.byteLength(html, 'utf8') <= cap * 0.92)
+    return { html, text, trimmed: 0 };
+
+  const all = [...d.evalAppendix.filtered];
+  const pend = [...d.evalAppendix.pending];
+  let keepF = all.length, keepP = pend.length, trimmed = 0;
+  // 先裁待复核（正文里已按判定分组可查），再裁已过滤
+  while (Buffer.byteLength(html, 'utf8') > cap * 0.92 && (keepF > 0 || keepP > 0)) {
+    if (keepP > 0) keepP = Math.max(0, keepP - 5); else keepF = Math.max(0, keepF - 5);
+    trimmed = (all.length - keepF) + (pend.length - keepP);
+    d.evalAppendix = {
+      filtered: all.slice(0, keepF), pending: pend.slice(0, keepP),
+      truncatedNote: `为控制邮件体积，附录省略了 ${trimmed} 条；` +
+        `全量可在后台运行详情页查看（run #${run.id}）。`,
+    };
+    html = renderHtml(d); text = renderText(d);
+  }
+  return { html, text, trimmed };
+}
+
+const { html, text, trimmed } = renderWithinLimit(data);
+const subject = subjectOf(data);
+if (trimmed) console.log(`⚠️  附录省略 ${trimmed} 条以控制邮件体积`);
 const errs = checkEmail(html, text);
 if (errs.length) {
   console.error('❌ 邮件校验未通过，拒绝发送：');
