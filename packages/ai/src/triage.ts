@@ -56,6 +56,8 @@ export type TriageDeps = {
   cachedByHash?: Map<string, TriageResult>;
   /** 高风险关键词与重大新闻类型，来自 rules.yaml */
   highRiskKeywords?: string[];
+  /** 带守卫的高风险判定；未提供时退回裸关键词匹配 */
+  isHighRisk?: (text: string) => boolean;
   majorNewsTypes?: string[];
   onUsage?: (u: CompleteResult['usage'], model: string) => void;
 };
@@ -107,7 +109,10 @@ export function decideEscalation(
 
   if (c.prescreenClasses.length > 0 && r.decision === 'filter') rules.push('ESC-005');
   if (r.confidence < 0.75) rules.push('ESC-001');
-  if ((deps.highRiskKeywords ?? []).some(k => hay.includes(k))) rules.push('ESC-002');
+  // 用带守卫的匹配替代裸 includes —— 实测裸匹配 7 条命中里 6 条是误伤
+  // （「量化」← 轻量化控制、「币」← 港币、「试验」← 试验品阶段）
+  if (deps.isHighRisk ? deps.isHighRisk(hay)
+      : (deps.highRiskKeywords ?? []).some(k => hay.includes(k))) rules.push('ESC-002');
   if ((deps.majorNewsTypes ?? []).some(k => hay.includes(k))) rules.push('ESC-003');
   if (r.decision === 'escalate') rules.push('ESC-MODEL');
   if (r.escalation_reasons?.length) rules.push('ESC-MODEL');

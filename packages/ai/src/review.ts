@@ -89,6 +89,8 @@ export type ReviewDeps = {
   bodyCharsMax: number;
   /** 高风险关键词，用于 ESC-102 与优先级排序 */
   highRiskKeywords?: string[];
+  /** 带守卫的高风险判定；未提供时退回裸关键词匹配 */
+  isHighRisk?: (text: string) => boolean;
   onUsage?: (tier: 'L2' | 'L3', u: CompleteResult['usage'], model: string) => void;
 };
 
@@ -109,11 +111,14 @@ const estTokens = (s: string) => Math.ceil(s.length / 2.2);
  * 这是唯一可能造成「该收录却漏掉」的情形，而漏项是本系统最难
  * 事后发现的失败（PRD 24.1 要求召回率 ≥98%）。宁可挤掉低置信条目。
  */
-export function priorityOf(c: ReviewInput, highRisk: string[] = []): number {
+export function priorityOf(
+  c: ReviewInput, highRisk: string[] = [], isHighRisk?: (t: string) => boolean,
+): number {
   if (c.escalationRules.includes('ESC-005')) return 0;   // 可能漏掉强制保留项
   if (c.prescreenClasses.length > 0) return 1;           // 其他强制保留候选
   const hay = `${c.title}\n${c.body}`;
-  if (highRisk.some(k => hay.includes(k))) return 2;     // 高风险领域
+  const risky = isHighRisk ? isHighRisk(hay) : highRisk.some(k => hay.includes(k));
+  if (risky) return 2;                                   // 高风险领域
   if (c.escalationRules.includes('ESC-003')) return 3;   // 重大新闻
   if (c.escalationRules.includes('ESC-004')) return 4;   // 来源冲突
   return 5;                                              // 低置信等
@@ -122,12 +127,14 @@ export function priorityOf(c: ReviewInput, highRisk: string[] = []): number {
 /** L2 → L3 升级判定（rules.yaml escalation.l2_to_l3）。 */
 export function shouldPromoteToL3(
   c: ReviewInput, r: ReviewResult, highRisk: string[] = [],
+  isHighRisk?: (t: string) => boolean,
 ): { promote: boolean; rules: string[] } {
   const rules: string[] = [];
   if (r.conflicts.length > 0) rules.push('ESC-101');      // 复核后仍存冲突
   const hay = `${c.title}\n${c.body}`;
   const hasNumbers = /\d+(\.\d+)?\s*(%|％|倍|万|亿|美元|元|人|例)/.test(hay);
-  if (highRisk.some(k => hay.includes(k)) && hasNumbers) rules.push('ESC-102');
+  const risky = isHighRisk ? isHighRisk(hay) : highRisk.some(k => hay.includes(k));
+  if (risky && hasNumbers) rules.push('ESC-102');
   if (r.needs_higher_tier) rules.push('ESC-103');
   return { promote: rules.length > 0, rules: [...new Set(rules)] };
 }
@@ -186,7 +193,7 @@ async function reviewOne(
     }
     // L2 才判断是否上 L3；L3 之后不再升级（PRD 15.1）
     const p = tier === 'L2'
-      ? shouldPromoteToL3(c, r, deps.highRiskKeywords)
+      ? shouldPromoteToL3(c, r, deps.highRiskKeywords, deps.isHighRisk)
       : { promote: false, rules: [] };
     return { candidateId: c.candidateId, tier, result: r, status: 'ok',
              promote: p.promote, promoteRules: p.rules, attempts, responseId: res.responseId };
@@ -202,8 +209,9 @@ export async function runReview(inputs: ReviewInput[], deps: ReviewDeps): Promis
   const l3Used = { items: 0, input: 0, output: 0 };
   const deferred: string[] = [];
 
-  const queue = [...inputs].sort(
-    (a, b) => priorityOf(a, deps.highRiskKeywords) - priorityOf(b, deps.highRiskKeywords));
+  const queue = [...inputs].sort((a, b) =>
+    priorityOf(a, deps.highRiskKeywords, deps.isHighRisk) -
+    priorityOf(b, deps.highRiskKeywords, deps.isHighRisk));
 
   const promoted: ReviewInput[] = [];
   for (const c of queue) {

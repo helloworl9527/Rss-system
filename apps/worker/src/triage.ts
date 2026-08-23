@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { openDb, nowIso, sha256, type DB } from '../../../packages/db/src/index.ts';
 import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
+import { isHighRisk } from '../../../packages/domain/src/risk.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
 import { runTriage, type Candidate, type TriageDeps } from '../../../packages/ai/src/triage.ts';
 import type { TriageResult } from '../../../packages/ai/src/schema.ts';
@@ -108,7 +109,7 @@ const deps: TriageDeps = {
     bodyCharsMax: rules.ai?.input_minimization?.body_chars_max ?? 8000,
   },
   cachedByHash,
-  highRiskKeywords: (rules.high_risk?.domains ?? []).flatMap((d: any) => d.keywords ?? []),
+  isHighRisk,
   majorNewsTypes: rules.major_news_types ?? [],
 };
 
