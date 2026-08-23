@@ -21,7 +21,11 @@ export type Fault =
   | 'none' | 'invalid_json' | 'schema_violation' | 'refusal'
   | 'rate_limited' | 'timeout' | 'truncated' | 'server_error'
   /** 强制保留预判命中，模型却判为过滤 —— 触发 ESC-005 的场景 */
-  | 'wrong_filter';
+  | 'wrong_filter'
+  /** 复核层发现来源冲突 → 应升级到 L3 */
+  | 'conflict'
+  /** 模型把 candidate_id 写错 —— 串号检测 */
+  | 'wrong_id';
 
 export class MockProvider implements Provider {
   readonly name = 'mock' as const;
@@ -79,6 +83,7 @@ export class MockProvider implements Provider {
 
 /** 依据请求里的候选，合成一份形状正确的响应。 */
 function synth(req: CompleteRequest, fault: Fault): unknown {
+  if (req.schemaName === 'review') return synthReview(req, fault);
   let payload: any = {};
   try { payload = JSON.parse(req.userContent); } catch { /* 非 JSON 用空对象 */ }
   const items: any[] = Array.isArray(payload.candidates) ? payload.candidates : [payload];
@@ -111,4 +116,34 @@ export function recordResponse(dir: string, req: CompleteRequest, res: CompleteR
   const key = createHash('sha256')
     .update(req.systemPrompt + ' ' + req.userContent).digest('hex').slice(0, 32);
   writeFileSync(join(dir, key + '.json'), JSON.stringify(res, null, 2));
+}
+
+/** 复核层响应（单对象，非 results 数组）。 */
+function synthReview(req: CompleteRequest, fault: Fault): unknown {
+  let c: any = {};
+  try { c = JSON.parse(req.userContent); } catch { /* 忽略 */ }
+  const pre: string[] = c?.rule_prescreen?.mandatory_classes ?? [];
+  const rules: string[] = c?.escalation_rules ?? [];
+  const hasSiblings = Array.isArray(c?.siblings) && c.siblings.length > 0;
+
+  const base = {
+    candidate_id: c?.candidate_id ?? 'unknown',
+    // ESC-005 的默认行为：推翻 L1 的过滤判定，恢复强制保留
+    decision: pre.length ? 'retain' : 'normal',
+    mandatory_class: pre[0] ?? 'none',
+    section: 'ai_tech',
+    event_key: 'mock-evt-' + (c?.candidate_id ?? 'x'),
+    confidence: 0.91,
+    filter_reason: null,
+    conflicts: hasSiblings && fault === 'conflict' ? ['A 源称 8 月 20 日，B 源称 8 月 22 日'] : [],
+    source_limitations: [] as string[],
+    needs_higher_tier: fault === 'conflict',
+    higher_tier_reasons: fault === 'conflict' ? ['关键日期存在冲突'] : [],
+    conclusion: '这是一句话结论。',
+    summary_sentences: ['第一句摘要。', '第二句摘要。'],
+  };
+  void rules;
+  if (fault === 'schema_violation') return { ...base, decision: 'MAYBE', confidence: '很高' };
+  if (fault === 'wrong_id') return { ...base, candidate_id: 'WRONG-ID' };
+  return base;
 }
