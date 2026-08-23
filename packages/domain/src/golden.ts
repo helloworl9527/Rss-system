@@ -47,8 +47,6 @@ export type Predicted = {
   filterRuleId?: string | null;
   eventKey?: string | null;
   summary?: string | null;
-  inputTokens?: number;
-  outputTokens?: number;
 };
 
 export type Metrics = {
@@ -67,8 +65,6 @@ export type Metrics = {
   /** 摘要事实一致性：mustMention 覆盖率 */
   factConsistency: number;
   factMisses: string[];
-  avgInputTokens: number;
-  avgOutputTokens: number;
 };
 
 export function loadGolden(path: string): GoldenSample[] {
@@ -144,10 +140,6 @@ export function evaluate(samples: GoldenSample[], predicted: Predicted[]): Metri
     }
   }
 
-  const toks = predicted.filter(p => p.inputTokens != null);
-  const avg = (f: (p: Predicted) => number) =>
-    toks.length ? Math.round(toks.reduce((a, p) => a + f(p), 0) / toks.length) : 0;
-
   return {
     sampleCount: samples.length,
     mandatoryRecall: mandatorySamples.length ? recovered / mandatorySamples.length : 1,
@@ -159,8 +151,6 @@ export function evaluate(samples: GoldenSample[], predicted: Predicted[]): Metri
     clusterErrors: clusterErrors.slice(0, 20),
     factConsistency: factTotal ? factHits / factTotal : 1,
     factMisses: factMisses.slice(0, 20),
-    avgInputTokens: avg(p => p.inputTokens ?? 0),
-    avgOutputTokens: avg(p => p.outputTokens ?? 0),
   };
 }
 
@@ -208,7 +198,6 @@ export function formatReport(m: Metrics, g: Gate): string {
     `  分类准确率       ${pct(m.classAccuracy)}`,
     `  事件聚类准确率   ${pct(m.clusterAccuracy)}`,
     `  摘要事实一致性   ${pct(m.factConsistency)}`,
-    `  平均 token       输入 ${m.avgInputTokens} / 输出 ${m.avgOutputTokens}`,
   ];
   if (m.mandatoryRecallDetail.missed.length)
     L.push(`  漏掉的强制保留项: ${m.mandatoryRecallDetail.missed.join(', ')}`);

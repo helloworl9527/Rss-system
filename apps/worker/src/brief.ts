@@ -131,8 +131,7 @@ const composed = composeInputs.length
 const copy = new Map(composed.outcomes.filter(o => o.result).map(o => [o.candidateId, o.result!]));
 const composeFailed = composed.outcomes.filter(o => !o.result);
 if (composed.calls)
-  console.log(`文案：调用 ${composed.calls} 次，输入 ${composed.usedInput} / 输出 ${composed.usedOutput} token` +
-              `，复用 ${composed.outcomes.filter(o => o.status === 'reused').length} 条`);
+  console.log(`文案：调用 ${composed.calls} 次，复用 ${composed.outcomes.filter(o => o.status === 'reused').length} 条`);
 if (composeFailed.length) console.log(`⚠️  ${composeFailed.length} 条文案生成失败，已从简报中剔除并转人工`);
 
 // ---------- 4. 组装 BriefData ----------

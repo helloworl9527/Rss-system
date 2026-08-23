@@ -180,7 +180,6 @@ export function renderDashboard(o: {
     <div class="card"><div class="n">${esc(s.items)}</div><div class="l">条目</div></div>
     <div class="card"><div class="n">${esc(s.versions)}</div><div class="l">版本</div></div>
     <div class="card"><div class="n">${esc(s.candidates)}</div><div class="l">候选</div></div>
-    <div class="card"><div class="n">${esc(s.evaluations)}</div><div class="l">AI 判定</div></div>
   </div>
   ${bad.length ? `<div class="note">${bad.length} 个来源处于降级或失败状态：${bad.map(b => esc(b.id)).join('、')}</div>` : ''}
   ${s.pendingFulltext ? `<div class="note">待抓原帖全文 ${esc(s.pendingFulltext)} 条</div>` : ''}

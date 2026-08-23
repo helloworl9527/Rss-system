@@ -51,23 +51,19 @@ if (ALL && conf < samples.length)
               '「模型是否与确定性预判一致」，不是真实召回率。它能抓出模型\n' +
               '推翻硬证据的情形（主要漏项风险），但无法验证预判本身是否正确。\n');
 
-const usage = [];
 const rep = await runTriage(cands, {
   provider, systemPrompt: prompt,
   budget: { inputTokensMax: 1e9, outputTokensMax: 1e9, batchSize: 8, bodyCharsMax: 6000 },
   highRiskKeywords: (rules.high_risk?.domains ?? []).flatMap(d => d.keywords ?? []),
   majorNewsTypes: rules.major_news_types ?? [],
-  onUsage: u => usage.push(u),
 });
 
-const perCall = rep.calls ? { i: Math.round(rep.usedInputTokens/rep.calls), o: Math.round(rep.usedOutputTokens/rep.calls) } : { i:0, o:0 };
 const predicted = rep.outcomes.map(o => ({
   id: o.candidateId,
   decision: o.escalate ? 'escalate' : (o.result?.decision ?? 'escalate'),
   mandatoryClass: o.result?.mandatory_class ?? 'none',
   eventKey: o.result?.event_key ?? null,
   summary: null,
-  inputTokens: perCall.i, outputTokens: perCall.o,
 }));
 
 const m = evaluate(samples, predicted);

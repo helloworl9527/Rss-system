@@ -132,7 +132,7 @@ if (!DRY) {
     for (const o of report.outcomes) {
       const cid = Number(o.candidateId.slice(1));
       insEval.run(cid, provider.model, promptVersion, o.responseId ?? null,
-        o.usage?.inputTokens ?? null, o.usage?.outputTokens ?? null,
+        null, null,
         o.result ? JSON.stringify(o.result) : JSON.stringify({ error: o.error }),
         o.escalationRules.length ? JSON.stringify(o.escalationRules) : null,
         o.result?.confidence ?? null, nowIso());
@@ -154,9 +154,7 @@ if (!DRY) {
 
 // ---- 报告 ----
 const by = (s: string) => report.outcomes.filter(o => o.status === s).length;
-console.log(`调用 ${report.calls} 次 | 输入 ${report.usedInputTokens} / ${deps.budget.inputTokensMax} token` +
-            ` | 输出 ${report.usedOutputTokens} / ${deps.budget.outputTokensMax}` +
-            (report.budgetStopped ? '  ⏸ 预算熔断' : ''));
+console.log(`调用 ${report.calls} 次` + (report.budgetStopped ? '  ⏸ 已达上限，剩余转人工' : ''));
 console.log(`结果：模型判定 ${by('ok')} | 指纹复用 ${by('reused')} | 转人工 ${by('manual_audit')} | 预算跳过 ${by('skipped')}`);
 
 const dec: Record<string, number> = {};

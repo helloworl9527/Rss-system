@@ -167,7 +167,6 @@ const q = {
     items: (db.prepare('SELECT count(*) c FROM feed_items').get() as any).c,
     versions: (db.prepare('SELECT count(*) c FROM item_versions').get() as any).c,
     candidates: (db.prepare('SELECT count(*) c FROM candidates').get() as any).c,
-    evaluations: (db.prepare('SELECT count(*) c FROM evaluations').get() as any).c,
     deliveries: db.prepare(`SELECT status, count(*) c FROM deliveries GROUP BY 1`).all(),
     pendingFulltext: (db.prepare(`SELECT count(*) c FROM item_versions v
       JOIN feed_items f ON f.id=v.item_id JOIN sources s ON s.id=f.source_id

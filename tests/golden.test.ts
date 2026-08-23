@@ -106,10 +106,10 @@ console.log('\n只有人工确认的样本计入回归：\n');
 console.log('\n报告可读性：\n');
 {
   const s = [g('a',{decision:'retain',mandatoryClass:'A'})];
-  const m = evaluate(s, [p('a',{decision:'filter',inputTokens:600,outputTokens:80})]);
+  const m = evaluate(s, [p('a',{decision:'filter'})]);
   const r = formatReport(m, checkGate(m));
   ok('报告含各项指标与阻断结论',
-     r.includes('强制保留召回率') && r.includes('平均 token') && r.includes('阻断发布'));
+     r.includes('强制保留召回率') && r.includes('事实一致性') && r.includes('阻断发布'));
 }
 
 console.log(fail ? `\n❌ ${fail} 项失败` : '\n✅ 全部通过');

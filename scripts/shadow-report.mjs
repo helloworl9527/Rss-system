@@ -3,7 +3,7 @@
  * 影子运行日报（PRD 25.5 / 24.2）。
  *   node scripts/shadow-report.mjs [--days 7]
  *
- * 回答四个问题：采集稳不稳、判定合不合理、漏没漏项、花了多少钱。
+ * 回答三个问题：采集稳不稳、判定合不合理、漏没漏项。
  */
 import { openDb } from '../packages/db/src/index.ts';
 
@@ -65,16 +65,7 @@ const manual = G(`SELECT count(*) c FROM audit_events
   WHERE action IN ('ai_manual_audit','budget_skipped') AND created_at > datetime('now', ?)`, since);
 console.log(`  转人工审计：${manual.c} 条`);
 
-// ---- 5. 成本 ----
-console.log('\n【AI 用量】');
-const ev = A(`SELECT stage, model, count(*) n, sum(input_tokens) i, sum(output_tokens) o
-  FROM evaluations WHERE created_at > datetime('now', ?) GROUP BY 1,2`, since);
-if (!ev.length) console.log('  尚无 AI 调用记录');
-for (const e of ev)
-  console.log(`  ${String(e.stage).padEnd(7)} ${String(e.model ?? '').padEnd(22)} ${String(e.n).padStart(4)} 次` +
-              `  输入 ${e.i ?? 0}  输出 ${e.o ?? 0}`);
-
-// ---- 6. 投递 ----
+// ---- 5. 投递 ----
 console.log('\n【投递】');
 const dl = A(`SELECT delivery_type t, status, count(*) c FROM deliveries
   WHERE created_at > datetime('now', ?) GROUP BY 1,2`, since);
