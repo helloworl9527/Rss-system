@@ -7,7 +7,7 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "node tests/window.test.ts && node tests/filters.test.ts && node tests/late-discovery.test.ts && node scripts/test-fingerprint.mjs && node scripts/validate-rules.mjs",
+    "test": "node tests/window.test.ts && node tests/filters.test.ts && node tests/late-discovery.test.ts && node tests/provider.test.ts && node scripts/test-fingerprint.mjs && node scripts/validate-rules.mjs",
     "migrate": "node apps/worker/src/migrate.ts",
     "sync": "node apps/worker/src/sync-sources.ts",
     "harvest": "node apps/worker/src/harvest.ts",
@@ -28,5 +28,8 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2"
+  },
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.120.0"
   }
 }
