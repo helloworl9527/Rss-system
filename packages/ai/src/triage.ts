@@ -187,7 +187,9 @@ async function callBatch(
         userContent,
         schema: TRIAGE_SCHEMA,
         schemaName: 'triage',
-        maxOutputTokens: Math.max(256, batch.length * 90),
+        // 实测每条判定结果约 200 输出 token（10 个字段的 JSON），
+        // 原按 90 估算导致 8 条一批被截断、返回空串。留 30% 余量。
+        maxOutputTokens: Math.max(512, batch.length * 260),
         cachePrefix: true,
       });
     } catch (e) {

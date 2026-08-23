@@ -78,9 +78,17 @@ export class OpenAICompatProvider implements Provider {
     const choice = j.choices?.[0];
     const text = choice?.message?.content ?? '';
 
+    // 截断要与"模型乱回"区分开：前者应缩短输入重试，后者是提示词问题
+    if (choice?.finish_reason === 'length')
+      throw new ProviderError('bad_request',
+        `输出被 max_tokens 截断（已生成 ${j.usage?.completion_tokens ?? '?'} token）—— 需要提高输出上限或减小批量`);
+
     let data: unknown;
     try { data = JSON.parse(text); }
-    catch { throw new ProviderError('bad_request', `响应不是合法 JSON（前 200 字）: ${String(text).slice(0, 200)}`); }
+    catch {
+      const hint = text ? `（前 200 字）: ${String(text).slice(0, 200)}` : '（响应体为空）';
+      throw new ProviderError('bad_request', `响应不是合法 JSON${hint}`);
+    }
 
     const u = j.usage ?? {};
     return {
