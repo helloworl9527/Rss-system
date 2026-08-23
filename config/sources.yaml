@@ -233,6 +233,9 @@ sources:
       - { url: "https://api-docs.deepseek.com/zh-cn/updates/", parser: deepseek_page, priority: 1 }
     # 只有日期无时分 → 以首次发现时间归入当前窗口（PRD 5.4）
     date_only_policy: use_discovery_time
+    # 更新日志页含全部历史条目，超 90 天的标 stale 而非 source_anomaly，
+    # 避免审计区每天固定显示十几条「来源异常」而被忽略
+    historical_archive: true
     # HTML 页面，无 <item> 结构，探测脚本的 items 计数不适用（显示 0 属正常）
     probe: { date: "2026-08-23", status: 200, items_na: true, bytes: 46433, latency_s: 0.43 }
 

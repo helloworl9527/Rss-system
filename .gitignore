@@ -6,3 +6,5 @@ dist/
 !.env.example
 data/
 tests/golden/seed.json
+data/
+tests/fixtures/*.html
