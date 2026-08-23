@@ -152,6 +152,24 @@ console.log('\n失败路径：\n');
   ok('L2 判定仍完整保留', r.outcomes.filter(o => o.tier === 'L2' && o.status === 'ok').length === 3);
 }
 
+console.log('\n名额不足的候选必须保持待复核状态（PRD 15.5）：\n');
+{
+  // 真实运行踩过的坑：给 skipped 项也写 evaluations，会让待复核查询
+  // （NOT EXISTS terra/sol）把它们当成已复核，从此永远轮不到 —— 与
+  // 「延迟到人工审阅」的意图相反，实为静默丢弃。
+  const l2 = fake((req) => reply({}, idOf(req)));
+  const d = deps(l2, fake(() => reply()));
+  d.l2.budget.maxItems = 1;
+  const r = await runReview([inp('a'), inp('b'), inp('c')], d);
+  const skipped = r.outcomes.filter(o => o.status === 'skipped');
+  ok('超额的标为 skipped 而非 manual_audit', skipped.length === 2);
+  ok('skipped 项没有 result（未被复核过）', skipped.every(o => o.result === null));
+  ok('skipped 项带明确原因', skipped.every(o => !!o.error && o.error.includes('名额')));
+  ok('deferred 列出全部被推迟的候选',
+     r.deferred.length === 2 && skipped.every(o => r.deferred.includes(o.candidateId)));
+  ok('已复核的那条有完整结果', r.outcomes.filter(o => o.status === 'ok').length === 1);
+}
+
 console.log('\nSchema 形状：\n');
 {
   const req = REVIEW_SCHEMA as any;
