@@ -125,7 +125,7 @@ async function composeBatch(
       res = await deps.provider.complete({
         systemPrompt: deps.systemPrompt, userContent,
         schema: COMPOSE_SCHEMA, schemaName: 'compose',
-        maxOutputTokens: Math.min(deps.outputTokensMax, batch.length * 320),
+        maxOutputTokens: Math.min(deps.outputTokensMax, Math.max(2000, batch.length * 1200)),
         cachePrefix: true,
       });
     } catch (e) {

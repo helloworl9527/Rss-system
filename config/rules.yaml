@@ -870,13 +870,14 @@ ai:
     on_final_failure: manual_audit   # 不得静默丢弃（FR-044）
 
   budget_per_run:
-    # 【实测校准，2026-08-23，DeepSeek】
-    # PRD 15.5 给的 8000 输出上限是估算值。实测单条判定结果约 200 输出
-    # token（Schema 有 10 个字段），80 条候选需约 16000 —— 原值不现实。
-    # 输入侧实测 617 token/条，80 条约 49000，与 PRD 的 50000 基本吻合。
+    # 【实测校准，2026-08-23，DeepSeek deepseek-v4-flash】
+    # 用真实候选实测：8 条一批输入 6252、输出 3956 token（每条约 495，
+    # 含模型推理过程）。注意别拿短填充内容测 —— 那种只需 105/条，
+    # 会严重低估。80 条候选按此推算输出约 40000。
+    # 输入侧每条约 780，80 条约 62000，高于 PRD 15.5 的 50000 估值。
     luna:
-      input_tokens_max: 50000
-      output_tokens_max: 20000
+      input_tokens_max: 70000
+      output_tokens_max: 45000
     terra:
       max_items: 5
       input_tokens_max: 25000

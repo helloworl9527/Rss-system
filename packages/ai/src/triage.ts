@@ -187,9 +187,12 @@ async function callBatch(
         userContent,
         schema: TRIAGE_SCHEMA,
         schemaName: 'triage',
-        // 实测每条判定结果约 200 输出 token（10 个字段的 JSON），
-        // 原按 90 估算导致 8 条一批被截断、返回空串。留 30% 余量。
-        maxOutputTokens: Math.max(512, batch.length * 260),
+        // max_tokens 是安全上限，不是花费承诺 —— 只按实际生成量计费，
+        // 设高不额外花钱。此前把它当预算抠（90 → 260/条），两次都被
+        // 真实内容撑爆并整批失败。实测真实候选每条约 500 输出 token
+        // （含模型推理过程，短填充内容只需 105，不能拿它当基准），
+        // 这里按 900/条留足两倍余量，宁可设高也不要截断。
+        maxOutputTokens: Math.max(2000, batch.length * 900),
         cachePrefix: true,
       });
     } catch (e) {

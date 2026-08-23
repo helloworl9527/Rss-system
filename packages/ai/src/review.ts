@@ -164,7 +164,8 @@ async function reviewOne(
         userContent: buildUserContent(c, chars),
         schema: REVIEW_SCHEMA,
         schemaName: 'review',
-        maxOutputTokens: Math.min(budget.outputTokensMax, tier === 'L3' ? 1500 : 1000),
+        // 同 triage：上限设高不花钱，截断则整条失败（见 triage.ts 注释）
+        maxOutputTokens: Math.min(budget.outputTokensMax, tier === 'L3' ? 4000 : 3000),
         cachePrefix: true,
       });
     } catch (e) {
