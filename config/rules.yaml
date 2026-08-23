@@ -387,6 +387,8 @@ official_domains:
 #    注意：所有规则对「强制保留候选」的作用见 8.2 的 applies_to。
 # ------------------------------------------------------------
 deterministic_filters:
+  # 无 condition 的规则由代码提供上下文判定（见 filters.ts CONTEXTUAL）——
+  # 它们依赖数据库状态，无法用文本条件表达。
   - id: DF-001
     name: already_sent_no_update
     description: "canonical key 已发送且语义指纹未变（PRD 7.3）"
@@ -454,6 +456,39 @@ deterministic_filters:
         - regex: '\b(?:sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35})\b'
     action: filter
     alert: true                   # 同时告警：可能是他人泄露的凭证
+
+  # 【人工反馈落地，2026-08-23】用户明确指出应过滤的三类：
+  #   RelayFor 公益模型服务调整上游计价与错误补偿
+  #   Seedance 图生视频公益站开放限时测试
+  #   KRILL 中转站退款与隐私争议暴露第三方 API 服务风险
+  # 归纳：论坛「公益站/中转站」的运营公告与用户争议，属于小圈子
+  # 内部事务 —— 对读者无公共价值，且争议帖多为情绪性爆料。
+  #
+  # 注意与 PRD 8.2 C 类的边界：C 类保护的是「可由官方帮助页、公告、
+  # 价格页核验的产品权益」，指的是 OpenAI/Anthropic 这类**服务商官方**
+  # 的政策与权益。第三方转售站的自设规则不是官方权益，不受 C 类保护。
+  - id: DF-040
+    name: relay_station_operations
+    description: "第三方公益站/中转站的运营公告、计价调整、内测招募"
+    applies_to: normal_only
+    condition:
+      all_of:
+        - regex: '(公益站|中转站|反代站|镜像站|号池)'
+        - regex: '(通知|公告|调整|补偿|内测|开放|限时|上新|额度发放|计价|退款)'
+        - not_signal: official_link      # 有服务商官方链接的另当别论
+    action: filter
+
+  - id: DF-041
+    name: community_dispute
+    description: "个人恩怨、站点争议、爆料对骂类帖子"
+    applies_to: normal_only
+    condition:
+      any_of:
+        - regex: '(恶臭曝光|开盒|破防|狂骂|撕逼|互喷|挂人|避雷贴)'
+        - all_of:
+            - regex: '(争议|纠纷|投诉|封号|跑路|骗子|割韭菜)'
+            - regex: '(中转站|公益站|某站|该站|站长)'
+    action: filter
 
   - id: DF-030
     name: pure_repost_no_addition

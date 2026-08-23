@@ -74,6 +74,12 @@ try {
                 ` —— 会漏掉窗口结束到发报之间的内容`);
 } catch { warnings.push('未找到 brief-run.timer，跳过时刻一致性检查'); }
 
+// 10. 过滤规则覆盖度：声明了却永不生效的规则是静默失效
+try {
+  const { auditRuleCoverage } = await import('../packages/domain/src/filters.ts');
+  for (const p of auditRuleCoverage()) errors.push(`过滤规则覆盖度：${p}`);
+} catch (e) { warnings.push(`覆盖度自检未运行：${e.message}`); }
+
 console.log(`规则文件: ${path}`);
 console.log(`  rule_version = ${cfg.meta?.rule_version}`);
 console.log(`  顶层节 ${Object.keys(cfg).length} 个 / 正则 ${regexCount} 条 / signals ${defined.size} 个 / 过滤规则 ${ids.length} 条`);

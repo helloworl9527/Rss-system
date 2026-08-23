@@ -19,63 +19,78 @@ export type FilterHit = { ruleId: string; name: string; reason: string; alert?: 
 /**
  * 确定性过滤（rules.yaml deterministic_filters）。命中即返回，不调用 AI。
  *
- * 两条硬约束：
- *  1. applies_to=normal_only 的规则不得淘汰强制保留候选 —— 那些候选
- *     只能由 AI 语义判定或人工覆盖排除（PRD 8.2）。
- *  2. 返回的 reason 必须能通过 never_filter_on 校验，否则视为规则退化，
- *     抛错转人工而不是静默过滤（PRD 8.3 末段）。
+ * 【为什么用配置驱动的条件求值器】
+ * 早先规则在 YAML 里声明、在代码里硬编码实现，两边会静默漂移 ——
+ * DF-030 声明了从未实现，后来新增的 DF-040/041 同样没生效，
+ * 而没有任何东西会报错。现在条件一律从 YAML 求值，
+ * 声明即生效；求值器不认识的条件类型会抛错而不是静默跳过。
  */
+
+/** 上下文里可用的谓词。规则里出现未知谓词时抛错，不静默放过。 */
+function evalCond(cond: any, ctx: FilterCtx, ruleId: string): boolean {
+  if (cond == null) return false;
+  const text = ctx.cleanText;
+  const hay = `${ctx.title}\n${text}`;
+
+  if (Array.isArray(cond)) return cond.every(c => evalCond(c, ctx, ruleId));
+  if (cond.all_of) return cond.all_of.every((c: any) => evalCond(c, ctx, ruleId));
+  if (cond.any_of) return cond.any_of.some((c: any) => evalCond(c, ctx, ruleId));
+
+  if (cond.regex !== undefined) return re(cond).test(hay);
+  if (cond.signal !== undefined) return !!ctx.signals[cond.signal];
+  if (cond.not_signal !== undefined) return !ctx.signals[cond.not_signal];
+  if (cond.title_length_lt !== undefined) return ctx.title.trim().length < cond.title_length_lt;
+  if (cond.clean_text_length_lt !== undefined) return text.trim().length < cond.clean_text_length_lt;
+  if (cond.external_link_count_lt !== undefined) return ctx.externalLinkCount < cond.external_link_count_lt;
+
+  throw new Error(`规则 ${ruleId} 含未知条件：${JSON.stringify(cond).slice(0, 80)}`);
+}
+
+/** 需要数据库上下文、无法用文本条件表达的规则，在这里给出判定。 */
+const CONTEXTUAL: Record<string, (c: FilterCtx) => boolean> = {
+  'DF-001': c => c.alreadySentNoUpdate,
+  'DF-003': c => c.duplicateCanonical,
+  // 「整篇转载且无新增信息」需要语义比对，交给 AI，规则层不判
+  'DF-030': () => false,
+};
+
+/** 规则 ID → 面向用户的过滤理由。必须避开 never_filter_on 清单。 */
+const REASONS: Record<string, string> = {
+  'DF-001': '同一条目已发送且无实质更新',
+  'DF-002': '标题或正文为空',
+  'DF-003': '去除追踪参数后与已有条目重复',
+  'DF-010': '联盟推广拉新且无可操作内容',
+  'DF-011': '仅有优惠码而无操作步骤',
+  'DF-020': '低信息量：无链接、无代码、无步骤且篇幅极短',
+  'DF-021': '正文包含疑似泄露的密钥或访问令牌',
+  'DF-030': '整篇转载且无新增信息',
+  'DF-040': '第三方公益站/中转站的运营公告或内测招募，非服务商官方权益',
+  'DF-041': '站点争议或个人恩怨爆料，无公共价值',
+};
+
 export function applyDeterministicFilters(ctx: FilterCtx): FilterHit | null {
-  const R = loadRules();
-  const S = ctx.signals;
-  const len = ctx.cleanText.trim().length;
+  const defs = loadRules().deterministic_filters ?? [];
 
-  const rules: Array<FilterHit & { when: () => boolean; scope: 'all' | 'normal_only' }> = [
-    { ruleId: 'DF-001', name: 'already_sent_no_update', scope: 'all',
-      reason: '同一条目已发送且无实质更新',
-      when: () => ctx.alreadySentNoUpdate },
+  for (const d of defs) {
+    const id: string = d.id;
+    // normal_only 规则不得淘汰强制保留候选（PRD 8.2）
+    if (d.applies_to === 'normal_only' && ctx.isMandatory) continue;
 
-    { ruleId: 'DF-002', name: 'empty_title_or_body', scope: 'all',
-      reason: '标题或正文为空',
-      when: () => ctx.title.trim().length < 2 || len < 10 },
+    const ctxFn = CONTEXTUAL[id];
+    const fired = ctxFn ? ctxFn(ctx) : evalCond(d.condition, ctx, id);
+    if (!fired) continue;
 
-    { ruleId: 'DF-003', name: 'duplicate_by_tracking_params', scope: 'all',
-      reason: '去除追踪参数后与已有条目重复',
-      when: () => ctx.duplicateCanonical },
-
-    { ruleId: 'DF-021', name: 'unknown_credential_leak', scope: 'all', alert: true,
-      reason: '正文包含疑似泄露的密钥或访问令牌',
-      when: () => {
-        const d = R.deterministic_filters.find((f: any) => f.id === 'DF-021');
-        return (d?.condition?.any_of ?? []).some((p: any) => re(p).test(ctx.cleanText));
-      } },
-
-    { ruleId: 'DF-010', name: 'aff_recruitment', scope: 'normal_only',
-      reason: '联盟推广拉新且无可操作内容',
-      when: () => !!S.aff_link && !S.code_block && !S.step_markers },
-
-    { ruleId: 'DF-011', name: 'coupon_without_content', scope: 'normal_only',
-      reason: '仅有优惠码而无操作步骤',
-      when: () => !!S.invite_code && !S.step_markers && len < 200 },
-
-    { ruleId: 'DF-020', name: 'low_information_chat', scope: 'normal_only',
-      reason: '低信息量：无链接、无代码、无步骤且篇幅极短',
-      when: () => len < 120 && !S.repo_url && !S.code_block && !S.command_line
-                  && !S.step_markers && ctx.externalLinkCount < 1 },
-  ];
-
-  for (const r of rules) {
-    if (r.scope === 'normal_only' && ctx.isMandatory) continue;
-    if (!r.when()) continue;
-    assertReasonAllowed(r.reason, r.ruleId);
-    return { ruleId: r.ruleId, name: r.name, reason: r.reason, alert: r.alert };
+    const reason = REASONS[id] ?? d.description ?? d.name ?? id;
+    assertReasonAllowed(reason, id);
+    return { ruleId: id, name: d.name, reason, alert: !!d.alert };
   }
   return null;
 }
 
 /**
  * 反向保护：过滤理由不得落在 never_filter_on 上（PRD 8.3 末段）。
- * 命中即抛错转人工审计 —— 这是防止规则悄悄退化成「按热度/商业属性过滤」的闸门。
+ * 命中即抛错转人工审计 —— 这是防止规则悄悄退化成
+ * 「按热度/商业属性过滤」的闸门。
  */
 export function assertReasonAllowed(reason: string, ruleId = ''): void {
   const banned: string[] = loadRules().never_filter_on ?? [];
@@ -84,4 +99,22 @@ export function assertReasonAllowed(reason: string, ruleId = ''): void {
     throw new Error(
       `过滤理由命中反向保护清单「${hit}」（规则 ${ruleId}，理由「${reason}」）。` +
       `PRD 8.3 明令这类理由不得单独作为过滤依据，应转人工审计。`);
+}
+
+/**
+ * 自检：每条声明的规则要么有条件、要么有上下文实现，否则永不生效。
+ * 供校验器在 CI 里调用，堵住「YAML 里声明了但代码没实现」这类静默失效。
+ */
+export function auditRuleCoverage(): string[] {
+  const defs = loadRules().deterministic_filters ?? [];
+  const problems: string[] = [];
+  for (const d of defs) {
+    const hasCond = !!d.condition;
+    const hasCtx = d.id in CONTEXTUAL;
+    if (!hasCond && !hasCtx)
+      problems.push(`${d.id}（${d.name}）既无 condition 也无上下文实现 —— 永不生效`);
+    if (!(d.id in REASONS))
+      problems.push(`${d.id} 缺少面向用户的过滤理由`);
+  }
+  return problems;
 }
