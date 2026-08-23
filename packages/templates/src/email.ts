@@ -40,6 +40,16 @@ export type BriefData = {
     /** 抓取失败与来源异常必须与「无更新」区分开 */
     sourceIssues: Array<{ source: string; status: string; detail: string }>;
   };
+  /**
+   * 评估附录（影子运行期用）。逐条列出被过滤与待复核的条目，
+   * 让人工能直接在邮件里判断有没有漏项 —— 这是 PRD 24.1 要求的
+   * ≥98% 召回率在有黄金集之前唯一可行的核对方式。
+   * 稳定运行后可通过 BRIEF_EVAL_APPENDIX=false 关闭。
+   */
+  evalAppendix?: {
+    filtered: Array<{ title: string; source: string; url: string | null; reason: string }>;
+    pending: Array<{ title: string; source: string; url: string | null; reason: string }>;
+  } | null;
 };
 
 // ---------- 安全原语 ----------
@@ -236,6 +246,34 @@ export function renderHtml(d: BriefData): string {
         cellpadding="0" cellspacing="0" border="0">${misses}</table>` : ''}
     </td></tr></table></td></tr>`);
 
+  // 评估附录
+  const ea = d.evalAppendix;
+  if (ea && (ea.filtered.length || ea.pending.length)) {
+    const list = (rows: typeof ea.filtered) => rows.map(x => {
+      const u = safeUrl(x.url);
+      return `<tr><td style="padding:0 0 8px;font-size:13px;line-height:1.6;">
+        <span style="color:${C.ink};">${esc(x.title)}</span>
+        ${u ? ` <a href="${esc(u)}" style="color:${C.accent};text-decoration:none;">原文</a>` : ''}
+        <div style="color:${C.muted};font-size:12.5px;">${esc(x.source)} · ${esc(x.reason)}</div>
+      </td></tr>`;
+    }).join('');
+    const sub = (t: string, n: number) => `<div style="margin:14px 0 8px;font-size:11px;
+      letter-spacing:.1em;text-transform:uppercase;color:${C.faint};font-weight:700;">${t}（${n}）</div>`;
+    parts.push(`<tr><td style="padding:14px 0 0;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="background:${C.card};border:1px dashed ${C.line};border-radius:10px;">
+      <tr><td style="padding:18px 22px;">
+        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+          color:${C.muted};font-weight:700;">评估附录 · 影子运行期</div>
+        <div style="margin:6px 0 0;font-size:12.5px;color:${C.faint};line-height:1.6;">
+          以下条目未进入正文。若你认为其中有该收录的，说明筛选规则需要调整。</div>
+        ${ea.filtered.length ? sub('已过滤', ea.filtered.length) +
+          `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${list(ea.filtered)}</table>` : ''}
+        ${ea.pending.length ? sub('待复核（名额不足或需人工）', ea.pending.length) +
+          `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${list(ea.pending)}</table>` : ''}
+      </td></tr></table></td></tr>`);
+  }
+
   parts.push(`<tr><td style="padding:20px 4px 0;text-align:center;font-size:11.5px;
     color:${C.faint};line-height:1.7;">
     十六源智能日报系统 · 每日 08:00 / 12:00 / 22:00（台北）<br>
@@ -270,6 +308,26 @@ export function renderText(d: BriefData): string {
       L.push(`  来源：${it.sourceName}${u ? ` ${u}` : '（原文链接不可用）'}`);
       L.push('');
     }
+  }
+  const ea = d.evalAppendix;
+  if (ea && (ea.filtered.length || ea.pending.length)) {
+    L.push('【评估附录 · 影子运行期】');
+    L.push('以下条目未进入正文。若认为其中有该收录的，说明筛选规则需要调整。');
+    if (ea.filtered.length) {
+      L.push(`— 已过滤（${ea.filtered.length}）`);
+      for (const x of ea.filtered) {
+        L.push(`  ${x.title}`);
+        L.push(`    ${x.source} · ${x.reason}${safeUrl(x.url) ? ' ' + safeUrl(x.url) : ''}`);
+      }
+    }
+    if (ea.pending.length) {
+      L.push(`— 待复核（${ea.pending.length}）`);
+      for (const x of ea.pending) {
+        L.push(`  ${x.title}`);
+        L.push(`    ${x.source} · ${x.reason}${safeUrl(x.url) ? ' ' + safeUrl(x.url) : ''}`);
+      }
+    }
+    L.push('');
   }
   L.push('【来源状态与过滤审计】');
   if (d.audit.counts.length)

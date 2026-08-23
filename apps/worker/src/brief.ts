@@ -181,6 +181,17 @@ const sourceIssues = (db.prepare(`SELECT id, health, last_error, consecutive_fai
                status: s.health === 'failing' ? '抓取失败' : '来源异常',
                detail: `${String(s.last_error ?? '').slice(0, 80)}（连续 ${s.consecutive_failures} 次）` }));
 
+// 评估附录（影子运行期默认开启，稳定后可用 BRIEF_EVAL_APPENDIX=false 关闭）
+const wantAppendix = (process.env.BRIEF_EVAL_APPENDIX ?? 'true') !== 'false';
+const brief_ = (r: Row, reason: string) =>
+  ({ title: r.title, source: r.source_id, url: r.url, reason });
+const evalAppendix = wantAppendix ? {
+  filtered: rows.filter(r => r.decision === 'filter')
+    .map(r => brief_(r, r.filter_reason ?? r.filter_rule_id ?? '未记录原因')).slice(0, 40),
+  pending: rows.filter(r => r.decision === 'escalate')
+    .map(r => brief_(r, '待复核：名额不足或需人工判断')).slice(0, 40),
+} : null;
+
 const data: BriefData = {
   date: run.window_key.slice(0, 10),
   windowLabel: run.window_label,
@@ -200,6 +211,7 @@ const data: BriefData = {
     ].filter(c => c.count > 0),
     sourceIssues,
   },
+  evalAppendix,
 };
 
 // ---------- 5. 渲染与校验 ----------

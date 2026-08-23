@@ -147,67 +147,80 @@ export function normalizeTime(
 // ---------- 固定窗口（PRD 5.1） ----------
 export type Win = { key: string; label: string; start: Date; end: Date };
 
+type WinDef = { id: string; label: string; end_hour: number };
+
+/** 从 rules.yaml 读窗口定义。三个窗口首尾相接、覆盖全天。 */
+function windowDefs(): WinDef[] {
+  const w = loadRules().windows?.schedule as WinDef[] | undefined;
+  const defs = (w?.length ? w : [
+    { id: 'morning', label: '早报', end_hour: 8 },
+    { id: 'noon', label: '午报', end_hour: 12 },
+    { id: 'evening', label: '晚报', end_hour: 22 },
+  ]).slice().sort((a, b) => a.end_hour - b.end_hour);
+  if (defs.length < 2) throw new Error('windows.schedule 至少需要两个窗口');
+  return defs;
+}
+
+// 台北 = UTC+8 恒定（无夏令时，PRD 23.1）。
+// 日期加减必须在纯 UTC 午夜上做：若用带 +08:00 偏移的时刻，
+// toISOString() 会退回前一个 UTC 日，导致加减整体偏移一天。
+const shiftDay = (ymd: string, days: number): string => {
+  const d = new Date(`${ymd}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+const atHour = (ymd: string, h: number) =>
+  new Date(`${ymd}T${String(h).padStart(2, '0')}:00:00+08:00`);
+
 /** 台北时区下某时刻所属的固定窗口。边界左闭右开。 */
 export function windowOf(at: Date = new Date()): Win {
   const tp = new Intl.DateTimeFormat('sv-SE', {
     timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
   }).format(at).replace(' ', 'T');
-  const datePart = tp.slice(0, 10);
+  const ymd = tp.slice(0, 10);
   const hour = +tp.slice(11, 13);
 
-  // 台北 = UTC+8 恒定（无夏令时，PRD 23.1）
-  // 日期加减必须在纯 UTC 午夜上做：若用带 +08:00 偏移的时刻，
-  // toISOString() 会退回前一个 UTC 日，导致加减整体偏移一天。
-  const shiftDay = (ymd: string, days: number) => {
-    const d = new Date(`${ymd}T00:00:00Z`);
-    d.setUTCDate(d.getUTCDate() + days);
-    return d.toISOString().slice(0, 10);
-  };
-  const at_ = (ymd: string, h: number) => new Date(`${ymd}T${String(h).padStart(2, '0')}:00:00+08:00`);
-
-  if (hour < 8)  return { key: `${datePart}:morning`, label: '早报', start: at_(shiftDay(datePart, -1), 22), end: at_(datePart, 8) };
-  if (hour < 12) return { key: `${datePart}:noon`,    label: '午报', start: at_(datePart, 8),  end: at_(datePart, 12) };
-  if (hour < 22) return { key: `${datePart}:evening`, label: '晚报', start: at_(datePart, 12), end: at_(datePart, 22) };
-  // 22:00 之后属于「次日早报」窗口
-  const next = shiftDay(datePart, 1);
-  return { key: `${next}:morning`, label: '早报', start: at_(datePart, 22), end: at_(next, 8) };
+  const defs = windowDefs();
+  // 找到第一个 end_hour 大于当前小时的窗口
+  const idx = defs.findIndex(d => hour < d.end_hour);
+  if (idx === -1) {
+    // 超过最后一个窗口的 end → 属于次日第一个窗口（跨日）
+    const next = shiftDay(ymd, 1);
+    return windowFromKey(`${next}:${defs[0]!.id}`);
+  }
+  return windowFromKey(`${ymd}:${defs[idx]!.id}`);
 }
 
-/** 从窗口键（YYYY-MM-DD:label）反解出区间。用于按 key 查询历史窗口。 */
+/** 从窗口键（YYYY-MM-DD:id）反解出区间。 */
 export function windowFromKey(key: string): Win {
-  const [ymd, label] = key.split(':');
-  if (!ymd || !label) throw new Error(`非法窗口键: ${key}`);
-  const at = (d: string, h: number) => new Date(`${d}T${String(h).padStart(2, '0')}:00:00+08:00`);
-  const shift = (d: string, n: number) => {
-    const x = new Date(`${d}T00:00:00Z`); x.setUTCDate(x.getUTCDate() + n);
-    return x.toISOString().slice(0, 10);
-  };
-  switch (label) {
-    case 'morning': return { key, label: '早报', start: at(shift(ymd, -1), 22), end: at(ymd, 8) };
-    case 'noon':    return { key, label: '午报', start: at(ymd, 8),  end: at(ymd, 12) };
-    case 'evening': return { key, label: '晚报', start: at(ymd, 12), end: at(ymd, 22) };
-    default: throw new Error(`未知窗口标签: ${label}`);
-  }
+  const ymd = key.slice(0, 10);
+  const id = key.slice(11);
+  const defs = windowDefs();
+  const i = defs.findIndex(d => d.id === id);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd) || i === -1)
+    throw new Error(`非法窗口键: ${key}`);
+
+  const def = defs[i]!;
+  const prev = defs[(i - 1 + defs.length) % defs.length]!;
+  // 第一个窗口的起点在前一天（跨日）
+  const startDay = i === 0 ? shiftDay(ymd, -1) : ymd;
+  return { key, label: def.label,
+           start: atHour(startDay, prev.end_hour), end: atHour(ymd, def.end_hour) };
 }
 
 /**
  * 当前窗口之前最近 n 个「已结束」的窗口，由近及远（PRD 6.4 第 1 步）。
- * 已结束 = end <= 当前窗口的 start。
  */
 export function previousWindows(current: Win, n = 3): Win[] {
-  const order = ['morning', 'noon', 'evening'] as const;
-  const [ymd, label] = current.key.split(':') as [string, typeof order[number]];
-  const shift = (d: string, k: number) => {
-    const x = new Date(`${d}T00:00:00Z`); x.setUTCDate(x.getUTCDate() + k);
-    return x.toISOString().slice(0, 10);
-  };
-  let day = ymd, idx = order.indexOf(label);
+  const defs = windowDefs();
+  let day = current.key.slice(0, 10);
+  let idx = defs.findIndex(d => d.id === current.key.slice(11));
   const out: Win[] = [];
-  for (let i = 0; i < n; i++) {
+  for (let k = 0; k < n; k++) {
     idx -= 1;
-    if (idx < 0) { idx = order.length - 1; day = shift(day, -1); }
-    out.push(windowFromKey(`${day}:${order[idx]}`));
+    if (idx < 0) { idx = defs.length - 1; day = shiftDay(day, -1); }
+    out.push(windowFromKey(`${day}:${defs[idx]!.id}`));
   }
   return out;
 }

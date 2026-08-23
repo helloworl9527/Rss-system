@@ -63,6 +63,17 @@ for (const f of ['标签', '建议', '关注建议', '行动建议'])
 // 8. 版本号必须存在且为整数
 if (!Number.isInteger(cfg.meta?.rule_version)) errors.push('meta.rule_version 必须是整数');
 
+// 9. 窗口时刻必须与 systemd timer 一致 —— 不一致会漏内容
+try {
+  const timer = readFileSync('deploy/systemd/brief-run.timer', 'utf8');
+  const timerHours = [...timer.matchAll(/OnCalendar=\*-\*-\* (\d{2}):00:00 Asia\/Taipei/g)]
+    .map(m => Number(m[1])).sort((a, b) => a - b);
+  const ruleHours = (cfg.windows?.schedule ?? []).map(w => w.end_hour).sort((a, b) => a - b);
+  if (timerHours.length && JSON.stringify(timerHours) !== JSON.stringify(ruleHours))
+    errors.push(`windows.schedule [${ruleHours}] 与 brief-run.timer [${timerHours}] 时刻不一致` +
+                ` —— 会漏掉窗口结束到发报之间的内容`);
+} catch { warnings.push('未找到 brief-run.timer，跳过时刻一致性检查'); }
+
 console.log(`规则文件: ${path}`);
 console.log(`  rule_version = ${cfg.meta?.rule_version}`);
 console.log(`  顶层节 ${Object.keys(cfg).length} 个 / 正则 ${regexCount} 条 / signals ${defined.size} 个 / 过滤规则 ${ids.length} 条`);
