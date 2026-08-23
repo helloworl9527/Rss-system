@@ -1,0 +1,330 @@
+# ============================================================
+# 十六源智能日报系统 —— 来源配置
+# 对应 PRD 4.1 / 4.3，端点优先级结构见实施方案 2.2
+#
+# 【endpoints 语义】按 priority 升序尝试，priority 1 失败才回退。
+# 每轮采集都从 priority 1 重新开始，不做粘性缓存 —— PRD 18 章要求
+# 「不得因为过去曾 404 而跳过抓取」。每次尝试都写审计。
+#
+# 【实测基线】2026-08-23 从 52.141.58.148 测得，见各源 probe 注释。
+# 新增或改端点后必须跑 `node scripts/probe-sources.mjs` 更新基线。
+# ============================================================
+
+meta:
+  source_version: 1
+  updated_at: "2026-08-23"
+  probe_baseline_date: "2026-08-23"
+  probe_from_ip: "52.141.58.148"
+
+# ------------------------------------------------------------
+# 主机分组限流（实施方案 2.3）
+# rsshub 组实测：单请求 0.87s 正常，连续请求退化至超时 → 强制串行 + 8s 间隔
+# ------------------------------------------------------------
+host_groups:
+  rsshub:
+    hosts: [hub.slarker.me, rsshub.rssforever.com]
+    concurrency: 1
+    min_interval_ms: 8000
+    timeout_ms: 40000
+    max_retries: 2
+    note: >
+      实测限流：单请求 0.87s，连续请求退化至超时。rssforever 的 telegram/jike
+      路由曾整体不可用约 1 小时后自行恢复 —— 间歇性，故 slarker 置于 priority 1。
+      11 次请求 × 8s 间隔实测总耗时 92.5s，与预估 60-90s 吻合。
+  telegram_web:
+    hosts: [t.me]
+    concurrency: 2
+    min_interval_ms: 1000
+    timeout_ms: 20000
+    max_retries: 2
+  mystool:
+    hosts: [mystool.me]
+    concurrency: 2
+    min_interval_ms: 1000
+    timeout_ms: 20000
+    max_retries: 2
+    note: "6 个 X 源单点依赖；公共 RSSHub 的 twitter 路由实测全部 503，无替代"
+  direct:
+    hosts: [linuxdorss.longpink.com, elsewhere.news, api-docs.deepseek.com]
+    concurrency: 2
+    min_interval_ms: 1000
+    timeout_ms: 20000
+    max_retries: 2
+
+# ------------------------------------------------------------
+# 抓取默认值（PRD 4.4）
+# ------------------------------------------------------------
+defaults:
+  connect_timeout_ms: 5000
+  total_timeout_ms: 20000
+  max_body_bytes: 5242880          # 5 MB
+  user_agent: "BriefingBot/1.0 (+personal daily digest; contact via repo owner)"
+  conditional_get: true            # ETag / If-None-Match / Last-Modified
+  follow_redirects: 3
+  assumed_timezone: Asia/Taipei    # 无时区信息时的兜底（PRD 5.4）
+
+# ------------------------------------------------------------
+# 采集节奏分档（harvest_interval_minutes）
+#
+# 依据 2026-08-23 实测的 feed 时间跨度。原计划统一 20 分钟 × 16 源
+# = 1152 次请求/天，对间歇性失效的 rssforever 和单点的 mystool 都是
+# 不必要的压力。按跨度分档后约 450 次/天，降 61%，其中 rsshub 组
+# 从 432 次/天降到 192 次/天。
+#
+# 定档原则：
+#   · 榜单型（按热度轮转，条目可能在窗口内上榜又掉榜）→ 最密，20 分钟。
+#     时间跨度对榜单是弱信号，不能据此放宽。
+#   · 时序型 → 取 min(跨度/6, 240) 并向下取整到档位，保证条目在滚出
+#     feed 前至少被采集 6 次。
+#   · 所有档位都远小于最短窗口（午报 4 小时），不影响窗口完整性。
+# ------------------------------------------------------------
+harvest_tiers:
+  ranking_feed: 20        # 榜单型：v2ex, linuxdo
+  standard: 60            # 时序型主力：telegram, jike, mystool X
+  slow: 240               # 极低频：elsewhere
+  official_changelog: 120 # 官方日志：deepseek
+
+# ------------------------------------------------------------
+# 16 个来源
+# ------------------------------------------------------------
+sources:
+
+  - id: linuxdo
+    name: LINUX DO 热门话题
+    harvest_tier: ranking_feed          # 20 分钟 —— 榜单型，热度轮转
+    display_name: LINUX DO
+    category: forum
+    enabled: true
+    priority: 1
+    host_group: direct
+    mandatory_retention: true        # 适用强制保留 A-D（PRD 8.2）
+    require_fulltext: true           # 实测 39/39 条截断，必须开原帖（规则 0b）
+    endpoints:
+      - { url: "https://linuxdorss.longpink.com/top.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-08-23", status: 200, items: 39, span_hours: 27.7, latency_s: 0.81 }
+
+  - id: jike
+    name: 即刻「一觉醒来发生了什么」
+    harvest_tier: standard          # 60 分钟 —— 跨度 216h
+    display_name: 即刻
+    category: society
+    enabled: true
+    priority: 3
+    host_group: rsshub
+    endpoints:
+      - { url: "https://hub.slarker.me/jike/topic/553870e8e4b0cafb0a1bef68", parser: rss, priority: 1 }
+      - { url: "https://rsshub.rssforever.com/jike/topic/553870e8e4b0cafb0a1bef68", parser: rss, priority: 2 }
+    verify_major_news: true          # 重大新闻须回官方核验（PRD 4.1）
+    probe:
+      - { endpoint: 1, date: "2026-08-23", status: 200, items: 10, latency_s: 2.2 }
+      - { endpoint: 2, date: "2026-08-23", status: "intermittent", note: "PRD 原 URL。01:35 连续 45s 超时，02:00 恢复 200/2.2s —— 间歇性失效，不可作主路径" }
+
+  - id: v2ex
+    name: V2EX 最热主题
+    harvest_tier: ranking_feed          # 20 分钟 —— 榜单型 + 跨度仅 11.1h，16 源中唯一低于 24h
+    display_name: V2EX
+    category: forum
+    enabled: true
+    priority: 1
+    host_group: rsshub
+    mandatory_retention: true
+    require_fulltext: true
+    # ⚠️ 时间跨度仅 11.7h，对 10h 早报窗口只有 17% 余量 —— 采集器的主要理由
+    shallow_feed_warning: true
+    endpoints:
+      - { url: "https://rsshub.rssforever.com/v2ex/topics/hot", parser: rss, priority: 1 }
+      - { url: "https://hub.slarker.me/v2ex/topics/hot", parser: rss, priority: 2 }
+    probe:
+      - { endpoint: 1, date: "2026-08-23", status: 200, items: 9, span_hours: 11.7, latency_s: 0.87 }
+      - { endpoint: 2, date: "2026-08-23", status: 200, items: 9, latency_s: 1.25 }
+
+  - id: tg_tossiphonex
+    name: Telegram @TossiPhoneX
+    harvest_tier: standard          # 60 分钟 —— 跨度 696h
+    display_name: "@TossiPhoneX"
+    category: tech
+    enabled: true
+    priority: 4
+    host_group: rsshub
+    endpoints:
+      - { url: "https://hub.slarker.me/telegram/channel/TossiPhoneX", parser: rss, priority: 1 }
+      - { url: "https://t.me/s/TossiPhoneX", parser: telegram_web, priority: 2, host_group: telegram_web }
+      - { url: "https://rsshub.rssforever.com/telegram/channel/TossiPhoneX", parser: rss, priority: 3 }
+    probe:
+      - { endpoint: 1, date: "2026-08-23", status: 200, items: 20, latency_s: 2.1 }
+      - { endpoint: 2, date: "2026-08-23", status: 200, items: 20, latency_s: 1.6 }
+      - { endpoint: 3, date: "2026-08-23", status: "intermittent", note: "PRD 原 URL。01:35 超时，02:00 恢复 —— 间歇性失效" }
+
+  - id: tg_zaihuapd
+    name: Telegram @zaihuapd
+    harvest_tier: standard          # 60 分钟 —— 跨度 37.9h
+    display_name: "@zaihuapd"
+    category: tech
+    enabled: true
+    priority: 4
+    host_group: rsshub
+    verify_major_news: true
+    endpoints:
+      - { url: "https://hub.slarker.me/telegram/channel/zaihuapd", parser: rss, priority: 1 }
+      - { url: "https://t.me/s/zaihuapd", parser: telegram_web, priority: 2, host_group: telegram_web }
+      - { url: "https://rsshub.rssforever.com/telegram/channel/zaihuapd", parser: rss, priority: 3 }
+    probe:
+      - { endpoint: 1, date: "2026-08-23", status: 200, items: 19, latency_s: 7.1 }
+      - { endpoint: 2, date: "2026-08-23", status: 200, items: 20, latency_s: 1.7 }
+      - { endpoint: 3, date: "2026-08-23", status: "intermittent", note: "01:35 超时，02:00 恢复" }
+
+  - id: tg_durov
+    name: Telegram @durov
+    harvest_tier: standard          # 60 分钟 —— 跨度 1678h
+    display_name: "@durov"
+    category: tech
+    enabled: true
+    priority: 5
+    host_group: rsshub
+    endpoints:
+      - { url: "https://hub.slarker.me/telegram/channel/durov", parser: rss, priority: 1 }
+      - { url: "https://t.me/s/durov", parser: telegram_web, priority: 2, host_group: telegram_web }
+      - { url: "https://rsshub.rssforever.com/telegram/channel/durov", parser: rss, priority: 3 }
+    probe:
+      - { endpoint: 1, date: "2026-08-23", status: 200, items: 20, latency_s: 6.4 }
+      - { endpoint: 2, date: "2026-08-23", status: 200, items: 20, latency_s: 1.9 }
+      - { endpoint: 3, date: "2026-08-23", status: "intermittent", note: "01:35 超时，02:00 恢复" }
+
+  - id: tg_karlshare
+    name: Telegram @karlshareChannel
+    harvest_tier: standard          # 60 分钟 —— 跨度 970h
+    display_name: "@karlshareChannel"
+    category: tech
+    enabled: true
+    priority: 5
+    host_group: rsshub
+    rumor_disclosure: true           # 传闻需标注来源限制（PRD 4.1）
+    endpoints:
+      - { url: "https://hub.slarker.me/telegram/channel/karlshareChannel", parser: rss, priority: 1 }
+      - { url: "https://t.me/s/karlshareChannel", parser: telegram_web, priority: 2, host_group: telegram_web }
+      - { url: "https://rsshub.rssforever.com/telegram/channel/karlshareChannel", parser: rss, priority: 3 }
+    probe:
+      - { endpoint: 1, date: "2026-08-23", status: 200, items: 12, latency_s: 1.6 }
+      - { endpoint: 2, date: "2026-08-23", status: 200, items: 12, latency_s: 1.6 }
+      - { endpoint: 3, date: "2026-08-23", status: "intermittent", note: "01:35 超时，02:00 恢复" }
+
+  - id: x_weixin
+    name: X @Weixin_WeChat
+    harvest_tier: standard          # 60 分钟 —— 跨度 1150h
+    display_name: "@Weixin_WeChat"
+    category: tech
+    enabled: true
+    priority: 4
+    host_group: mystool
+    endpoints:
+      - { url: "https://mystool.me/x-rss-feed/feeds/weixin_wechat.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-08-23", status: 200, items: 18, span_hours: 1150.3, latency_s: 0.25 }
+
+  - id: deepseek
+    name: DeepSeek 官方更新日志
+    harvest_tier: official_changelog          # 120 分钟 —— 官方更新日志，低频
+    display_name: DeepSeek 更新日志
+    category: ai
+    enabled: true
+    priority: 2
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://api-docs.deepseek.com/zh-cn/updates/", parser: deepseek_page, priority: 1 }
+    # 只有日期无时分 → 以首次发现时间归入当前窗口（PRD 5.4）
+    date_only_policy: use_discovery_time
+    # HTML 页面，无 <item> 结构，探测脚本的 items 计数不适用（显示 0 属正常）
+    probe: { date: "2026-08-23", status: 200, items_na: true, bytes: 46433, latency_s: 0.43 }
+
+  - id: x_openai
+    name: X @OpenAI
+    harvest_tier: standard          # 60 分钟 —— 跨度 107h
+    display_name: "@OpenAI"
+    category: ai
+    enabled: true
+    priority: 1
+    host_group: mystool
+    official: true
+    endpoints:
+      - { url: "https://mystool.me/x-rss-feed/feeds/openai.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-08-23", status: 200, items: 5, span_hours: 107.0, latency_s: 0.30 }
+
+  - id: x_github
+    name: X @GitHub
+    harvest_tier: standard          # 60 分钟 —— 跨度 234h
+    display_name: "@GitHub"
+    category: developer
+    enabled: true
+    priority: 2
+    host_group: mystool
+    official: true
+    endpoints:
+      - { url: "https://mystool.me/x-rss-feed/feeds/github.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-08-23", status: 200, items: 13, span_hours: 234.1, latency_s: 0.27 }
+
+  - id: x_claudeai
+    name: X @ClaudeAI
+    harvest_tier: standard          # 60 分钟 —— 跨度 281h
+    display_name: "@ClaudeAI"
+    category: ai
+    enabled: true
+    priority: 1
+    host_group: mystool
+    official: true
+    endpoints:
+      - { url: "https://mystool.me/x-rss-feed/feeds/claudeai.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-08-23", status: 200, items: 4, span_hours: 281.0, latency_s: 0.28 }
+
+  - id: x_elonmusk
+    name: X @elonmusk
+    harvest_tier: standard          # 60 分钟 —— 跨度 61.5h
+    display_name: "@elonmusk"
+    category: society
+    enabled: true
+    priority: 7                      # 高噪声，默认低权重（PRD 4.1）
+    host_group: mystool
+    high_noise: true
+    verify_major_news: true
+    endpoints:
+      - { url: "https://mystool.me/x-rss-feed/feeds/elonmusk.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-08-23", status: 200, items: 20, span_hours: 61.5, latency_s: 0.24 }
+
+  - id: x_bbchinesd
+    name: X @bbchinesd
+    harvest_tier: standard          # 60 分钟 —— 跨度 42.2h
+    display_name: "@bbchinesd"
+    category: society
+    enabled: true
+    priority: 5
+    host_group: mystool
+    # 原账号与实际 feed 身份需在后台显示并可修正（PRD 4.1）
+    identity_needs_review: true
+    endpoints:
+      - { url: "https://mystool.me/x-rss-feed/feeds/bbchinesd.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-08-23", status: 200, items: 20, span_hours: 42.2, latency_s: 0.24 }
+
+  - id: elsewhere
+    name: Elsewhere News
+    harvest_tier: slow          # 240 分钟 —— 跨度 2034h，50 条覆盖 85 天
+    display_name: Elsewhere News
+    category: article
+    enabled: true
+    priority: 2
+    host_group: direct
+    require_fulltext: true           # 必须打开原文（PRD 8.6 / FR-014）
+    max_body_bytes: 10485760         # 单独放宽至 10 MB（PRD 4.4）
+    endpoints:
+      - { url: "https://elsewhere.news/feed.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-08-23", status: 200, items: 50, span_hours: 2034.1, latency_s: 0.90 }
+
+  - id: x_thsottiaux
+    name: X @thsottiaux
+    harvest_tier: standard          # 60 分钟 —— 跨度 129h
+    display_name: "@thsottiaux"
+    category: ai
+    enabled: true
+    priority: 2                      # Codex 产品/政策优先候选（PRD 4.1）
+    host_group: mystool
+    endpoints:
+      - { url: "https://mystool.me/x-rss-feed/feeds/thsottiaux.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-08-23", status: 200, items: 19, span_hours: 129.2, latency_s: 0.26 }
