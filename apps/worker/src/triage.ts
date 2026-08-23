@@ -132,7 +132,8 @@ if (!DRY) {
     for (const o of report.outcomes) {
       const cid = Number(o.candidateId.slice(1));
       insEval.run(cid, provider.model, promptVersion, o.responseId ?? null,
-        null, null, o.result ? JSON.stringify(o.result) : JSON.stringify({ error: o.error }),
+        o.usage?.inputTokens ?? null, o.usage?.outputTokens ?? null,
+        o.result ? JSON.stringify(o.result) : JSON.stringify({ error: o.error }),
         o.escalationRules.length ? JSON.stringify(o.escalationRules) : null,
         o.result?.confidence ?? null, nowIso());
 

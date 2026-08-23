@@ -37,6 +37,9 @@ export type TriageOutcome = {
   error?: string;
   attempts: number;
   responseId?: string;
+  /** 该批次用量摊到本条的近似值 —— 批量调用无法精确归因到单条，
+   *  但按条均摊足以支撑成本台账与按来源的花费分析。 */
+  usage?: { inputTokens: number; outputTokens: number; cachedInputTokens: number };
 };
 
 export type TriageBudget = {
@@ -213,12 +216,18 @@ async function callBatch(
       continue;
     }
 
+    const n = batch.length || 1;
+    const share = {
+      inputTokens: Math.round(res.usage.inputTokens / n),
+      outputTokens: Math.round(res.usage.outputTokens / n),
+      cachedInputTokens: Math.round(res.usage.cachedInputTokens / n),
+    };
     return batch.map(c => {
       const r = byId.get(c.candidateId)!;
       const esc = decideEscalation(c, r, deps);
       return { candidateId: c.candidateId, result: r, status: 'ok' as const,
                escalate: esc.escalate, escalationRules: esc.rules,
-               attempts, responseId: res.responseId };
+               attempts, responseId: res.responseId, usage: share };
     });
   }
 
