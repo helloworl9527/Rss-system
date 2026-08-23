@@ -24,11 +24,11 @@ brief.xmcode.tech {
 		health_interval 30s
 	}
 
+	# 输出到 journald 而非文件：Caddy 自带 systemd unit 的沙箱不允许写
+	# /var/log/caddy，且本机 journald 已限 200 MB 并自动轮转，
+	# 少一处需要单独轮转与授权的日志文件。
 	log {
-		output file /var/log/caddy/brief.log {
-			roll_size 10MiB
-			roll_keep 5
-		}
+		output stderr
 		format json
 	}
 }
