@@ -134,6 +134,16 @@ if (!DRY) {
     for (const o of rep.outcomes) {
       const cid = Number(o.candidateId.slice(1));
       const stage = o.tier === 'L3' ? 'sol' : 'terra';
+
+      // 名额不足而未复核的，只写审计不写 evaluations —— 待复核查询用
+      // NOT EXISTS(terra/sol) 排除已复核项，若给跳过项也写一条，
+      // 它们下次运行会被当成"已复核"而永远轮不到，等于静默丢弃。
+      if (o.status === 'skipped') {
+        audit.run(run.id, 'candidate', String(cid), 'review_budget_skipped',
+          JSON.stringify({ tier: o.tier, error: o.error }), nowIso());
+        continue;
+      }
+
       insEval.run(cid, stage, o.tier === 'L3' ? l3.model : l2.model, promptVersion,
         o.responseId ?? null,
         o.result ? JSON.stringify(o.result) : JSON.stringify({ error: o.error, status: o.status }),
@@ -145,8 +155,7 @@ if (!DRY) {
         updCand.run(o.result.decision, o.result.mandatory_class, o.result.section,
                     o.result.filter_reason, cid);
       else if (!o.result)
-        audit.run(run.id, 'candidate', String(cid),
-          o.status === 'skipped' ? 'review_budget_skipped' : 'review_manual_audit',
+        audit.run(run.id, 'candidate', String(cid), 'review_manual_audit',
           JSON.stringify({ tier: o.tier, error: o.error }), nowIso());
     }
   })();

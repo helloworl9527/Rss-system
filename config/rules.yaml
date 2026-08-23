@@ -900,14 +900,18 @@ ai:
     luna:
       input_tokens_max: 70000
       output_tokens_max: 45000
+    # 【实测校准】PRD 15.5 给的 max_items 与 input_tokens_max 不自洽：
+    # 复核逐条送全文（body_chars_max 8000 ≈ 3600 token）+ 提示词 + siblings，
+    # 每条约 5000 输入 token，5 条需 25000 —— 恰好撑满，实际只跑了 2 条
+    # 就触发熔断。名额是主约束、token 是兜底，故把 token 放宽到名额的 1.6 倍。
     terra:
       max_items: 5
-      input_tokens_max: 25000
-      output_tokens_max: 5000
+      input_tokens_max: 40000
+      output_tokens_max: 15000
     sol:
       max_items: 2
-      input_tokens_max: 15000
-      output_tokens_max: 3000
+      input_tokens_max: 20000
+      output_tokens_max: 8000
 
   # 预算超限行为（PRD 15.5）
   on_soft_budget_exceeded:
