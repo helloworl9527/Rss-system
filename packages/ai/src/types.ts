@@ -80,7 +80,12 @@ export type JsonSchema = Record<string, unknown>;
 
 /** 供应商调用失败的归一化错误。 */
 export class ProviderError extends Error {
-  kind: 'rate_limited' | 'auth' | 'timeout' | 'bad_request' | 'server' | 'network' | 'refusal';
+  kind: 'rate_limited' | 'auth' | 'timeout' | 'bad_request' | 'server' | 'network'
+      | 'refusal'
+      /** 输出被 max_tokens 截断 —— 与 bad_request 区分开，因为它的正确
+       *  应对是「提高输出上限」，而不是 FR-044 的「缩短输入重试」。
+       *  缩短输入几乎不减少输出，那样重试等于白试一次。 */
+      | 'truncated';
   status?: number;
   retryable: boolean;
   constructor(kind: ProviderError['kind'], message: string, status?: number) {
@@ -89,6 +94,6 @@ export class ProviderError extends Error {
     this.kind = kind;
     this.status = status;
     this.retryable = kind === 'rate_limited' || kind === 'server' ||
-                     kind === 'timeout' || kind === 'network';
+                     kind === 'timeout' || kind === 'network' || kind === 'truncated';
   }
 }

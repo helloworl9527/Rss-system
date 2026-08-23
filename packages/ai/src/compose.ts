@@ -103,9 +103,16 @@ async function composeBatch(
   track: (u: CompleteResult['usage'], m: string) => void,
 ): Promise<ComposeOutcome[]> {
   let attempts = 0, lastErr = '';
+  let lastKind: string | undefined;
+  // 实测 3 条一批生成 3600+ 输出 token（含推理过程），原按 1200/条 会被截断。
+  let outCap = Math.min(deps.outputTokensMax, Math.max(4000, batch.length * 3000));
 
-  for (const chars of [deps.bodyCharsMax, Math.floor(deps.bodyCharsMax / 3)]) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     attempts++;
+    // 截断时提高上限而非缩短输入（见 triage.ts 注释）
+    const chars = attempt === 0 || lastKind === 'truncated'
+      ? deps.bodyCharsMax : Math.floor(deps.bodyCharsMax / 3);
+    if (lastKind === 'truncated') outCap = Math.min(deps.outputTokensMax, outCap * 3);
     const userContent = JSON.stringify({
       items: batch.map(b => ({
         candidate_id: b.candidateId,
@@ -125,24 +132,25 @@ async function composeBatch(
       res = await deps.provider.complete({
         systemPrompt: deps.systemPrompt, userContent,
         schema: COMPOSE_SCHEMA, schemaName: 'compose',
-        maxOutputTokens: Math.min(deps.outputTokensMax, Math.max(2000, batch.length * 1200)),
+        maxOutputTokens: outCap,
         cachePrefix: true,
       });
     } catch (e) {
       const pe = e as ProviderError;
       lastErr = `${pe.kind}: ${pe.message}`;
+      lastKind = pe instanceof ProviderError ? pe.kind : undefined;
       if (pe instanceof ProviderError && !pe.retryable && pe.kind !== 'bad_request') break;
       continue;
     }
     track(res.usage, res.model);
 
     const errs = validate(res.data, COMPOSE_SCHEMA);
-    if (errs.length) { lastErr = `Schema 校验失败: ${errs.slice(0, 3).join('; ')}`; continue; }
+    if (errs.length) { lastErr = `Schema 校验失败: ${errs.slice(0, 3).join('; ')}`; lastKind = 'schema'; continue; }
 
     const byId = new Map<string, ComposeResult>(
       (res.data as any).results.map((r: ComposeResult) => [r.candidate_id, r]));
     const missing = batch.filter(b => !byId.has(b.candidateId));
-    if (missing.length) { lastErr = `模型漏写 ${missing.length} 条文案`; continue; }
+    if (missing.length) { lastErr = `模型漏写 ${missing.length} 条文案`; lastKind = 'schema'; continue; }
 
     // PRD 9.2 字段禁令校验
     const bad: string[] = [];
@@ -150,7 +158,7 @@ async function composeBatch(
       const e = checkComposed(byId.get(b.candidateId)!, deps.forbiddenFields);
       if (e.length) bad.push(`${b.candidateId}: ${e.join('; ')}`);
     }
-    if (bad.length) { lastErr = bad.slice(0, 2).join(' | '); continue; }
+    if (bad.length) { lastErr = bad.slice(0, 2).join(' | '); lastKind = 'schema'; continue; }
 
     return batch.map(b => ({
       candidateId: b.candidateId, result: byId.get(b.candidateId)!, status: 'ok' as const, attempts,

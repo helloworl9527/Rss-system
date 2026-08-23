@@ -161,9 +161,14 @@ async function reviewOne(
 ): Promise<ReviewOutcome> {
   const { provider, budget } = tier === 'L2' ? deps.l2 : deps.l3;
   let attempts = 0, lastErr = '';
+  let lastKind: string | undefined;
+  let outCap = Math.min(budget.outputTokensMax, tier === 'L3' ? 8000 : 6000);
 
-  for (const chars of [deps.bodyCharsMax, Math.floor(deps.bodyCharsMax / 3)]) {
+  for (let attempt = 0; attempt < 2; attempt++) {
     attempts++;
+    const chars = attempt === 0 || lastKind === 'truncated'
+      ? deps.bodyCharsMax : Math.floor(deps.bodyCharsMax / 3);
+    if (lastKind === 'truncated') outCap = Math.min(budget.outputTokensMax, outCap * 2);
     let res: CompleteResult;
     try {
       res = await provider.complete({
@@ -171,24 +176,25 @@ async function reviewOne(
         userContent: buildUserContent(c, chars),
         schema: REVIEW_SCHEMA,
         schemaName: 'review',
-        // 同 triage：上限设高不花钱，截断则整条失败（见 triage.ts 注释）
-        maxOutputTokens: Math.min(budget.outputTokensMax, tier === 'L3' ? 4000 : 3000),
+        maxOutputTokens: outCap,
         cachePrefix: true,
       });
     } catch (e) {
       const pe = e as ProviderError;
       lastErr = `${pe.kind}: ${pe.message}`;
+      lastKind = pe instanceof ProviderError ? pe.kind : undefined;
       if (pe instanceof ProviderError && !pe.retryable && pe.kind !== 'bad_request') break;
       continue;
     }
     track(res.usage, res.model);
 
     const errs = validate(res.data, REVIEW_SCHEMA);
-    if (errs.length) { lastErr = `Schema 校验失败: ${errs.slice(0, 3).join('; ')}`; continue; }
+    if (errs.length) { lastErr = `Schema 校验失败: ${errs.slice(0, 3).join('; ')}`; lastKind = 'schema'; continue; }
 
     const r = res.data as ReviewResult;
     if (r.candidate_id !== c.candidateId) {
       lastErr = `candidate_id 不匹配：期望 ${c.candidateId} 实得 ${r.candidate_id}`;
+      lastKind = 'schema';
       continue;
     }
     // L2 才判断是否上 L3；L3 之后不再升级（PRD 15.1）

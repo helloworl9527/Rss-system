@@ -80,8 +80,8 @@ export class OpenAICompatProvider implements Provider {
 
     // 截断要与"模型乱回"区分开：前者应缩短输入重试，后者是提示词问题
     if (choice?.finish_reason === 'length')
-      throw new ProviderError('bad_request',
-        `输出被 max_tokens 截断（已生成 ${j.usage?.completion_tokens ?? '?'} token）—— 需要提高输出上限或减小批量`);
+      throw new ProviderError('truncated',
+        `输出被 max_tokens 截断（已生成 ${j.usage?.completion_tokens ?? '?'} token）`);
 
     let data: unknown;
     try { data = JSON.parse(text); }

@@ -144,6 +144,37 @@ console.log('\nFR-044 失败重试与人工审计：\n');
   ok('鉴权失败不重试，直接转人工', r.outcomes[0]!.status === 'manual_audit' && r.outcomes[0]!.attempts === 1);
 }
 
+console.log('\n输出截断的重试策略：\n');
+{
+  // 截断时缩短输入几乎不减少输出 —— 必须提高输出上限，否则重试是白试。
+  // 真实运行里这个问题连续出现三次（triage/compose 各一次）。
+  const caps: number[] = [];
+  const bodies: number[] = [];
+  const p = fakeProvider((req, call) => {
+    caps.push(req.maxOutputTokens);
+    bodies.push(JSON.parse(req.userContent).candidates[0].body.length);
+    if (call === 1) return new ProviderError('truncated', '输出被 max_tokens 截断（已生成 2080 token）');
+    return respond(JSON.parse(req.userContent).candidates.map((c: any) => ({ candidate_id: c.candidate_id })));
+  });
+  const r = await runTriage([cand('v1', { body: 'x'.repeat(9000) })], baseDeps(p));
+  ok('截断后重试成功', r.outcomes[0]!.status === 'ok' && r.outcomes[0]!.attempts === 2);
+  ok('第二次提高了输出上限', caps[1]! > caps[0]!, `${caps[0]} → ${caps[1]}`);
+  ok('第二次未缩短正文（缩短无助于减少输出）', bodies[1] === bodies[0],
+     `${bodies[0]} → ${bodies[1]}`);
+}
+{
+  // 对照：Schema 违规时仍应缩短正文重试（FR-044 原策略）
+  const bodies: number[] = [];
+  const p = fakeProvider((req, call) => {
+    bodies.push(JSON.parse(req.userContent).candidates[0].body.length);
+    if (call === 1) return respond([{ candidate_id: 'v1', decision: 'MAYBE' as any }]);
+    return respond(JSON.parse(req.userContent).candidates.map((c: any) => ({ candidate_id: c.candidate_id })));
+  });
+  // 正文必须长于 bodyCharsMax，否则两次截断后长度相同、看不出差别
+  await runTriage([cand('v1', { body: 'x'.repeat(9000) })], baseDeps(p));
+  ok('Schema 违规时仍缩短正文重试', bodies[1]! < bodies[0]!, `${bodies[0]} → ${bodies[1]}`);
+}
+
 console.log('\n预算熔断（PRD 15.5）：\n');
 {
   const p = fakeProvider((req) =>

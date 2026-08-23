@@ -180,10 +180,20 @@ async function callBatch(
   const { provider, budget } = deps;
   let attempts = 0;
   let lastErr = '';
+  let lastKind: string | undefined;
 
-  // 尝试 1：正常正文；尝试 2：缩短正文（FR-044「缩短输入重试一次」）
-  for (const chars of [budget.bodyCharsMax, Math.floor(budget.bodyCharsMax / 3)]) {
+  // max_tokens 是安全上限而非花费承诺 —— 只按实际生成量计费，设高不花钱。
+  // 实测真实候选每条约 500 输出 token（含推理过程；短填充内容只需 105，
+  // 不能拿它当基准）。按 900/条留两倍余量。
+  let outCap = Math.max(2000, batch.length * 900);
+
+  // 尝试 1：正常；尝试 2：视失败原因决定是缩短正文还是提高输出上限。
+  // 截断时缩短输入几乎不减少输出 —— 那样重试等于白试，必须提高上限。
+  for (let attempt = 0; attempt < 2; attempt++) {
     attempts++;
+    const chars = attempt === 0 || lastKind === 'truncated'
+      ? budget.bodyCharsMax : Math.floor(budget.bodyCharsMax / 3);
+    if (lastKind === 'truncated') outCap = Math.min(budget.outputTokensMax, outCap * 3);
     const userContent = JSON.stringify({ candidates: batch.map(c => buildPayload(c, chars)) });
     let res: CompleteResult;
     try {
@@ -192,17 +202,13 @@ async function callBatch(
         userContent,
         schema: TRIAGE_SCHEMA,
         schemaName: 'triage',
-        // max_tokens 是安全上限，不是花费承诺 —— 只按实际生成量计费，
-        // 设高不额外花钱。此前把它当预算抠（90 → 260/条），两次都被
-        // 真实内容撑爆并整批失败。实测真实候选每条约 500 输出 token
-        // （含模型推理过程，短填充内容只需 105，不能拿它当基准），
-        // 这里按 900/条留足两倍余量，宁可设高也不要截断。
-        maxOutputTokens: Math.max(2000, batch.length * 900),
+        maxOutputTokens: outCap,
         cachePrefix: true,
       });
     } catch (e) {
       const pe = e as ProviderError;
       lastErr = `${pe.kind}: ${pe.message}`;
+      lastKind = pe instanceof ProviderError ? pe.kind : undefined;
       // 拒答与鉴权错误重试无意义，直接转人工
       if (pe instanceof ProviderError && !pe.retryable && pe.kind !== 'bad_request') break;
       continue;
@@ -210,7 +216,7 @@ async function callBatch(
     track(res.usage, res.model);
 
     const errs = validate(res.data, TRIAGE_SCHEMA);
-    if (errs.length) { lastErr = `Schema 校验失败: ${errs.slice(0, 3).join('; ')}`; continue; }
+    if (errs.length) { lastErr = `Schema 校验失败: ${errs.slice(0, 3).join('; ')}`; lastKind = 'schema'; continue; }
 
     // 结果必须逐条对上 candidate_id，不得遗漏或新增（防止模型串号）
     const byId = new Map<string, TriageResult>(
@@ -218,6 +224,7 @@ async function callBatch(
     const missing = batch.filter(c => !byId.has(c.candidateId));
     if (missing.length) {
       lastErr = `模型漏判 ${missing.length} 条: ${missing.map(m => m.candidateId).join(',')}`;
+      lastKind = 'schema';
       continue;
     }
 
