@@ -54,11 +54,17 @@ form.login button{width:100%;padding:9px;background:#1b5fa8;color:#fff;border-co
 .err{background:#fdecea;border:1px solid #f5c2bd;color:#b3261e;padding:8px 10px;border-radius:4px;font-size:14px;margin:0 0 12px}
 .note{background:#fff8e1;border:1px solid #f0e0a8;padding:8px 10px;border-radius:4px;font-size:13px;margin:0 0 12px}
 a{color:#1b5fa8}
+form.inline{display:flex;gap:5px;align-items:center;margin:0}
+form.inline input[name=reason]{padding:4px 6px;border:1px solid #c5ced6;border-radius:3px;font:inherit;font-size:13px;width:150px}
+form.inline select{padding:4px;border:1px solid #c5ced6;border-radius:3px;font:inherit;font-size:13px}
+form.inline button{padding:4px 10px;font-size:13px}
 @media(prefers-color-scheme:dark){
  body{background:#161b21;color:#e6eaee}
  table,.card,form.login{background:#1e242b;border-color:#2e3742}
  th{background:#252c34}td{border-color:#252c34}
  .note{background:#2a2617;border-color:#4a4227}
+ form.inline input,form.inline select{background:#252c34;color:#e6eaee;border-color:#3a4450}
+ button{background:#2a323b;color:#e6eaee;border-color:#3a4450}
  .err{background:#3a1f1c;border-color:#5c2f2a;color:#f3b7b1}
  a,header a:hover{color:#8ab4e8}
 }`;
@@ -136,8 +142,25 @@ export function renderDashboard(o: {
 }
 
 export function renderSources(o: { csrf: string; sources: Src[] }): string {
+  const rows = o.sources.map(s => `<tr>
+    <td>${esc(s.display_name)}<div class="muted">${esc(s.id)}</div></td>
+    <td class="${healthCls(s.health)}">${healthTxt(s.health)}</td>
+    <td>${esc(ago(s.last_success_at))}</td>
+    <td>
+      <form method="post" action="/sources/${esc(s.id)}/toggle" class="inline">
+        <input type="hidden" name="csrf" value="${esc(o.csrf)}">
+        <input type="hidden" name="enabled" value="${s.enabled ? 'false' : 'true'}">
+        <input type="hidden" name="redirect" value="/sources">
+        <input name="reason" placeholder="理由（必填）" required minlength="4">
+        <button>${s.enabled ? '停用' : '启用'}</button>
+      </form>
+    </td></tr>`).join('');
   return layout('来源', `<h2>来源（${o.sources.length}）</h2>${sourceTable(o.sources)}
-    <p class="muted">来源配置在 config/sources.yaml，改后执行 npm run sync 同步。</p>`, o.csrf);
+    <h2>启停</h2>
+    <p class="muted">停用后采集器将跳过该源。操作需填理由并写入审计（PRD 19.2）。</p>
+    <table><tr><th>来源</th><th>健康</th><th>最近成功</th><th>操作</th></tr>${rows}</table>
+    <p class="muted">来源的 URL、端点与采集档配置在 config/sources.yaml，改后执行 npm run sync 同步。</p>`,
+    o.csrf);
 }
 
 function runsTable(runs: any[]): string {
@@ -162,6 +185,7 @@ export function renderRuns(o: { csrf: string; runs: any[]; harvests: any[] }): s
 }
 
 export function renderRunDetail(o: { csrf: string; run: any; candidates: any[] }): string {
+  const csrf = o.csrf;
   const byDec: Record<string, any[]> = {};
   for (const c of o.candidates) (byDec[c.decision] ??= []).push(c);
   const label: Record<string, string> = {
@@ -169,14 +193,24 @@ export function renderRunDetail(o: { csrf: string; run: any; candidates: any[] }
   };
   const sections = Object.entries(byDec).map(([dec, list]) => `
     <h2>${esc(label[dec] ?? dec)}（${list.length}）</h2>
-    <table><tr><th>来源</th><th>标题</th><th>类别</th><th>补录</th><th>规则/原因</th></tr>` +
+    <table><tr><th>来源</th><th>标题</th><th>类别</th><th>补录</th><th>规则/原因</th><th>人工覆盖</th></tr>` +
     list.map(c => {
       const u = safeHref(c.canonical_url);
+      const act = dec === 'filter' ? 'include' : 'filter';
+      const label = dec === 'filter' ? '收录' : '过滤';
       return `<tr><td>${esc(c.source_id)}</td>
         <td>${u ? `<a href="${esc(u)}" rel="noopener noreferrer">${esc(c.title)}</a>` : esc(c.title)}</td>
         <td>${c.mandatory_class && c.mandatory_class !== 'none' ? `<span class="pill">${esc(c.mandatory_class)}</span>` : '—'}</td>
         <td>${c.late_discovery ? `<span class="pill">补录</span>` : '—'}</td>
         <td class="muted">${esc(c.filter_rule_id ?? '')} ${esc(String(c.filter_reason ?? '').slice(0, 70))}</td>
+        <td><form method="post" action="/candidates/${esc(c.id)}/override" class="inline">
+          <input type="hidden" name="csrf" value="${esc(csrf)}">
+          <input type="hidden" name="action" value="${act}">
+          <input type="hidden" name="redirect" value="/runs/${esc(c.run_id)}">
+          <input name="reason" placeholder="理由（必填）" required minlength="4">
+          <select name="scope"><option value="once">仅本次</option><option value="permanent">永久规则</option></select>
+          <button>${label}</button>
+        </form></td>
       </tr>`;
     }).join('') + '</table>').join('');
 

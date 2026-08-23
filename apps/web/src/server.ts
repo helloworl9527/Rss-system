@@ -16,6 +16,8 @@ import { verifyPassword, verifyTotp, SessionStore, csrfOk, LoginLimiter, type Se
   from '../../../packages/web/src/auth.ts';
 import { renderLogin, renderDashboard, renderSources, renderRuns, renderRunDetail,
          renderAudit, layout } from '../../../packages/web/src/views.ts';
+import { overrideCandidate, toggleSource, planResend, ActionError }
+  from '../../../packages/web/src/actions.ts';
 
 const PORT = Number(process.env.ADMIN_PORT ?? 3000);
 const HOST = process.env.ADMIN_HOST ?? '127.0.0.1';
@@ -62,6 +64,18 @@ function requireAuth(req: any, reply: any): Session | null {
   if (req.url.startsWith('/api/')) { reply.code(401).send({ error: '未登录' }); return null; }
   reply.redirect('/login');
   return null;
+}
+
+/**
+ * 写操作前置：演示模式一律拒绝 + CSRF + 同源。
+ * 顺序重要 —— 未配置口令时连 CSRF 都不该走到。
+ */
+function requireWrite(req: any, reply: any, s: Session): boolean {
+  if (!configured) {
+    reply.code(403).send({ error: '只读演示模式：未设置 ADMIN_PASSWORD_HASH，写操作被禁用' });
+    return false;
+  }
+  return requireCsrf(req, reply, s);
 }
 
 /** 写操作必须带正确的 CSRF token 且为同源（PRD 14.2）。 */
@@ -209,6 +223,51 @@ app.get('/api/v1/runs', async (req, reply) => {
 });
 app.get<{ Params: { id: string } }>('/api/v1/runs/:id/candidates', async (req, reply) => {
   if (!requireAuth(req, reply)) return; return q.candidates(Number(req.params.id));
+});
+
+// ---------- 写操作（PRD 16.4 / 16.5 / 19.2：全部留痕） ----------
+
+/** 把 ActionError 映射为 HTTP 响应，其余错误交给全局处理器。 */
+function handleAction(reply: any, fn: () => unknown) {
+  try { return { ok: true, result: fn() }; }
+  catch (e) {
+    if (e instanceof ActionError) { reply.code(e.code).send({ error: e.message }); return null; }
+    throw e;
+  }
+}
+
+app.post<{ Params: { id: string } }>('/candidates/:id/override', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  if (!requireWrite(req, reply, s)) return;
+  const b = (req.body ?? {}) as any;
+  const r = handleAction(reply, () => overrideCandidate(db, {
+    candidateId: Number(req.params.id),
+    action: b.action, reason: b.reason, scope: b.scope,
+    mandatoryClass: b.mandatory_class ?? null, section: b.section ?? null,
+    actor: 'owner',
+  }));
+  if (!r) return;
+  return b.redirect ? reply.redirect(String(b.redirect)) : r.result;
+});
+
+app.post<{ Params: { id: string } }>('/sources/:id/toggle', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  if (!requireWrite(req, reply, s)) return;
+  const b = (req.body ?? {}) as any;
+  const r = handleAction(reply, () =>
+    toggleSource(db, req.params.id, String(b.enabled) === 'true', b.reason, 'owner'));
+  if (!r) return;
+  return b.redirect ? reply.redirect(String(b.redirect)) : r.result;
+});
+
+/** 补发第一步：只返回确认信息，不发送（PRD 16.5 两步确认）。 */
+app.get<{ Params: { id: string }; Querystring: { to?: string } }>(
+  '/api/v1/briefs/:id/resend-plan', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  const to = req.query.to ?? process.env.MAIL_TO ?? '';
+  if (!to) return reply.code(400).send({ error: '缺少收件人' });
+  const r = handleAction(reply, () => planResend(db, Number(req.params.id), to));
+  return r ? r.result : undefined;
 });
 
 app.setErrorHandler((err, req, reply) => {
