@@ -26,7 +26,11 @@ const argv = process.argv.slice(2);
 const cmd = argv[0];
 const clsIdx = argv.indexOf('--class');
 const forcedClass = clsIdx > 0 ? argv[clsIdx + 1] : null;
-const refs = argv.slice(1).filter(a => /^c\d+$/i.test(a)).map(a => a.toLowerCase());
+// 支持三种引用：c<候选ID>（邮件附录里的编号）、v<版本ID>（无候选时用）、
+// 以及 --title <关键词>（简报里的标题被 compose 改写过，原标题需按关键词找）
+const refs = argv.slice(1).filter(a => /^[cv]\d+$/i.test(a)).map(a => a.toLowerCase());
+const titleIdx = argv.indexOf('--title');
+const titleKey = titleIdx > 0 ? argv[titleIdx + 1] : null;
 
 const db = openDb(process.env.DATABASE_PATH ?? '/var/lib/briefing/brief.db');
 const all = existsSync(FILE) ? JSON.parse(readFileSync(FILE, 'utf8')) : [];
@@ -56,29 +60,64 @@ if (cmd !== 'keep' && cmd !== 'drop') {
   console.error('用法: golden-mark.mjs keep|drop c123 c145 …   |   golden-mark.mjs list');
   process.exit(1);
 }
-if (!refs.length) { console.error('没有识别到候选编号（形如 c123）'); process.exit(1); }
+if (!refs.length && !titleKey) { console.error('没有识别到编号（c123 / v456）或 --title 关键词'); process.exit(1); }
 
 const host = { linuxdo: 'linux.do', v2ex: 'v2ex.com', elsewhere: 'elsewhere.news' };
+const byVersion = db.prepare(`
+  SELECT (SELECT c.id FROM candidates c WHERE c.item_version_id=v.id LIMIT 1) cid,
+         f.source_id, f.canonical_url url, v.title,
+         coalesce(v.fulltext_text, v.clean_text) body,
+         coalesce(v.fulltext_html, v.html_excerpt) html,
+         v.is_excerpt, v.fulltext_status,
+         (SELECT c.decision FROM candidates c WHERE c.item_version_id=v.id LIMIT 1) decision,
+         (SELECT c.filter_reason FROM candidates c WHERE c.item_version_id=v.id LIMIT 1) filter_reason,
+         (SELECT c.filter_rule_id FROM candidates c WHERE c.item_version_id=v.id LIMIT 1) filter_rule_id,
+         v.prescreen_json, v.id vid
+  FROM item_versions v JOIN feed_items f ON f.id = v.item_id WHERE v.id = ?`);
+
+const byTitle = db.prepare(`
+  SELECT (SELECT c.id FROM candidates c WHERE c.item_version_id=v.id LIMIT 1) cid,
+         f.source_id, f.canonical_url url, v.title,
+         coalesce(v.fulltext_text, v.clean_text) body,
+         coalesce(v.fulltext_html, v.html_excerpt) html,
+         v.is_excerpt, v.fulltext_status,
+         (SELECT c.decision FROM candidates c WHERE c.item_version_id=v.id LIMIT 1) decision,
+         (SELECT c.filter_reason FROM candidates c WHERE c.item_version_id=v.id LIMIT 1) filter_reason,
+         (SELECT c.filter_rule_id FROM candidates c WHERE c.item_version_id=v.id LIMIT 1) filter_rule_id,
+         v.prescreen_json, v.id vid
+  FROM item_versions v JOIN feed_items f ON f.id = v.item_id
+  WHERE v.title LIKE ? ORDER BY v.id DESC LIMIT 5`);
+
 const q = db.prepare(`
   SELECT c.id cid, f.source_id, f.canonical_url url, v.title,
          coalesce(v.fulltext_text, v.clean_text) body,
          coalesce(v.fulltext_html, v.html_excerpt) html,
          v.is_excerpt, v.fulltext_status, c.decision, c.filter_reason, c.filter_rule_id,
-         v.prescreen_json
+         v.prescreen_json, v.id vid
   FROM candidates c
   JOIN item_versions v ON v.id = c.item_version_id
   JOIN feed_items f ON f.id = v.item_id
   WHERE c.id = ?`);
 
 let added = 0, updated = 0, missing = [];
+const targets = [];
 for (const ref of refs) {
-  const cid = Number(ref.slice(1));
-  const r = q.get(cid);
+  const n = Number(ref.slice(1));
+  const r = ref[0] === 'c' ? q.get(n) : byVersion.get(n);
   if (!r) { missing.push(ref); continue; }
+  targets.push({ ref, r });
+}
+if (titleKey) {
+  const found = byTitle.all(`%${titleKey}%`);
+  if (!found.length) missing.push(`--title「${titleKey}」`);
+  for (const r of found) targets.push({ ref: `v${r.vid}`, r });
+}
+
+for (const { ref, r } of targets) {
 
   const d = extractSignals(r.body ?? '', r.html ?? '', host[r.source_id] ?? '');
   const auto = prescreenMandatory(d.signals);
-  const id = `v${cid}`;
+  const id = `v${r.vid}`;
   const isKeep = cmd === 'keep';
   const cls = forcedClass ?? (isKeep ? (auto[0] ?? 'none') : 'none');
 
@@ -99,7 +138,7 @@ for (const ref of refs) {
     },
     labelSource: 'human_confirmed',
     note: isKeep
-      ? `人工判定应收录（系统原判 ${r.decision}${r.filter_reason ? '：' + String(r.filter_reason).slice(0, 60) : ''}）`
+      ? `人工判定应收录（系统原判 ${r.decision ?? '未进入候选'}${r.filter_reason ? '：' + String(r.filter_reason).slice(0, 60) : ''}）`
       : `人工确认过滤正确（${r.filter_rule_id ?? '模型判定'}）`,
     tags: Object.entries(d.signals).filter(([, v]) => v).map(([k]) => k),
   };
