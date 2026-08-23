@@ -67,10 +67,12 @@ const capFor = (id: string) => perSource[id] ?? LIMIT;
 const used: Record<string, number> = {};
 
 let fetched = 0, skipped = 0, failed = 0, gated = 0;
-let rateLimited = false;
+const limitedSources = new Set<string>();
 const upgraded: string[] = [];
 
 for (const r of pending) {
+  // 限流按来源隔离：linux.do 被限流不该连累 Elsewhere
+  if (limitedSources.has(r.source_id)) { gated++; continue; }
   if ((used[r.source_id] ?? 0) >= capFor(r.source_id)) { gated++; continue; }
 
   // 先用摘要算一次信号，供门限判定
@@ -108,9 +110,11 @@ for (const r of pending) {
   // 限流：不计入 fulltext_attempts（否则会把条目永久判死），
   // 且立即中止本批 —— 继续打只会加深惩罚。下一轮 timer 自然形成冷却。
   if (res.rateLimited) {
-    rateLimited = true;
-    console.log(`  ⏸ ${r.source_id} 触发限流（${res.error}），中止本批，等下一轮`);
-    break;
+    // 不计入 fulltext_attempts（否则条目会被永久判死），跳过该来源剩余条目，
+    // 但其他来源继续。下一轮 timer 形成天然冷却。
+    limitedSources.add(r.source_id);
+    console.log(`  ⏸ ${r.source_id} 触发限流（${res.error}），跳过该来源剩余条目`);
+    continue;
   }
 
   if (!res.ok || !res.text) {
@@ -143,7 +147,7 @@ for (const r of pending) {
 
 console.log(`全文抓取：待处理 ${pending.length} 条`);
 console.log(`  抓取 ${fetched} | 门限跳过 ${skipped} | 失败 ${failed} | 超出本轮上限 ${gated}` +
-            (rateLimited ? ' | ⏸ 因限流提前中止' : ''));
+            (limitedSources.size ? ` | ⏸ 限流跳过: ${[...limitedSources].join(', ')}` : ''));
 if (upgraded.length) {
   console.log(`  ▲ 全文使 ${upgraded.length} 条获得新的强制保留预判：`);
   for (const u of upgraded.slice(0, 12)) console.log(`     ${u}`);
