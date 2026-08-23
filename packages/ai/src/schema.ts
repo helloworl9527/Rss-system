@@ -29,7 +29,8 @@ export const TRIAGE_SCHEMA: JsonSchema = {
         type: 'object',
         additionalProperties: false,
         required: ['candidate_id', 'decision', 'mandatory_class', 'section',
-                   'event_key', 'confidence', 'filter_reason', 'escalation_reasons'],
+                   'event_key', 'confidence', 'importance', 'novelty',
+                   'filter_reason', 'escalation_reasons'],
         properties: {
           candidate_id: { type: 'string' },
           decision: { type: 'string', enum: ['retain', 'normal', 'filter', 'escalate'] },
@@ -38,6 +39,10 @@ export const TRIAGE_SCHEMA: JsonSchema = {
           /** 跨来源同一事件应得到相同 event_key（PRD 7.4 聚类依据） */
           event_key: { type: 'string' },
           confidence: { type: 'number', minimum: 0, maximum: 1 },
+          /** 公共重要性 0–1（PRD 8.4 权重 25），程序算不出的语义维度 */
+          importance: { type: 'number', minimum: 0, maximum: 1 },
+          /** 信息增量 0–1（PRD 8.4 权重 20）：相对已知信息有多少新内容 */
+          novelty: { type: 'number', minimum: 0, maximum: 1 },
           filter_reason: { type: ['string', 'null'] },
           escalation_reasons: { type: 'array', items: { type: 'string' } },
         },
@@ -80,6 +85,8 @@ export type TriageResult = {
   section: string;
   event_key: string;
   confidence: number;
+  importance: number;
+  novelty: number;
   filter_reason: string | null;
   escalation_reasons: string[];
 };

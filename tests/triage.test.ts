@@ -33,7 +33,8 @@ function fakeProvider(fn: (req: CompleteRequest, call: number) => CompleteResult
 const respond = (results: Partial<TriageResult>[], inTok = 500, outTok = 100): CompleteResult => ({
   data: { results: results.map(r => ({
     candidate_id: '', decision: 'normal', mandatory_class: 'none', section: 'ai_tech',
-    event_key: 'e', confidence: 0.9, filter_reason: null, escalation_reasons: [], ...r })) },
+    event_key: 'e', confidence: 0.9, importance: 0.5, novelty: 0.5,
+    filter_reason: null, escalation_reasons: [], ...r })) },
   usage: { inputTokens: inTok, outputTokens: outTok, cachedInputTokens: 0, cacheWriteTokens: 0 },
   responseId: 'r1', model: 'fake',
 });
@@ -76,7 +77,8 @@ console.log('\n指纹复用（PRD 15.2 reuse_by_content_hash）：\n');
     return respond(JSON.parse(req.userContent).candidates.map((c: any) => ({ candidate_id: c.candidate_id }))); });
   const cache = new Map<string, TriageResult>([['h-v1', {
     candidate_id: 'old', decision: 'retain', mandatory_class: 'A', section: 'ai_tech',
-    event_key: 'cached-evt', confidence: 0.95, filter_reason: null, escalation_reasons: [] }]]);
+    event_key: 'cached-evt', confidence: 0.95, importance: 0.5, novelty: 0.5,
+    filter_reason: null, escalation_reasons: [] }]]);
   const r = await runTriage([cand('v1'), cand('v2')], baseDeps(p, { cachedByHash: cache }));
   const reused = r.outcomes.find(o => o.candidateId === 'v1')!;
   ok('相同指纹直接复用，不调模型', reused.status === 'reused' && reused.result?.event_key === 'cached-evt');
@@ -101,7 +103,8 @@ console.log('\n其余升级规则：\n');
   const deps = baseDeps(fakeProvider(() => respond([])));
   const mk = (r: Partial<TriageResult>) => ({
     candidate_id: 'x', decision: 'normal', mandatory_class: 'none', section: 'ai_tech',
-    event_key: 'e', confidence: 0.9, filter_reason: null, escalation_reasons: [], ...r } as TriageResult);
+    event_key: 'e', confidence: 0.9, importance: 0.5, novelty: 0.5,
+    filter_reason: null, escalation_reasons: [], ...r } as TriageResult);
   ok('ESC-001 低置信', decideEscalation(cand('a'), mk({ confidence: 0.6 }), deps).rules.includes('ESC-001'));
   ok('ESC-002 高风险领域', decideEscalation(cand('a', { body: '这是量化策略回测' }), mk({}), deps).rules.includes('ESC-002'));
   ok('ESC-003 重大新闻', decideEscalation(cand('a', { body: '遭监管处罚' }), mk({}), deps).rules.includes('ESC-003'));

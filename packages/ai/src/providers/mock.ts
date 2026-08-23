@@ -25,7 +25,9 @@ export type Fault =
   /** 复核层发现来源冲突 → 应升级到 L3 */
   | 'conflict'
   /** 模型把 candidate_id 写错 —— 串号检测 */
-  | 'wrong_id';
+  | 'wrong_id'
+  /** 输出了 PRD 9.2 禁止的「建议/行动建议」字段 */
+  | 'forbidden_field';
 
 export class MockProvider implements Provider {
   readonly name = 'mock' as const;
@@ -84,6 +86,7 @@ export class MockProvider implements Provider {
 /** 依据请求里的候选，合成一份形状正确的响应。 */
 function synth(req: CompleteRequest, fault: Fault): unknown {
   if (req.schemaName === 'review') return synthReview(req, fault);
+  if (req.schemaName === 'compose') return synthCompose(req, fault);
   let payload: any = {};
   try { payload = JSON.parse(req.userContent); } catch { /* 非 JSON 用空对象 */ }
   const items: any[] = Array.isArray(payload.candidates) ? payload.candidates : [payload];
@@ -97,6 +100,8 @@ function synth(req: CompleteRequest, fault: Fault): unknown {
       section: 'ai_tech',
       event_key: 'mock-evt-' + (c?.candidate_id ?? i),
       confidence: 0.82,
+      importance: 0.6,
+      novelty: 0.5,
       filter_reason: null,
       escalation_reasons: [] as string[],
     };
@@ -146,4 +151,31 @@ function synthReview(req: CompleteRequest, fault: Fault): unknown {
   if (fault === 'schema_violation') return { ...base, decision: 'MAYBE', confidence: '很高' };
   if (fault === 'wrong_id') return { ...base, candidate_id: 'WRONG-ID' };
   return base;
+}
+
+/** compose 层响应。 */
+function synthCompose(req: CompleteRequest, fault: Fault): unknown {
+  let p: any = {};
+  try { p = JSON.parse(req.userContent); } catch { /* 忽略 */ }
+  const items: any[] = p.items ?? [];
+  return {
+    results: items.map((it: any) => {
+      const base = {
+        candidate_id: it.candidate_id,
+        title: String(it.title ?? '').replace(/^[【\[][^】\]]*[】\]]/, '').trim() || '标题',
+        conclusion: '这条说明了某个具体变化及其影响。',
+        summary_sentences: [
+          '第一句陈述发生了什么。',
+          '第二句给出关键事实与数字。',
+          ...(it.must_disclose?.length ? ['该信息尚未独立核实，需以官方为准。'] : []),
+        ].slice(0, 3),
+        source_limitations: it.must_disclose ?? [],
+      };
+      if (fault === 'forbidden_field')
+        return { ...base, conclusion: '行动建议：立即去申请。' ,
+                 summary_sentences: ['建议：马上注册。', '关注建议：留意后续。'] };
+      if (fault === 'schema_violation') return { ...base, summary_sentences: ['只有一句'] };
+      return base;
+    }),
+  };
 }
