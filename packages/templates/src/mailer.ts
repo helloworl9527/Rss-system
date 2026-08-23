@@ -91,7 +91,9 @@ export function smtpMailer(cfg: {
           host: cfg.host ?? 'smtp.gmail.com',
           port: cfg.port ?? 587,
           secure: (cfg.port ?? 587) === 465,
-          auth: { user: cfg.user, pass: cfg.pass },
+          // 应用专用密码在 Google 界面上是 4 组 4 位、带空格显示的，
+          // 用户往往连空格一起复制 —— 去掉空格避免认证莫名失败
+          auth: { user: cfg.user, pass: cfg.pass.replace(/\s+/g, '') },
         });
       }
       const info = await tx.sendMail({

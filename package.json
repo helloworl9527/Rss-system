@@ -20,7 +20,8 @@
     "golden:eval": "node scripts/golden-eval.mjs",
     "web": "node apps/web/src/server.ts",
     "admin:setup": "node scripts/admin-setup.mjs",
-    "brief": "node apps/worker/src/brief.ts"
+    "brief": "node apps/worker/src/brief.ts",
+    "mail:test": "node scripts/test-mail.mjs"
   },
   "keywords": [],
   "author": "",
@@ -32,6 +33,7 @@
     "better-sqlite3": "^13.0.3",
     "fast-xml-parser": "^5.11.0",
     "fastify": "^5.12.1",
+    "nodemailer": "^9.0.5",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
