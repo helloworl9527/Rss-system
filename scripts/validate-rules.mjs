@@ -78,6 +78,8 @@ try {
 try {
   const { auditRuleCoverage } = await import('../packages/domain/src/filters.ts');
   for (const p of auditRuleCoverage()) errors.push(`过滤规则覆盖度：${p}`);
+  const { auditPrescreenCoverage } = await import('../packages/domain/src/signals.ts');
+  for (const p of auditPrescreenCoverage()) errors.push(`强制保留 A–D 覆盖度：${p}`);
 } catch (e) { warnings.push(`覆盖度自检未运行：${e.message}`); }
 
 console.log(`规则文件: ${path}`);

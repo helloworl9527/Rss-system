@@ -38,9 +38,25 @@ export function extractSignals(text: string, html: string, sourceHost = ''): Sig
   const repos = links.filter(u => matchHost(hostOf(u), S.repo_url.url_host_any));
   const officialLinks = links.filter(u => matchHost(hostOf(u), OFF));
 
+  /**
+   * 正则信号求值。
+   *
+   * 【为什么要分别针对文本与 HTML】
+   * 早先只测 text，于是 code_block 的 `<pre>…</pre>` 那条规则永远匹配不到 ——
+   * 实测 linux.do 100 条候选里 11 条 HTML 含 <code>、7 条含 <pre>、
+   * 纯文本围栏 0 条，而信号只命中 1 条。B 类（可复现实践）依赖 code_block，
+   * 于是几乎全军覆没，黄金集里 B 类正例长期为 0。
+   *
+   * 但不能一律改成同时测 HTML：config_block 的
+   * `key: value` 连续三行在任何带内联样式的 HTML 里都会命中，
+   * price_mention 也会被 HTML 属性里的数字污染。
+   * 因此由规则自己声明作用对象，默认仍是纯文本。
+   */
+  const target = (r: any): string =>
+    r?.on === 'html' ? html : r?.on === 'both' ? both : text;
   const anyRegex = (d: any): boolean => {
-    if (d?.regex) return re(d).test(text);
-    if (d?.any_of) return d.any_of.some((r: any) => r.regex && re(r).test(text));
+    if (d?.regex) return re(d).test(target(d));
+    if (d?.any_of) return d.any_of.some((r: any) => r.regex && re(r).test(target(r)));
     return false;
   };
 
@@ -82,13 +98,58 @@ export function extractSignals(text: string, html: string, sourceHost = ''): Sig
  * 强制保留 A–D 程序预判（rules.yaml mandatory_retention.classes）。
  * 只判断「有没有硬证据」；「是不是那个类别」交给 AI 语义确认。
  */
+/**
+ * 强制保留 A–D 预判（PRD 8.2）。
+ *
+ * 条件一律从 rules.yaml 的 mandatory_retention.classes[].prescreen 求值 ——
+ * 早先规则在 YAML 里声明、在这里硬编码了第二遍，两边会静默漂移，
+ * 和确定性过滤当初 DF-030 从未生效是同一个毛病。
+ * 求值器不认识的条件类型抛错，不静默跳过。
+ *
+ * 这里只做「有无客观证据」的预判，不判主题是否相关 ——
+ * 后者是 topic_scope + ai_confirm 的职责（PRD 8.2 两段式）。
+ */
 export function prescreenMandatory(s: SignalMap): string[] {
-  const hit: string[] = [];
-  if (s.repo_url || s.demo_link || (s.code_block && s.install_hint)) hit.push('A');
-  if (s.code_block || s.command_line || s.config_block || (s.step_markers && s.external_link)) hit.push('B');
-  if (s.official_link && (s.price_mention || s.policy_mention)) hit.push('C');
-  if (s.step_markers && s.external_link && !s.aff_link && !s.invite_code) hit.push('D');
-  return hit;
+  const classes = loadRules().mandatory_retention?.classes ?? [];
+  return classes.filter((c: any) => evalPrescreen(c.prescreen, s, c.class))
+                .map((c: any) => String(c.class));
+}
+
+/** prescreen 条件求值。支持 signal / not_signal / any_of / all_of 及其嵌套。 */
+function evalPrescreen(cond: any, s: SignalMap, cls: string): boolean {
+  if (cond == null) return false;
+  // any_of/all_of 的元素允许直接写信号名：`any_of: [code_block, install_hint]`
+  if (typeof cond === 'string') return !!s[cond];
+  if (Array.isArray(cond)) return cond.every(c => evalPrescreen(c, s, cls));
+  if (cond.all_of) return cond.all_of.every((c: any) => evalPrescreen(c, s, cls));
+  if (cond.any_of) return cond.any_of.some((c: any) => evalPrescreen(c, s, cls));
+  if (cond.signal !== undefined) return !!s[cond.signal];
+  if (cond.not_signal !== undefined) return !s[cond.not_signal];
+  throw new Error(`${cls} 类 prescreen 含未知条件：${JSON.stringify(cond).slice(0, 80)}`);
+}
+
+/**
+ * 自检：每个类别都要有可求值的 prescreen，且引用的信号必须真实存在。
+ * 供校验器在 CI 里调用，堵住「YAML 里写了但信号名拼错」这类静默失效。
+ */
+export function auditPrescreenCoverage(): string[] {
+  const classes = loadRules().mandatory_retention?.classes ?? [];
+  const known = new Set(Object.keys(loadRules().signals ?? {}));
+  const problems: string[] = [];
+  const walk = (c: any, cls: string): void => {
+    if (c == null) return;
+    if (typeof c === 'string') { if (!known.has(c)) problems.push(`${cls} 类引用了未定义信号「${c}」`); return; }
+    if (Array.isArray(c)) return c.forEach(x => walk(x, cls));
+    if (c.all_of) return c.all_of.forEach((x: any) => walk(x, cls));
+    if (c.any_of) return c.any_of.forEach((x: any) => walk(x, cls));
+    for (const k of ['signal', 'not_signal'])
+      if (c[k] !== undefined && !known.has(c[k])) problems.push(`${cls} 类引用了未定义信号「${c[k]}」`);
+  };
+  for (const c of classes) {
+    if (!c.prescreen) problems.push(`${c.class} 类没有 prescreen —— 永远预判不到`);
+    walk(c.prescreen, String(c.class));
+  }
+  return problems;
 }
 
 /** 全文抓取门（rules.yaml source_specific.forum_fulltext.fetch_gate）。 */

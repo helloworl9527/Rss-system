@@ -237,9 +237,15 @@ signals:
 
   code_block:
     description: "正文含代码块或多行命令"
+    # on: text（默认）| html | both —— 声明该正则作用于哪份内容。
+    # 论坛正文里的代码块经 HTML→纯文本转换后围栏就没了，
+    # 只测纯文本会漏掉绝大多数（实测 linux.do 100 条只认出 1 条）。
     any_of:
       - regex: '```[\s\S]{20,}?```'
       - regex: '<pre[\s\S]{20,}?</pre>'
+        on: html
+      - regex: '<code[^>]*>[\s\S]{20,}?</code>'
+        on: html
       # 连续 2 行以上 shell 提示符
       - regex: '^\s*(?:\$|#|>)\s+\S+.*(?:\n\s*(?:\$|#|>)\s+\S+.*){1,}'
         flags: m
