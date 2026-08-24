@@ -6,6 +6,8 @@
  *   node scripts/golden-mark.mjs keep c123 --class A
  *   node scripts/golden-mark.mjs drop c200 c201        确认「过滤是对的」
  *   node scripts/golden-mark.mjs list                  看已标注进度
+ *   node scripts/golden-mark.mjs sweep                 上一期附录里没被点名的，全部记为「过滤得对」
+ *   node scripts/golden-mark.mjs sweep --brief 10      指定某一期
  *
  * 邮件附录里每条被过滤/待复核的条目都带编号（c<候选ID>）。
  * 人工回复「保留 c123 c145」后用本脚本落库 —— 这些标注是
@@ -29,6 +31,7 @@ const forcedClass = clsIdx > 0 ? argv[clsIdx + 1] : null;
 // 支持三种引用：c<候选ID>（邮件附录里的编号）、v<版本ID>（无候选时用）、
 // 以及 --title <关键词>（简报里的标题被 compose 改写过，原标题需按关键词找）
 const refs = argv.slice(1).filter(a => /^[cv]\d+$/i.test(a)).map(a => a.toLowerCase());
+let sweepMode = false;
 const titleIdx = argv.indexOf('--title');
 const titleKey = titleIdx > 0 ? argv[titleIdx + 1] : null;
 
@@ -38,9 +41,12 @@ const byId = new Map(all.map(s => [s.id, s]));
 
 if (cmd === 'list') {
   const conf = all.filter(s => s.labelSource === 'human_confirmed');
+  const dflt = all.filter(s => s.labelSource === 'human_default');
   const cls = {};
   for (const s of conf) cls[s.expected.mandatoryClass] = (cls[s.expected.mandatoryClass] ?? 0) + 1;
-  console.log(`黄金集 ${all.length} 条，人工确认 ${conf.length} 条`);
+  console.log(`黄金集 ${all.length} 条`);
+  console.log(`  逐条点名确认 ${conf.length} 条`);
+  console.log(`  附录未点名、按默认约定视为过滤正确 ${dflt.length} 条`);
   console.log(`  类别分布: ${Object.entries(cls).map(([k, v]) => `${k}=${v}`).join(' ') || '（无）'}`);
   console.log(`  保留正例: ${conf.filter(s => s.expected.decision !== 'filter').length}`);
   console.log(`  过滤负例: ${conf.filter(s => s.expected.decision === 'filter').length}`);
@@ -50,13 +56,47 @@ if (cmd === 'list') {
     ['B 类正例', 20, conf.filter(s => s.expected.mandatoryClass === 'B').length],
     ['C 类正例', 20, conf.filter(s => s.expected.mandatoryClass === 'C').length],
     ['D 类正例', 20, conf.filter(s => s.expected.mandatoryClass === 'D').length],
-    ['过滤负例', 20, conf.filter(s => s.expected.decision === 'filter').length],
-    ['总量', 200, conf.length],
+    ['过滤负例', 20, [...conf, ...dflt].filter(s => s.expected.decision === 'filter').length],
+    ['总量', 200, conf.length + dflt.length],
   ]) console.log(`  ${got >= need ? '✅' : '⏳'} ${name.padEnd(10)} ${got}/${need}`);
   db.close(); process.exit(0);
 }
 
-if (cmd !== 'keep' && cmd !== 'drop') {
+/**
+ * sweep：把某期附录里**没有**被人工点名的条目，全部记为「过滤得对」。
+ *
+ * 依据是使用方定下的约定：「我没提到的附录内容默认就是过滤的对」。
+ * 只标 keep 的话，系统只能学到「越放越宽」—— 没有负例就无法衡量
+ * 错误过滤率，min_score_to_include 也没有可校准的下界。
+ *
+ * 已有标注一律不覆盖：人工显式说过的（keep 或 drop）优先于这条默认约定。
+ */
+if (cmd === 'sweep') {
+  const bIdx = argv.indexOf('--brief');
+  const brief = bIdx > 0
+    ? db.prepare('SELECT id, run_id, subject FROM briefs WHERE id=?').get(Number(argv[bIdx + 1]))
+    : db.prepare(`SELECT id, run_id, subject FROM briefs WHERE status='final'
+                  ORDER BY id DESC LIMIT 1`).get();
+  if (!brief) { console.error('找不到该期简报'); process.exit(1); }
+
+  // 该期附录实际列出的条目 = 记进 appendix_seen 的那些
+  const listed = db.prepare(`
+    SELECT c.id cid, v.id vid FROM appendix_seen a
+    JOIN item_versions v ON v.id = a.item_version_id
+    JOIN candidates c ON c.item_version_id = v.id AND c.run_id = ?
+    WHERE a.brief_id = ?`).all(brief.run_id, brief.id);
+
+  console.log(`${brief.subject}  附录列出 ${listed.length} 条`);
+  const todo = listed.filter(r => !byId.has(`v${r.vid}`));
+  console.log(`  已有人工标注 ${listed.length - todo.length} 条（保持不变）`);
+  console.log(`  按默认约定记为「过滤得对」：${todo.length} 条\n`);
+  if (!todo.length) { db.close(); process.exit(0); }
+
+  for (const r of todo) refs.push(`c${r.cid}`);
+  sweepMode = true;
+}
+
+if (cmd !== 'keep' && cmd !== 'drop' && cmd !== 'sweep') {
   console.error('用法: golden-mark.mjs keep|drop c123 c145 …   |   golden-mark.mjs list');
   process.exit(1);
 }
@@ -118,7 +158,7 @@ for (const { ref, r } of targets) {
   const d = extractSignals(r.body ?? '', r.html ?? '', host[r.source_id] ?? '');
   const auto = prescreenMandatory(d.signals);
   const id = `v${r.vid}`;
-  const isKeep = cmd === 'keep';
+  const isKeep = cmd === 'keep' && !sweepMode;
   const cls = forcedClass ?? (isKeep ? (auto[0] ?? 'none') : 'none');
 
   const sample = {
@@ -136,10 +176,14 @@ for (const { ref, r } of targets) {
       signals: Object.entries(d.signals).filter(([, v]) => v).map(([k]) => k),
       repos: d.repos, officialLinks: d.officialLinks, prescreenClasses: auto,
     },
-    labelSource: 'human_confirmed',
+    // sweep 出来的标注是「人工未反对」，证据强度低于逐条点名确认。
+    // 分开记，评估时才能区分「确认过滤正确」与「默认视为正确」。
+    labelSource: sweepMode ? 'human_default' : 'human_confirmed',
     note: isKeep
       ? `人工判定应收录（系统原判 ${r.decision ?? '未进入候选'}${r.filter_reason ? '：' + String(r.filter_reason).slice(0, 60) : ''}）`
-      : `人工确认过滤正确（${r.filter_rule_id ?? '模型判定'}）`,
+      : sweepMode
+        ? `附录中未被点名，按默认约定视为过滤正确（${r.filter_rule_id ?? '模型判定'}）`
+        : `人工确认过滤正确（${r.filter_rule_id ?? '模型判定'}）`,
     tags: Object.entries(d.signals).filter(([, v]) => v).map(([k]) => k),
   };
 
