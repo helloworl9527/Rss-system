@@ -5,7 +5,6 @@ Documentation=file:/opt/briefing-system/config/rules.yaml
 # candidates/triage/review/brief 串行执行，同一时刻只有一个在跑，
 # 但 run.ts 本身常驻，故比单步略高。
 After=network-online.target
-Conflicts=brief-harvest.service brief-fulltext.service
 Wants=network-online.target
 
 [Service]
@@ -16,10 +15,14 @@ WorkingDirectory=/opt/briefing-system
 EnvironmentFile=/etc/briefing/env
 ExecStart=/usr/bin/node apps/worker/src/run.ts
 
+# 【不要加 Conflicts】曾用 Conflicts= 防止两个 Node 进程抢内存，
+# 但简报运行要跑几分钟（真实模型调用），必然撞上 20 分钟一轮的采集，
+# 结果每次开跑 8 秒就被 SIGTERM 杀掉。改为靠 MemoryHigh 限流约束：
+# MemoryHigh 触发内核回收而非杀进程，MemoryMax 才是硬墙。
 # 实测单轮峰值 RSS 128.6 MB、耗时 43.9s（16 源全量）。
 # MemoryHigh 触发限流给 GC 回收机会，MemoryMax 才是硬墙。
-MemoryHigh=280M
-MemoryMax=360M
+MemoryHigh=260M
+MemoryMax=340M
 TimeoutStartSec=1800
 Nice=5
 IOSchedulingClass=best-effort
