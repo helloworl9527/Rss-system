@@ -113,6 +113,7 @@ sources:
     name: LINUX DO 热门话题
     harvest_tier: ranking_feed          # 20 分钟 —— 榜单型，热度轮转
     display_name: LINUX DO
+    site_url: "https://linux.do"          # 人类可访问的主页，邮件里渠道名指向此处
     category: forum
     enabled: true
     priority: 1
@@ -127,6 +128,7 @@ sources:
     name: 即刻「一觉醒来发生了什么」
     harvest_tier: standard          # 60 分钟 —— 跨度 216h
     display_name: 即刻
+    site_url: "https://web.okjike.com/topic/553870e8e4b0cafb0a1bef68"          # 人类可访问的主页，邮件里渠道名指向此处
     category: society
     enabled: true
     priority: 3
@@ -143,6 +145,7 @@ sources:
     name: V2EX 最热主题
     harvest_tier: ranking_feed          # 20 分钟 —— 榜单型 + 跨度仅 11.1h，16 源中唯一低于 24h
     display_name: V2EX
+    site_url: "https://www.v2ex.com/?tab=hot"          # 人类可访问的主页，邮件里渠道名指向此处
     category: forum
     enabled: true
     priority: 1
@@ -162,6 +165,7 @@ sources:
     name: Telegram @TossiPhoneX
     harvest_tier: standard          # 60 分钟 —— 跨度 696h
     display_name: "@TossiPhoneX"
+    site_url: "https://t.me/TossiPhoneX"          # 人类可访问的主页，邮件里渠道名指向此处
     category: tech
     enabled: true
     priority: 4
@@ -179,6 +183,7 @@ sources:
     name: Telegram @zaihuapd
     harvest_tier: standard          # 60 分钟 —— 跨度 37.9h
     display_name: "@zaihuapd"
+    site_url: "https://t.me/zaihuapd"          # 人类可访问的主页，邮件里渠道名指向此处
     category: tech
     enabled: true
     priority: 4
@@ -197,6 +202,7 @@ sources:
     name: Telegram @durov
     harvest_tier: standard          # 60 分钟 —— 跨度 1678h
     display_name: "@durov"
+    site_url: "https://t.me/durov"          # 人类可访问的主页，邮件里渠道名指向此处
     category: tech
     enabled: true
     priority: 5
@@ -214,6 +220,7 @@ sources:
     name: Telegram @karlshareChannel
     harvest_tier: standard          # 60 分钟 —— 跨度 970h
     display_name: "@karlshareChannel"
+    site_url: "https://t.me/karlshareChannel"          # 人类可访问的主页，邮件里渠道名指向此处
     category: tech
     enabled: true
     priority: 5
@@ -232,6 +239,7 @@ sources:
     name: X @Weixin_WeChat
     harvest_tier: standard          # 60 分钟 —— 跨度 1150h
     display_name: "@Weixin_WeChat"
+    site_url: "https://x.com/Weixin_WeChat"          # 人类可访问的主页，邮件里渠道名指向此处
     category: tech
     enabled: true
     priority: 4
@@ -244,6 +252,7 @@ sources:
     name: DeepSeek 官方更新日志
     harvest_tier: official_changelog          # 120 分钟 —— 官方更新日志，低频
     display_name: DeepSeek 更新日志
+    site_url: "https://api-docs.deepseek.com/zh-cn/updates/"          # 人类可访问的主页，邮件里渠道名指向此处
     category: ai
     enabled: true
     priority: 2
@@ -263,6 +272,7 @@ sources:
     name: X @OpenAI
     harvest_tier: standard          # 60 分钟 —— 跨度 107h
     display_name: "@OpenAI"
+    site_url: "https://x.com/OpenAI"          # 人类可访问的主页，邮件里渠道名指向此处
     category: ai
     enabled: true
     priority: 1
@@ -276,6 +286,7 @@ sources:
     name: X @GitHub
     harvest_tier: standard          # 60 分钟 —— 跨度 234h
     display_name: "@GitHub"
+    site_url: "https://x.com/GitHub"          # 人类可访问的主页，邮件里渠道名指向此处
     category: developer
     enabled: true
     priority: 2
@@ -289,6 +300,7 @@ sources:
     name: X @ClaudeAI
     harvest_tier: standard          # 60 分钟 —— 跨度 281h
     display_name: "@ClaudeAI"
+    site_url: "https://x.com/ClaudeAI"          # 人类可访问的主页，邮件里渠道名指向此处
     category: ai
     enabled: true
     priority: 1
@@ -302,6 +314,7 @@ sources:
     name: X @elonmusk
     harvest_tier: standard          # 60 分钟 —— 跨度 61.5h
     display_name: "@elonmusk"
+    site_url: "https://x.com/elonmusk"          # 人类可访问的主页，邮件里渠道名指向此处
     category: society
     enabled: true
     priority: 7                      # 高噪声，默认低权重（PRD 4.1）
@@ -316,6 +329,7 @@ sources:
     name: X @bbchinesd
     harvest_tier: standard          # 60 分钟 —— 跨度 42.2h
     display_name: "@bbchinesd"
+    site_url: "https://x.com/bbchinesd"          # 人类可访问的主页，邮件里渠道名指向此处
     category: society
     enabled: true
     priority: 5
@@ -330,6 +344,7 @@ sources:
     name: Elsewhere News
     harvest_tier: slow          # 240 分钟 —— 跨度 2034h，50 条覆盖 85 天
     display_name: Elsewhere News
+    site_url: "https://elsewhere.news"          # 人类可访问的主页，邮件里渠道名指向此处
     category: article
     enabled: true
     priority: 2
@@ -344,6 +359,7 @@ sources:
     name: X @thsottiaux
     harvest_tier: standard          # 60 分钟 —— 跨度 129h
     display_name: "@thsottiaux"
+    site_url: "https://x.com/thsottiaux"          # 人类可访问的主页，邮件里渠道名指向此处
     category: ai
     enabled: true
     priority: 2                      # Codex 产品/政策优先候选（PRD 4.1）

@@ -14,14 +14,18 @@ export type BriefItem = {
   title: string;
   conclusion: string;
   summarySentences: string[];
+  /** 渠道显示名，如「LINUX DO」「@GitHub」「即刻」—— 不是内部 id */
   sourceName: string;
+  /** 渠道主页，渠道名点击后跳转到这里 */
+  sourceSite?: string | null;
+  /** 本条内容的原文链接 */
   sourceUrl: string | null;
   /** 补录条目需标注（PRD 6.3），不得写成当前窗口的新发布 */
   lateDiscovery?: { originWindow: string; publishedAt: string; firstSeenAt: string } | null;
   /** 实质更新的条目标「更新」（PRD 7.3） */
   isUpdate?: boolean;
-  /** 其他渠道贡献（PRD 7.4） */
-  otherSources?: string[];
+  /** 其他渠道贡献（PRD 7.4）。字符串或 {显示名, 主页} */
+  otherSources?: Array<string | { name: string; site?: string | null }>;
 };
 
 export type AuditEntry = { title: string; url?: string | null; reason: string };
@@ -38,7 +42,7 @@ export type BriefData = {
     /** 其余按类别计数 */
     counts: Array<{ label: string; count: number }>;
     /** 抓取失败与来源异常必须与「无更新」区分开 */
-    sourceIssues: Array<{ source: string; status: string; detail: string }>;
+    sourceIssues: Array<{ source: string; site?: string | null; status: string; detail: string }>;
   };
   /**
    * 评估附录（影子运行期用）。逐条列出被过滤与待复核的条目，
@@ -48,8 +52,10 @@ export type BriefData = {
    */
   evalAppendix?: {
     /** ref 是可引用编号（如 c123）—— 人工回复「保留 c123 c145」即可精确定位 */
-    filtered: Array<{ ref: string; title: string; source: string; url: string | null; reason: string }>;
-    pending: Array<{ ref: string; title: string; source: string; url: string | null; reason: string }>;
+    filtered: Array<{ ref: string; title: string; source: string; site?: string | null;
+                     url: string | null; reason: string }>;
+    pending: Array<{ ref: string; title: string; source: string; site?: string | null;
+                    url: string | null; reason: string }>;
     /** 附录被截断时的说明 */
     truncatedNote?: string | null;
   } | null;
@@ -120,6 +126,7 @@ const badge = (text: string, tone: 'plain' | 'accent' = 'plain') => `<span style
 
 function renderItem(it: BriefItem, index: number): string {
   const url = safeUrl(it.sourceUrl);
+  const site = safeUrl(it.sourceSite);
   const badges = [
     it.lateDiscovery ? badge('补录（RSS 延迟）') : '',
     it.isUpdate ? badge('更新', 'accent') : '',
@@ -133,7 +140,12 @@ function renderItem(it: BriefItem, index: number): string {
 
   const others = it.otherSources?.length
     ? `<div style="margin:8px 0 0;font-size:12px;color:${C.faint};">
-        另见 ${it.otherSources.map(esc).join(' · ')}</div>` : '';
+        另见 ${it.otherSources.map(o => {
+          const u = safeUrl(typeof o === 'string' ? null : o.site);
+          const n = esc(typeof o === 'string' ? o : o.name);
+          return u ? `<a href="${esc(u)}" style="color:${C.faint};text-decoration:none;
+                       border-bottom:1px dotted ${C.line};">${n}</a>` : n;
+        }).join(' · ')}</div>` : '';
 
   return `<tr><td style="padding:0 0 14px;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
@@ -152,7 +164,10 @@ function renderItem(it: BriefItem, index: number): string {
           ${it.summarySentences.map(esc).join(' ')}</div>
         ${late}${others}
         <div style="margin:14px 0 0;padding:11px 0 0;border-top:1px solid ${C.lineSoft};font-size:13px;">
-          <span style="color:${C.faint};">${esc(it.sourceName)}</span>
+          <span style="color:${C.faint};">来源渠道：</span>${
+            site ? `<a href="${esc(site)}" style="color:${C.muted};text-decoration:none;
+                     border-bottom:1px dotted ${C.line};">${esc(it.sourceName)}</a>`
+                 : `<span style="color:${C.faint};">${esc(it.sourceName)}</span>`}
           ${url ? `<span style="color:${C.line};"> &nbsp;·&nbsp; </span><a href="${esc(url)}"
               style="color:${C.accent};text-decoration:none;font-weight:500;">查看原文 &rsaquo;</a>`
                 : `<span style="color:${C.line};"> &nbsp;·&nbsp; </span><span style="color:${C.faint};">原文链接不可用</span>`}
@@ -218,11 +233,15 @@ export function renderHtml(d: BriefData): string {
 
   // 审计区
   const a = d.audit;
-  const issues = a.sourceIssues.map(i =>
-    `<tr><td style="padding:0 0 6px;font-size:13px;line-height:1.65;color:${C.body};">
-      <span style="color:${C.ink};font-weight:600;">${esc(i.source)}</span>
-      <span style="color:${C.faint};"> · ${esc(i.status)}</span><br>
-      <span style="color:${C.muted};font-size:12.5px;">${esc(i.detail)}</span></td></tr>`).join('');
+  const issues = a.sourceIssues.map(i => {
+    const u = safeUrl(i.site);
+    const name = u ? `<a href="${esc(u)}" style="color:${C.ink};font-weight:600;
+      text-decoration:none;border-bottom:1px dotted ${C.line};">${esc(i.source)}</a>`
+      : `<span style="color:${C.ink};font-weight:600;">${esc(i.source)}</span>`;
+    return `<tr><td style="padding:0 0 6px;font-size:13px;line-height:1.65;color:${C.body};">
+      ${name}<span style="color:${C.faint};"> · ${esc(i.status)}</span><br>
+      <span style="color:${C.muted};font-size:12.5px;">${esc(i.detail)}</span></td></tr>`;
+  }).join('');
   const misses = a.mandatoryMisses.map(m => {
     const u = safeUrl(m.url);
     return `<tr><td style="padding:0 0 6px;font-size:13px;line-height:1.65;">
@@ -262,7 +281,10 @@ export function renderHtml(d: BriefData): string {
         <td style="padding:0 0 8px;font-size:13px;line-height:1.6;">
         <span style="color:${C.ink};">${esc(x.title)}</span>
         ${u ? ` <a href="${esc(u)}" style="color:${C.accent};text-decoration:none;">原文</a>` : ''}
-        <div style="color:${C.muted};font-size:12.5px;">${esc(x.source)} · ${esc(x.reason)}</div>
+        <div style="color:${C.muted};font-size:12.5px;">${
+          safeUrl(x.site) ? `<a href="${esc(safeUrl(x.site)!)}" style="color:${C.muted};
+            text-decoration:none;border-bottom:1px dotted ${C.line};">${esc(x.source)}</a>`
+            : esc(x.source)} · ${esc(x.reason)}</div>
       </td></tr>`;
     }).join('');
     const sub = (t: string, n: number) => `<div style="margin:14px 0 8px;font-size:11px;
@@ -316,7 +338,9 @@ export function renderText(d: BriefData): string {
       if (it.lateDiscovery)
         L.push(`  原发布 ${it.lateDiscovery.publishedAt} · 原窗口 ${it.lateDiscovery.originWindow} · 首见 ${it.lateDiscovery.firstSeenAt}`);
       const u = safeUrl(it.sourceUrl);
-      L.push(`  来源：${it.sourceName}${u ? ` ${u}` : '（原文链接不可用）'}`);
+      const st = safeUrl(it.sourceSite);
+      L.push(`  来源渠道：${it.sourceName}${st ? ` ${st}` : ''}`);
+      L.push(`  原文：${u ?? '（链接不可用）'}`);
       L.push('');
     }
   }

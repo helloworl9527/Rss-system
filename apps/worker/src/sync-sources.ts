@@ -10,16 +10,17 @@ const now = nowIso();
 const upSrc = db.prepare(`
   INSERT INTO sources (id,name,display_name,category,host_group,harvest_tier,enabled,priority,
                        mandatory_retention,require_fulltext,config_json,source_version,
-                       managed_by,created_at,updated_at)
+                       managed_by,site_url,created_at,updated_at)
   VALUES (@id,@name,@display_name,@category,@host_group,@harvest_tier,@enabled,@priority,
           @mandatory_retention,@require_fulltext,@config_json,@source_version,
-          'config',@now,@now)
+          'config',@site_url,@now,@now)
   -- 只更新 config 归属的来源；后台新增的（managed_by='admin'）不得被覆盖
   ON CONFLICT(id) DO UPDATE SET
     name=@name, display_name=@display_name, category=@category, host_group=@host_group,
     harvest_tier=@harvest_tier, enabled=@enabled, priority=@priority,
     mandatory_retention=@mandatory_retention, require_fulltext=@require_fulltext,
-    config_json=@config_json, source_version=@source_version, updated_at=@now
+    config_json=@config_json, source_version=@source_version,
+    site_url=@site_url, updated_at=@now
   WHERE sources.managed_by = 'config'`);
 
 // 端点用 upsert 而非删重建：fetch_attempts.endpoint_id 外键引用它，
@@ -44,7 +45,8 @@ db.transaction(() => {
       enabled: s.enabled ? 1 : 0, priority: s.priority ?? 5,
       mandatory_retention: s.mandatory_retention ? 1 : 0,
       require_fulltext: s.require_fulltext ? 1 : 0,
-      config_json: JSON.stringify(s), source_version: cfg.meta.source_version, now,
+      config_json: JSON.stringify(s), source_version: cfg.meta.source_version,
+      site_url: s.site_url ?? null, now,
     });
     for (const e of s.endpoints)
       upEp.run({ source_id: s.id, priority: e.priority, url: e.url,

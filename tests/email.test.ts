@@ -11,7 +11,8 @@ const data = (o: Partial<BriefData> = {}): BriefData => ({
   sections: [{ id: 'ai_tech', title: 'AI 与科技趋势', items: [{
     title: '某模型发布', conclusion: '这是结论。',
     summarySentences: ['第一句。', '第二句。'],
-    sourceName: 'LINUX DO', sourceUrl: 'https://linux.do/t/topic/1',
+    sourceName: 'LINUX DO', sourceSite: 'https://linux.do',
+    sourceUrl: 'https://linux.do/t/topic/1',
   }] }],
   audit: { mandatoryMisses: [], counts: [{ label: '已过滤', count: 5 }], sourceIssues: [] },
   ...o });
@@ -67,6 +68,33 @@ console.log('\n主题与纯文本备用（PRD 9.4 / 9.5）：\n');
   ok('纯文本含核心要点', t.includes('【核心要点】'));
   ok('纯文本含来源链接', t.includes('https://linux.do/t/topic/1'));
   ok('纯文本含审计区', t.includes('【来源状态与过滤审计】'));
+}
+
+console.log('\n渠道名可点击跳转到对应源：\n');
+{
+  const html = renderHtml(data()), text = renderText(data());
+  ok('显示渠道名而非内部 id', html.includes('LINUX DO') && !html.includes('>linuxdo<'));
+  ok('渠道名带「来源渠道：」前缀', html.includes('来源渠道：'));
+  // safeUrl 会规范化 URL（补尾斜杠），断言语义而非字面：
+  // 渠道名必须包在指向主页的 <a> 里
+  ok('渠道名链接到主页',
+     /<a href="https:\/\/linux\.do\/?"[^>]*>LINUX DO<\/a>/.test(html),
+     html.match(/<a href="https:\/\/linux\.do[^"]*"[^>]*>[^<]*<\/a>/)?.[0]?.slice(0, 60) ?? '未找到');
+  ok('原文链接独立于渠道链接', html.includes('href="https://linux.do/t/topic/1"'));
+  ok('纯文本同时给出渠道主页与原文',
+     /来源渠道：LINUX DO https:\/\/linux\.do/.test(text) && text.includes('原文：https://linux.do/t/topic/1'));
+
+  // 无主页时不得生成空链接
+  const noSite = data();
+  noSite.sections[0]!.items[0]!.sourceSite = null;
+  const h2 = renderHtml(noSite);
+  ok('无主页时渠道名不做成链接', h2.includes('LINUX DO') && !/href="[^"]*">LINUX DO/.test(h2));
+  ok('仍通过整体校验', checkEmail(h2, renderText(noSite)).length === 0);
+
+  // http 主页必须被拒（只放行 https）
+  const bad = data();
+  bad.sections[0]!.items[0]!.sourceSite = 'http://evil.example';
+  ok('http 主页被拒绝', !renderHtml(bad).includes('evil.example'));
 }
 
 console.log('\n补录标注（PRD 6.3）：\n');

@@ -49,6 +49,7 @@ const fmt = (d: Date) => new Intl.DateTimeFormat('sv-SE', {
 type Row = {
   cid: number; vid: number; source_id: string; category: string; priority: number;
   title: string; body: string; url: string | null; published_at: string | null;
+  display_name: string; site_url: string | null;
   decision: string; mandatory_class: string | null; section: string | null;
   late_discovery: number; origin_window_key: string; first_seen_at: string;
   signals_json: string | null; filter_rule_id: string | null; filter_reason: string | null;
@@ -56,6 +57,7 @@ type Row = {
 };
 const rows = db.prepare(`
   SELECT c.id cid, c.item_version_id vid, f.source_id, s.category, s.priority,
+         s.display_name, s.site_url,
          v.title, coalesce(v.fulltext_text, v.clean_text) body,
          f.canonical_url url, f.published_at, c.decision, c.mandatory_class, c.section,
          c.late_discovery, c.origin_window_key, f.first_seen_at,
@@ -149,9 +151,13 @@ for (const c of selected) {
     title: cp.title || r.title,
     conclusion: cp.conclusion,
     summarySentences: cp.summary_sentences,
-    sourceName: r.source_id,
+    sourceName: r.display_name || r.source_id,
+    sourceSite: r.site_url,
     sourceUrl: r.url,
-    otherSources: c.members.map(m => m.sourceId),
+    otherSources: c.members.map(m => {
+      const mr = byCid.get(m.candidateId);
+      return { name: mr?.display_name || m.sourceId, site: mr?.site_url ?? null };
+    }),
     lateDiscovery: r.late_discovery ? {
       originWindow: r.origin_window_key,
       publishedAt: String(r.published_at ?? '').slice(0, 16).replace('T', ' '),
@@ -175,9 +181,9 @@ const mandatoryMisses = rows
   .filter(r => r.decision === 'filter' && r.mandatory_class && r.mandatory_class !== 'none')
   .map(r => ({ title: r.title, url: r.url, reason: r.filter_reason ?? r.filter_rule_id ?? '未记录原因' }));
 
-const sourceIssues = (db.prepare(`SELECT id, health, last_error, consecutive_failures
-  FROM sources WHERE enabled=1 AND health IN ('failing','degraded')`).all() as any[])
-  .map(s => ({ source: s.id,
+const sourceIssues = (db.prepare(`SELECT id, display_name, site_url, health, last_error,
+  consecutive_failures FROM sources WHERE enabled=1 AND health IN ('failing','degraded')`).all() as any[])
+  .map(s => ({ source: s.display_name || s.id, site: s.site_url,
                status: s.health === 'failing' ? '抓取失败' : '来源异常',
                detail: `${String(s.last_error ?? '').slice(0, 80)}（连续 ${s.consecutive_failures} 次）` }));
 
@@ -191,7 +197,8 @@ const sourceIssues = (db.prepare(`SELECT id, health, last_error, consecutive_fai
  */
 const wantAppendix = (process.env.BRIEF_EVAL_APPENDIX ?? 'true') !== 'false';
 const entry = (r: Row, reason: string) =>
-  ({ ref: `c${r.cid}`, title: r.title, source: r.source_id, url: r.url, reason });
+  ({ ref: `c${r.cid}`, title: r.title, source: r.display_name || r.source_id,
+     site: r.site_url, url: r.url, reason });
 
 let evalAppendix: BriefData['evalAppendix'] = null;
 if (wantAppendix) {

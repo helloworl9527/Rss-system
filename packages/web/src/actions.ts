@@ -299,13 +299,15 @@ export async function addSource(db: DB, o: SourceInput & { skipTest?: boolean })
   const now = nowIso();
 
   db.transaction(() => {
+    // 主页默认取 URL 的 origin —— RSS 地址本身不适合给人点
+    const siteUrl = (() => { try { return new URL(safe.url).origin; } catch { return null; } })();
     db.prepare(`INSERT INTO sources (id,name,display_name,category,host_group,harvest_tier,
       enabled,priority,mandatory_retention,require_fulltext,config_json,source_version,
-      managed_by,created_by,created_at,updated_at)
-      VALUES (?,?,?,?,'direct',?,1,?,?,?,?,0,'admin',?,?,?)`)
+      managed_by,site_url,created_by,created_at,updated_at)
+      VALUES (?,?,?,?,'direct',?,1,?,?,?,?,0,'admin',?,?,?,?)`)
       .run(id, name, name, o.category, o.tier, o.priority ?? 5,
            o.mandatoryRetention ? 1 : 0, o.requireFulltext ? 1 : 0,
-           JSON.stringify(cfg), o.actor ?? 'owner', now, now);
+           JSON.stringify(cfg), siteUrl, o.actor ?? 'owner', now, now);
     db.prepare(`INSERT INTO source_endpoints (source_id,priority,url,parser,enabled)
       VALUES (?,1,?,?,1)`).run(id, safe.url, o.parser);
     audit(db, { entityType: 'source', entityId: id, action: 'source_added',
