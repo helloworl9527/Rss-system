@@ -14,7 +14,8 @@ import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
 import { isHighRisk } from '../../../packages/domain/src/risk.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
-import { runReview, type ReviewInput, type ReviewDeps } from '../../../packages/ai/src/review.ts';
+import { runReview, DEFAULT_REVIEW_CONCURRENCY, type ReviewInput, type ReviewDeps }
+  from '../../../packages/ai/src/review.ts';
 
 const argv = process.argv.slice(2);
 const DRY = argv.includes('--dry');
@@ -113,10 +114,12 @@ const deps: ReviewDeps = {
   systemPrompt: promptText,
   bodyCharsMax: rules.ai?.input_minimization?.body_chars_max ?? 8000,
   isHighRisk,
+  concurrency: rules.ai?.budget_per_run?.review_concurrency ?? DEFAULT_REVIEW_CONCURRENCY,
 };
 
 console.log(`run #${run.id} ${run.window_key} | L2 ${l2.name}/${l2.model} · L3 ${l3.name}/${l3.model}`);
-console.log(`待复核 ${inputs.length} 条 | L2 名额 ${deps.l2.budget.maxItems} · L3 名额 ${deps.l3.budget.maxItems}\n`);
+console.log(`待复核 ${inputs.length} 条 | L2 名额 ${deps.l2.budget.maxItems} · L3 名额 ${deps.l3.budget.maxItems}`);
+console.log(`并发 ${deps.concurrency} 路\n`);
 
 const rep = await runReview(inputs, deps);
 

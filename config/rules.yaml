@@ -1006,14 +1006,21 @@ ai:
     # 复核逐条送全文（body_chars_max 8000 ≈ 3600 token）+ 提示词 + siblings，
     # 每条约 5000 输入 token，5 条需 25000 —— 恰好撑满，实际只跑了 2 条
     # 就触发熔断。名额是主约束、token 是兜底，故把 token 放宽到名额的 1.6 倍。
+    # 【2026-08-24 调整】原名额 5/2 是主要的转人工来源：08-24 晚报
+    # 待复核 16 条，L2 处理 5 条全部成功、模型主动转人工 0 条，
+    # 其余 11 条纯粹是名额用尽。也就是说人工介入不是因为模型判不了，
+    # 而是我们没让它判。名额提到覆盖实际待复核量。
+    # 单条 L2 实测约 58 秒，故同时把复核改为并发 3 路（见 review.ts）。
     terra:
-      max_items: 5
-      input_tokens_max: 40000
-      output_tokens_max: 15000
+      max_items: 24
+      input_tokens_max: 180000
+      output_tokens_max: 70000
     sol:
-      max_items: 2
-      input_tokens_max: 20000
-      output_tokens_max: 8000
+      max_items: 8
+      input_tokens_max: 70000
+      output_tokens_max: 28000
+    # 同时在途的复核请求数。并发 1 = 旧的顺序行为。
+    review_concurrency: 3
 
   # 预算超限行为（PRD 15.5）
   on_soft_budget_exceeded:

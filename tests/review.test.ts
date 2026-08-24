@@ -181,5 +181,56 @@ console.log('\nSchema 形状：\n');
      req.properties.conclusion.type.includes('null'));
 }
 
+
+console.log('\n并发复核（PRD 3 章 P95 < 12 分钟）：\n');
+{
+  // 单条 L2 实测约 58 秒。名额从 5 提到 24 后若仍顺序执行，
+  // 运行时长会从 5 分钟涨到 23 分钟，超出 P95 要求。
+  let inFlight = 0, peak = 0;
+  const slow: Provider = {
+    name: 'mock', model: 'fake', strictness: 'strict',
+    async complete(req) {
+      inFlight++; peak = Math.max(peak, inFlight);
+      await new Promise(r => setTimeout(r, 5));
+      inFlight--;
+      return reply({}, idOf(req));
+    },
+  };
+  const list = Array.from({ length: 9 }, (_, i) => inp(`v${i}`));
+  const d = deps(slow, fake(() => reply()), { concurrency: 3 });
+  d.l2.budget.maxItems = 9;
+  const r = await runReview(list, d);
+  ok('确实并发执行', peak > 1, `峰值在途 ${peak}`);
+  ok('并发不超过设定路数', peak <= 3, `峰值在途 ${peak}`);
+  ok('全部完成且无重复', r.l2Used.items === 9
+     && new Set(r.outcomes.map(o => o.candidateId)).size === 9);
+}
+{
+  // 并发下名额仍不得超发 —— 名额在派发前切片预留
+  let calls = 0;
+  const p = fake((req) => { calls++; return reply({}, idOf(req)); });
+  const d = deps(p, fake(() => reply()), { concurrency: 4 });
+  d.l2.budget.maxItems = 3;
+  const r = await runReview(Array.from({ length: 12 }, (_, i) => inp(`v${i}`)), d);
+  ok('名额不超发', calls === 3, `实际调用 ${calls} 次`);
+  ok('超额的仍转人工而非丢弃', r.deferred.length === 9);
+  ok('每条候选都有归宿', r.outcomes.length === 12);
+}
+{
+  // token 兜底：并发下允许略微超出（最多 并发-1 条在途），但必须停下来
+  let calls = 0;
+  const p: Provider = {
+    name: 'mock', model: 'fake', strictness: 'strict',
+    async complete(req) { calls++; return reply({}, idOf(req)); },
+  };
+  const d = deps(p, fake(() => reply()), { concurrency: 3 });
+  d.l2.budget.maxItems = 100;
+  d.l2.budget.inputTokensMax = 9000;   // 每条约 2000+，撑不了 30 条
+  const r = await runReview(Array.from({ length: 30 }, (_, i) => inp(`v${i}`)), d);
+  ok('token 预算触发后停止派发', calls < 30, `实际调用 ${calls} 次`);
+  ok('未派发的转人工而非静默丢弃', r.deferred.length === 30 - calls);
+  ok('已派发的结果完整', r.outcomes.filter(o => o.status === 'ok').length === calls);
+}
+
 console.log(fail ? `\n❌ ${fail} 项失败` : '\n✅ 全部通过');
 process.exit(fail ? 1 : 0);

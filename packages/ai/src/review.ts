@@ -82,6 +82,9 @@ export type ReviewOutcome = {
 
 export type TierBudget = { maxItems: number; inputTokensMax: number; outputTokensMax: number };
 
+/** 同时在途的复核请求数。1 = 顺序执行（旧行为）。 */
+export const DEFAULT_REVIEW_CONCURRENCY = 3;
+
 export type ReviewDeps = {
   l2: { provider: Provider; budget: TierBudget };
   l3: { provider: Provider; budget: TierBudget };
@@ -92,6 +95,8 @@ export type ReviewDeps = {
   /** 带守卫的高风险判定；未提供时退回裸关键词匹配 */
   isHighRisk?: (text: string) => boolean;
   onUsage?: (tier: 'L2' | 'L3', u: CompleteResult['usage'], model: string) => void;
+  /** 同时在途的复核请求数，默认 1（顺序）。见 runTier 注释。 */
+  concurrency?: number;
 };
 
 export type ReviewReport = {
@@ -209,6 +214,74 @@ async function reviewOne(
            promote: false, promoteRules: [], attempts, error: lastErr };
 }
 
+/**
+ * 并发跑一层复核。
+ *
+ * 【为什么要并发】
+ * 实测单条 L2 约 58 秒（deepseek-v4-pro 逐条送全文）。顺序执行时，
+ * 名额从 5 提到 20 意味着运行时长从 5 分钟涨到 20 分钟，
+ * 超出 PRD 3 章 P95 < 12 分钟的要求。并发 3 路把同样的量压回 7 分钟。
+ *
+ * 【名额与预算怎么保证不超】
+ * 名额在派发前就切片预留，不会超发。token 预算只能在派发前用估算值
+ * 拦截 —— 并发下最多有 (并发数 - 1) 条已在途，故实际可能略微超出
+ * input_tokens_max。这是刻意的取舍：token 上限是兜底护栏，
+ * 名额才是主约束（见 rules.yaml budget_per_run 注释）。
+ */
+async function runTier(
+  queue: ReviewInput[], tier: 'L2' | 'L3', deps: ReviewDeps,
+  budget: TierBudget, used: { items: number; input: number; output: number },
+  outcomes: ReviewOutcome[], deferred: string[],
+): Promise<ReviewInput[]> {
+  // 名额在派发前切片预留 —— 并发下不可能超发
+  const take = queue.slice(0, budget.maxItems);
+  for (const c of queue.slice(budget.maxItems)) {
+    deferred.push(c.candidateId);
+    outcomes.push({ candidateId: c.candidateId, tier, result: null, status: 'skipped',
+                    promote: false, promoteRules: [], attempts: 0,
+                    error: tier === 'L2' ? 'L2 名额/预算已用尽，转人工审阅'
+                                         : 'L3 名额/预算已用尽，保留 L2 判定并转人工复核' });
+  }
+
+  const promoted: ReviewInput[] = [];
+  let next = 0;
+  let budgetExhausted = false;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= take.length) return;
+      const c = take[i]!;
+
+      const est = estTokens(deps.systemPrompt) + estTokens(buildUserContent(c, deps.bodyCharsMax));
+      if (budgetExhausted || used.input + est > budget.inputTokensMax ||
+          used.output >= budget.outputTokensMax) {
+        // token 兜底触发：这条及之后的都不再派发
+        budgetExhausted = true;
+        deferred.push(c.candidateId);
+        outcomes.push({ candidateId: c.candidateId, tier, result: null, status: 'skipped',
+                        promote: false, promoteRules: [], attempts: 0,
+                        error: tier === 'L2' ? 'L2 名额/预算已用尽，转人工审阅'
+                                             : 'L3 名额/预算已用尽，保留 L2 判定并转人工复核' });
+        continue;
+      }
+      used.input += est;   // 先按估算占位，回调里换成实际用量
+
+      const o = await reviewOne(c, tier, deps, (u, m) => {
+        used.input += u.inputTokens - est; used.output += u.outputTokens;
+        deps.onUsage?.(tier, u, m);
+      });
+      used.items++;
+      outcomes.push(o);
+      if (o.promote) promoted.push(c);
+    }
+  };
+
+  const lanes = Math.max(1, Math.min(deps.concurrency ?? 1, take.length));
+  await Promise.all(Array.from({ length: lanes }, worker));
+  return promoted;
+}
+
 export async function runReview(inputs: ReviewInput[], deps: ReviewDeps): Promise<ReviewReport> {
   const outcomes: ReviewOutcome[] = [];
   const l2Used = { items: 0, input: 0, output: 0 };
@@ -219,43 +292,8 @@ export async function runReview(inputs: ReviewInput[], deps: ReviewDeps): Promis
     priorityOf(a, deps.highRiskKeywords, deps.isHighRisk) -
     priorityOf(b, deps.highRiskKeywords, deps.isHighRisk));
 
-  const promoted: ReviewInput[] = [];
-  for (const c of queue) {
-    const est = estTokens(deps.systemPrompt) + estTokens(buildUserContent(c, deps.bodyCharsMax));
-    if (l2Used.items >= deps.l2.budget.maxItems ||
-        l2Used.input + est > deps.l2.budget.inputTokensMax ||
-        l2Used.output >= deps.l2.budget.outputTokensMax) {
-      deferred.push(c.candidateId);
-      outcomes.push({ candidateId: c.candidateId, tier: 'L2', result: null, status: 'skipped',
-                      promote: false, promoteRules: [], attempts: 0,
-                      error: 'L2 名额/预算已用尽，转人工审阅' });
-      continue;
-    }
-    const o = await reviewOne(c, 'L2', deps, (u, m) => {
-      l2Used.input += u.inputTokens; l2Used.output += u.outputTokens; deps.onUsage?.('L2', u, m);
-    });
-    l2Used.items++;
-    outcomes.push(o);
-    if (o.promote) promoted.push(c);
-  }
-
-  for (const c of promoted) {
-    const est = estTokens(deps.systemPrompt) + estTokens(buildUserContent(c, deps.bodyCharsMax));
-    if (l3Used.items >= deps.l3.budget.maxItems ||
-        l3Used.input + est > deps.l3.budget.inputTokensMax ||
-        l3Used.output >= deps.l3.budget.outputTokensMax) {
-      deferred.push(c.candidateId);
-      outcomes.push({ candidateId: c.candidateId, tier: 'L3', result: null, status: 'skipped',
-                      promote: false, promoteRules: [], attempts: 0,
-                      error: 'L3 名额/预算已用尽，保留 L2 判定并转人工复核' });
-      continue;
-    }
-    const o = await reviewOne(c, 'L3', deps, (u, m) => {
-      l3Used.input += u.inputTokens; l3Used.output += u.outputTokens; deps.onUsage?.('L3', u, m);
-    });
-    l3Used.items++;
-    outcomes.push(o);
-  }
+  const promoted = await runTier(queue, 'L2', deps, deps.l2.budget, l2Used, outcomes, deferred);
+  await runTier(promoted, 'L3', deps, deps.l3.budget, l3Used, outcomes, deferred);
 
   return { outcomes, l2Used, l3Used, deferred };
 }
