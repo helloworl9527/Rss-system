@@ -97,7 +97,7 @@ console.log('\n渠道名可点击跳转到对应源：\n');
   ok('http 主页被拒绝', !renderHtml(bad).includes('evil.example'));
 }
 
-console.log('\n补录标注（PRD 6.3）：\n');
+console.log('\n补录条目按普通条目展示（PRD 6.3 的标注要求已按使用方决定去除）：\n');
 {
   const d = data({ sections: [{ id:'ai_tech', title:'A', items:[{
     title:'延迟条目', conclusion:'c', summarySentences:['a。','b。'],
@@ -105,10 +105,13 @@ console.log('\n补录标注（PRD 6.3）：\n');
     lateDiscovery: { originWindow:'2026-08-23:noon', publishedAt:'2026-08-23 09:24', firstSeenAt:'2026-08-23 12:20' },
   }] }] });
   const html = renderHtml(d), text = renderText(d);
-  ok('HTML 标明「补录（RSS 延迟）」', html.includes('补录（RSS 延迟）'));
-  ok('HTML 展示原发布/原窗口/首次发现',
-     html.includes('原发布') && html.includes('原窗口') && html.includes('首次发现'));
-  ok('纯文本同样标注', text.includes('[补录（RSS 延迟）]') && text.includes('原窗口'));
+  // 补录是采集时序的产物，对读者不构成信息；标注只制造噪声。
+  // 可审计性由 candidates.late_discovery 与审计区计数保证，不依赖邮件正文。
+  ok('HTML 不出现补录徽章', !html.includes('补录'));
+  ok('HTML 不展示原窗口等采集元信息',
+     !html.includes('原发布') && !html.includes('原窗口') && !html.includes('首次发现'));
+  ok('纯文本同样不标注', !text.includes('补录') && !text.includes('原窗口'));
+  ok('补录条目本身正常展示', html.includes('延迟条目') && text.includes('延迟条目'));
 }
 
 console.log('\n审计区（PRD 9.3）：\n');

@@ -21,6 +21,8 @@ export type ComposeInput = {
   contributions: Array<{ sourceName: string; url: string | null }>;
   /** 必须融入摘要正文的限制说明（PRD 9.2） */
   sourceLimitations: string[];
+  /** 程序判定的来源事实，供模型决定是否点明来源局限（compose.md 表格） */
+  sourceEvidence?: Record<string, boolean | string>;
   /** L2/L3 已产出的文案，有则直接复用 */
   precomposed?: { conclusion: string; summarySentences: string[] } | null;
 };
@@ -146,6 +148,7 @@ async function composeBatch(
         section: b.section,
         mandatory_class: b.mandatoryClass,
         must_disclose: b.sourceLimitations,
+        source_evidence: b.sourceEvidence ?? {},
         other_sources: b.contributions.map(c => c.sourceName),
         body: b.body.slice(0, chars),
       })),

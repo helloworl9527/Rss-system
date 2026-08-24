@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { openDb, nowIso, type DB } from '../../../packages/db/src/index.ts';
 import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
+import { pickHighlights } from '../../../packages/domain/src/highlights.ts';
 import { windowFromKey } from '../../../packages/domain/src/normalize.ts';
 import { clusterCandidates, selectForBrief, type ClusterInput }
   from '../../../packages/domain/src/cluster.ts';
@@ -103,6 +104,26 @@ if (!selected.length) {
   console.log('本窗口没有达标内容。按 PRD 9.1，不用旧消息凑数。');
 }
 
+/**
+ * 来源证据：给 compose 模型判断「该不该点明来源局限」的确定性依据。
+ *
+ * 这些是程序能确定的事实（有没有官方链接、来源是论坛还是官方文档），
+ * 不是判断结论 —— 说不说、怎么说由模型按 compose.md 的表格决定。
+ * 交给模型自己从正文猜来源性质会猜错，所以由程序给出。
+ */
+function sourceEvidence(r: Row): Record<string, boolean | string> {
+  let sig: Record<string, unknown> = {};
+  try { sig = r.signals_json ? JSON.parse(r.signals_json) : {}; } catch { /* 信号缺失不致命 */ }
+  return {
+    source_kind: r.category ?? 'unknown',
+    is_official_source: !!r.is_official,
+    has_official_link: !!sig.has_official_link || !!sig.official_domain,
+    has_repo_link: !!sig.has_repo,
+    has_reproducible_method: !!sig.has_steps || !!sig.has_code,
+    is_personal_account: !!sig.first_person || r.category === 'forum' || r.category === 'social',
+  };
+}
+
 // ---------- 3. 生成文案 ----------
 const byCid = new Map(rows.map(r => [`c${r.cid}`, r]));
 const composeInputs: ComposeInput[] = selected.map(c => {
@@ -114,6 +135,7 @@ const composeInputs: ComposeInput[] = selected.map(c => {
     section: c.section, mandatoryClass: c.mandatoryClass,
     contributions: c.members.map(m => ({ sourceName: m.sourceId, url: m.url })),
     sourceLimitations: e?.source_limitations ?? [],
+    sourceEvidence: sourceEvidence(r),
     precomposed: e?.conclusion && e?.summary_sentences?.length >= 2
       ? { conclusion: e.conclusion, summarySentences: e.summary_sentences } : null,
   };
@@ -166,11 +188,12 @@ for (const c of selected) {
   });
 }
 
-// 核心要点：按分数取前 N 条的结论（PRD 9.1，不足时允许少于 5 条）
+// 核心要点：每分区保底一条 + 余额按分数补 + 同类合并（详见 highlights.ts）
 const [hMin, hMax] = rules.brief?.sections?.[0]?.count ?? [5, 8];
 void hMin;
-const highlights = [...items].sort((a, b) => b.score - a.score)
-  .slice(0, hMax).map(i => i.conclusion);
+const highlights = pickHighlights(
+  items, SECTIONS.map((x: any) => x.id).filter((id: string) => id !== 'core_highlights' && id !== 'audit'),
+  hMax);
 
 // 审计区（PRD 9.3）
 const filtered = rows.filter(r => r.decision === 'filter');
@@ -190,23 +213,37 @@ const sourceIssues = (db.prepare(`SELECT id, display_name, site_url, health, las
 /**
  * 评估附录（影子运行期默认开启，稳定后可用 BRIEF_EVAL_APPENDIX=false 关闭）。
  *
- * 全量列出被过滤与待复核的条目，每条带可引用编号（c<候选ID>）。
- * 人工回复「保留 c123 c145」后用 scripts/golden-mark.mjs 写入黄金集，
- * 这些标注就是 PRD 24.1「强制保留召回率 ≥98%」的评估基线 ——
- * 在有黄金集之前，召回率无从验证。
+ * 只列**本期新出现**的被过滤/待复核条目。三窗口复查会把最近三个已结束
+ * 窗口的条目反复带进候选，若每期都全量重列，附录会有七成以上重复
+ * （实测早报与午报重复率 71%），读起来像"和上一封差不多"，
+ * 也让人工筛选无从下手。
+ *
+ * 每条带可引用编号 c<候选ID>。人工回复「保留 c123」后用
+ * scripts/golden-mark.mjs 写入黄金集 —— 这是 PRD 24.1
+ * 「强制保留召回率 ≥98%」在有黄金集之前唯一的取得基线的方式。
  */
 const wantAppendix = (process.env.BRIEF_EVAL_APPENDIX ?? 'true') !== 'false';
 const entry = (r: Row, reason: string) =>
   ({ ref: `c${r.cid}`, title: r.title, source: r.display_name || r.source_id,
      site: r.site_url, url: r.url, reason });
 
+const seen = new Set((db.prepare('SELECT item_version_id v FROM appendix_seen').all() as any[])
+  .map(x => x.v));
+
 let evalAppendix: BriefData['evalAppendix'] = null;
+let appendixNew: Row[] = [];
 if (wantAppendix) {
-  const allFiltered = rows.filter(r => r.decision === 'filter')
-    .map(r => entry(r, r.filter_reason ?? r.filter_rule_id ?? '未记录原因'));
-  const allPending = rows.filter(r => r.decision === 'escalate')
-    .map(r => entry(r, '待复核：名额不足或需人工判断'));
-  evalAppendix = { filtered: allFiltered, pending: allPending, truncatedNote: null };
+  const fresh = (d: string) => rows.filter(r => r.decision === d && !seen.has(r.vid));
+  const filtered = fresh('filter'), pending = fresh('escalate');
+  appendixNew = [...filtered, ...pending];
+  const repeated = rows.filter(r => (r.decision === 'filter' || r.decision === 'escalate')
+                                 && seen.has(r.vid)).length;
+  evalAppendix = {
+    filtered: filtered.map(r => entry(r, r.filter_reason ?? r.filter_rule_id ?? '未记录原因')),
+    pending: pending.map(r => entry(r, '待复核：名额不足或需人工判断')),
+    truncatedNote: repeated ? `另有 ${repeated} 条此前已在附录中列出，本期不再重复。` : null,
+  };
+  console.log(`附录：新增 ${appendixNew.length} 条，跳过已列过的 ${repeated} 条`);
 }
 
 const data: BriefData = {
@@ -343,6 +380,15 @@ if (NO_SEND) {
     subject, text, html,
     environment: SHADOW ? 'shadow' : undefined,
   });
+  // 只有真正投递出去才记为「已列过」—— 发送失败时不能标记，
+  // 否则补发或下期就再也看不到这些条目了
+  if ((r.status === 'sent' || r.status === 'already_sent') && appendixNew.length) {
+    const ins = db.prepare(`INSERT INTO appendix_seen (item_version_id,brief_id,decision,listed_at)
+      VALUES (?,?,?,?) ON CONFLICT(item_version_id) DO NOTHING`);
+    db.transaction(() => {
+      for (const x of appendixNew) ins.run(x.vid, briefId, x.decision, nowIso());
+    })();
+  }
   const icon = { sent: '✅', already_sent: '○', failed: '⚠️', permanent_failure: '❌' }[r.status];
   console.log(`${icon} 投递 ${r.status}` +
     (r.providerId ? ` id=${r.providerId}` : '') +

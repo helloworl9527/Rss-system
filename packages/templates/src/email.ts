@@ -127,16 +127,12 @@ const badge = (text: string, tone: 'plain' | 'accent' = 'plain') => `<span style
 function renderItem(it: BriefItem, index: number): string {
   const url = safeUrl(it.sourceUrl);
   const site = safeUrl(it.sourceSite);
-  const badges = [
-    it.lateDiscovery ? badge('补录（RSS 延迟）') : '',
-    it.isUpdate ? badge('更新', 'accent') : '',
-  ].join('');
-
-  const late = it.lateDiscovery
-    ? `<div style="margin:12px 0 0;padding:8px 11px;background:${C.auditBg};border-radius:5px;
-        font-size:12px;line-height:1.6;color:${C.muted};">
-        原发布 ${esc(it.lateDiscovery.publishedAt)} · 原窗口 ${esc(it.lateDiscovery.originWindow)}
-        · 首次发现 ${esc(it.lateDiscovery.firstSeenAt)}</div>` : '';
+  // 补录条目与普通条目同样展示：不加徽章、不列原窗口。
+  // PRD 6.3 要求标注补录，但读者视角里「这条是几点抓到的」不是信息 ——
+  // 标注只制造噪声。补录仍然全程记录在 candidates.late_discovery
+  // 与审计区计数里，可审计性不受影响。
+  const badges = it.isUpdate ? badge('更新', 'accent') : '';
+  const late = '';
 
   const others = it.otherSources?.length
     ? `<div style="margin:8px 0 0;font-size:12px;color:${C.faint};">
@@ -330,13 +326,9 @@ export function renderText(d: BriefData): string {
     if (!s.items.length) continue;
     L.push(`【${s.title}】`);
     for (const it of s.items) {
-      const tags = [it.lateDiscovery ? '[补录（RSS 延迟）]' : '', it.isUpdate ? '[更新]' : '']
-        .filter(Boolean).join('');
-      L.push(`${tags}${it.title}`);
+      L.push(`${it.isUpdate ? '[更新]' : ''}${it.title}`);
       L.push(`  ${it.conclusion}`);
       L.push(`  ${it.summarySentences.join(' ')}`);
-      if (it.lateDiscovery)
-        L.push(`  原发布 ${it.lateDiscovery.publishedAt} · 原窗口 ${it.lateDiscovery.originWindow} · 首见 ${it.lateDiscovery.firstSeenAt}`);
       const u = safeUrl(it.sourceUrl);
       const st = safeUrl(it.sourceSite);
       L.push(`  来源渠道：${it.sourceName}${st ? ` ${st}` : ''}`);
