@@ -70,6 +70,39 @@ console.log('\n公益站/中转站运营与争议（DF-040 / DF-041，来自人�
   ok('带官方链接的计价公告不被 DF-040 过滤', withOfficial?.ruleId !== 'DF-040', withOfficial?.ruleId ?? '不过滤');
 }
 
+console.log('\n政治观点 / 娱乐八卦 / 账号买卖（DF-042~044，来自人工反馈）：\n');
+{
+  const fire = (text: string, sig: Partial<SignalMap> = {}) =>
+    applyDeterministicFilters({ ...base, cleanText: text, title: text, signals: S(sig) })?.ruleId ?? null;
+
+  ok('转发的意识形态论断 → DF-042',
+     fire('RT Brett Pike: The Bolsheviks committed mass murder and pure horror') === 'DF-042');
+  ok('转发的地缘论战 → DF-042',
+     fire('RT Arthur: China is publicly developing superhuman robot armies') === 'DF-042');
+
+  // 关键边界：政策事实新闻必须保留 —— 用户模板里明确收录了这两条
+  ok('加拿大对美加征对等关税（政策事实）→ 不过滤',
+     fire('加拿大宣布对美国商品实施对等关税，计划自 9 月 8 日起生效') === null);
+  ok('澳大利亚首例哺乳动物 H5 感染（政策事实）→ 不过滤',
+     fire('澳大利亚确认首例哺乳动物 H5 感染，为一只死亡海狗，官方称公众风险仍低') === null);
+  ok('带官方链接的政治新闻 → 不过滤',
+     fire('RT 官方账号：监管机构就意识形态审查发布新条例', { official_link: true }) === null);
+
+  ok('明星抄袭争议 → DF-043',
+     fire('中国人气男团被指Logo抄袭，经纪公司回应，F1 已立案调查') === 'DF-043');
+  ok('技术项目里出现「争议」二字 → 不过滤',
+     fire('该开源项目的许可证争议已由作者回应并更新 LICENSE', { repo_url: true }) === null);
+
+  ok('等级号倒卖询价 → DF-044', fire('L站二级号那么贵吗？闲鱼看到的价格太夸张') === 'DF-044');
+  ok('代充代练 → DF-044', fire('提供各类账号代充代练服务') === 'DF-044');
+
+  // 中转站推广常不自称「中转站」，但「倍率」是这一类的标志性说法
+  ok('倍率+拉群的中转站推广 → DF-040',
+     fire('【富可敌国】pro倍率0.2 缓存接近90% 无降智 送测试鸡蛋欢迎佬们来测 加群 159391934') === 'DF-040');
+  ok('正常谈论模型倍率但无推广 → 不过滤',
+     fire('这篇文章分析了不同模型的定价倍率差异与成本结构', { official_link: true }) === null);
+}
+
 console.log('\n强制保留候选豁免 normal_only 规则（PRD 8.2）：\n');
 check('AFF+强制保留 → 不过滤', { signals: S({ aff_link: true }), isMandatory: true }, null);
 check('低信息量+强制保留 → 不过滤', { cleanText: '哈哈哈这个真的好好玩啊，笑死我了，各位怎么看', externalLinkCount: 0, isMandatory: true }, null);

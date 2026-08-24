@@ -472,10 +472,17 @@ deterministic_filters:
     description: "第三方公益站/中转站的运营公告、计价调整、内测招募"
     applies_to: normal_only
     condition:
-      all_of:
-        - regex: '(公益站|中转站|反代站|镜像站|号池)'
-        - regex: '(通知|公告|调整|补偿|内测|开放|限时|上新|额度发放|计价|退款)'
-        - not_signal: official_link      # 有服务商官方链接的另当别论
+      any_of:
+        - all_of:
+            - regex: '(公益站|中转站|反代站|镜像站|号池)'
+            - regex: '(通知|公告|调整|补偿|内测|开放|限时|上新|额度发放|计价|退款)'
+            - not_signal: official_link      # 有服务商官方链接的另当别论
+        # 中转站推广常不自称「中转站」，但「倍率」是这一类的标志性说法，
+        # 配合拉群/送额度即可判定（实测 c81 只因缺站点词而漏判）
+        - all_of:
+            - regex: '(倍率|无降智|不降智|首字|缓存命中|自用实时监测)'
+            - regex: '(送|欢迎|加群|访问地址|新用户|测试|欢迎佬)'
+            - not_signal: official_link
     action: filter
 
   - id: DF-041
@@ -488,6 +495,50 @@ deterministic_filters:
         - all_of:
             - regex: '(争议|纠纷|投诉|封号|跑路|骗子|割韭菜)'
             - regex: '(中转站|公益站|某站|该站|站长)'
+    action: filter
+
+  # 【人工反馈，2026-08-24】以下三类明确过滤。
+  #
+  # 关键边界：政策**事实**新闻必须保留（用户模板里明确收录了
+  # 「加拿大对美加征对等关税」「澳大利亚首例哺乳动物 H5 感染」），
+  # 要过滤的是政治**观点与论战**。区分依据是「有无可核验的官方来源」：
+  # 官方公告有出处、有生效日期、有具体条款；意识形态论断只有立场。
+  # 因此 DF-042 要求同时满足「转发的观点体裁」与「无官方链接」。
+  - id: DF-042
+    name: political_opinion
+    description: "转发的政治/意识形态论断，无官方来源可核验"
+    applies_to: normal_only
+    condition:
+      all_of:
+        - regex: '^\s*(RT|转发|轉發)\b|^\s*RT\s'
+        - any_of:
+            - regex: '(?:Bolshevik|communis|fascis|genocide|mass murder|regime|ideolog|racis|discriminat|woke|leftis|right-wing)'
+            - regex: '(共产|法西斯|种族|意识形态|政权|独裁|专制|极权|白左|政治正确|大屠杀)'
+            - regex: '(superhuman robot armies|world war|civil war|invasion)'
+        - not_signal: official_link
+    action: filter
+
+  - id: DF-043
+    name: celebrity_gossip
+    description: "明星/娱乐圈争议与八卦"
+    applies_to: normal_only
+    condition:
+      all_of:
+        - regex: '(男团|女团|偶像|艺人|明星|演唱会|经纪公司|粉丝|选秀|综艺|剧组)'
+        - regex: '(抄袭|争议|塌房|翻车|开撕|回应|道歉|立案|举报|绯闻|恋情)'
+        - not_signal: repo_url
+    action: filter
+
+  - id: DF-044
+    name: account_trading
+    description: "账号买卖、等级号倒卖、代充代练"
+    applies_to: normal_only
+    condition:
+      any_of:
+        - all_of:
+            - regex: '(二级号|等级号|老号|小号|成品号|账号)'
+            - regex: '(出售|收购|多少钱|价格|贵吗|闲鱼|转让|代购|回收)'
+        - regex: '(代充|代练|号商|养号)'
     action: filter
 
   - id: DF-030

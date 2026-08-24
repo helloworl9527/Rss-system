@@ -66,6 +66,30 @@ export function checkComposed(r: ComposeResult, forbidden: string[] = []): strin
 }
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * 剥掉结论开头的空指代与结尾的元评论。
+ *
+ * 提示词里已明令禁止，但模型仍会写「这是一篇关于 X 的教程」——
+ * 「这是一篇关于」六个字不给读者任何信息。同理「内容为技术分享、
+ * 无推广或高风险信息」是系统内部的判定依据，不该出现在给人看的文字里。
+ * 提示词负责质量，这里负责兜底。
+ */
+const LEAD_FILLER = /^(这|那)?(是一[篇个份条项款]|篇)?\s*(关于\s*)?|^(该|本|这)(文|篇文章|帖|贴|项目|工具|教程|方案|服务|产品|应用|库|插件|模型|站点)\s*(是|为|提供了?|介绍了?|讲述了?|描述了?|说明了?)?\s*/;
+const META_TAIL = /[，,、;；]?\s*(内容)?(为|属于|系)?\s*(纯)?(技术分享|技术讨论|经验分享|个人分享|信息分享)?[，,]?\s*(无|不含|没有)(推广|广告|AFF|高风险信息|风险信息|营销内容)[^。]*。?$|[，,、]?\s*(属于|符合|不属于)[^。]{0,20}(可保留类别|收录标准|过滤条件)[^。]*。?$|[，,、]?\s*信息(增益|价值)(高|低|较高|较低)[^。]*。?$/g;
+
+export function stripFiller(text: string): string {
+  let t = String(text ?? '').trim();
+  const before = t;
+  t = t.replace(META_TAIL, '').trim();
+  // 只在开头确实是空指代时剥离，且剥完不能把句子掏空
+  const m = t.match(/^(这是一[篇个份条项款]|那是一[篇个份条项款]|该文|本文|该篇文章|这篇文章|该帖|该贴|该项目|该工具|该教程|该方案|该服务|该产品|该应用|该库|该插件|该模型|该站点)\s*(是|为|提供了?|介绍了?|讲述了?|描述了?|说明了?)?\s*(关于\s*)?/);
+  if (m && t.length - m[0].length >= 12) t = t.slice(m[0].length).trim();
+  t = t.replace(/^[，,、：:]\s*/, '').replace(/[，,、]$/, '');
+  if (t && !/[。！？.!?]$/.test(t)) t += '。';
+  return t.length >= 8 ? t : before;   // 剥过头就退回原文
+}
+void LEAD_FILLER;
+
 export async function runCompose(
   items: ComposeInput[], deps: ComposeDeps,
 ): Promise<{ outcomes: ComposeOutcome[]; usedInput: number; usedOutput: number; calls: number }> {
@@ -160,9 +184,12 @@ async function composeBatch(
     }
     if (bad.length) { lastErr = bad.slice(0, 2).join(' | '); lastKind = 'schema'; continue; }
 
-    return batch.map(b => ({
-      candidateId: b.candidateId, result: byId.get(b.candidateId)!, status: 'ok' as const, attempts,
-    }));
+    return batch.map(b => {
+      const r = byId.get(b.candidateId)!;
+      return { candidateId: b.candidateId, attempts, status: 'ok' as const,
+        result: { ...r, conclusion: stripFiller(r.conclusion),
+                  summary_sentences: r.summary_sentences.map(stripFiller) } };
+    });
   }
 
   return batch.map(b => ({

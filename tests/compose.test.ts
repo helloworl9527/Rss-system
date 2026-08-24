@@ -1,5 +1,5 @@
 // compose 第二段（PRD 9.2）
-import { runCompose, checkComposed, type ComposeInput, type ComposeDeps }
+import { runCompose, checkComposed, stripFiller, type ComposeInput, type ComposeDeps }
   from '../packages/ai/src/compose.ts';
 import type { Provider, CompleteRequest, CompleteResult } from '../packages/ai/src/types.ts';
 import type { ComposeResult } from '../packages/ai/src/schema.ts';
@@ -68,6 +68,21 @@ console.log('\nPRD 9.2 字段禁令：\n');
   ok('生成阶段出现禁用字段 → 重试后转人工',
      r.outcomes[0]!.status === 'manual_audit' && r.outcomes[0]!.attempts === 2,
      r.outcomes[0]!.error?.slice(0, 40));
+}
+
+console.log('\n剥离空指代与元评论（来自人工反馈）：\n');
+{
+  const cut = (a: string, b: string) => ok(`「${a.slice(0, 16)}…」`, stripFiller(a) === b, stripFiller(a));
+  cut('这是一篇关于 Qwen3.8 本地部署的完整教程，内容为技术分享，无推广或高风险信息。',
+      'Qwen3.8 本地部署的完整教程。');
+  cut('该项目提供了一款支持多平台的开源视频下载工具。', '一款支持多平台的开源视频下载工具。');
+  cut('该文是作者对 Harness 分层实践的思考与总结。', '作者对 Harness 分层实践的思考与总结。');
+  // 不得误伤：描述对象的「一篇…长文」与正常陈述
+  const keep = (t: string) => ok(`不误伤「${t.slice(0, 18)}…」`, stripFiller(t) === t);
+  keep('一篇 Harness 实践长文把 Shell、Sandbox、Skill 串成了可复用架构。');
+  keep('GitHub 为 Dependabot 的非安全更新默认增加 3 天冷静期，安全更新仍即时发送。');
+  keep('腾讯云面向新用户推出 38 元一年的 4 核 4G 服务器。');
+  ok('剥过头则退回原文', stripFiller('该项目很好。') === '该项目很好。', stripFiller('该项目很好。'));
 }
 
 console.log('\n结构约束：\n');

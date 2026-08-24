@@ -66,6 +66,9 @@ const REASONS: Record<string, string> = {
   'DF-030': '整篇转载且无新增信息',
   'DF-040': '第三方公益站/中转站的运营公告或内测招募，非服务商官方权益',
   'DF-041': '站点争议或个人恩怨爆料，无公共价值',
+  'DF-042': '转发的政治或意识形态论断，无官方来源可核验',
+  'DF-043': '明星娱乐圈争议与八卦',
+  'DF-044': '账号买卖或代充代练',
 };
 
 export function applyDeterministicFilters(ctx: FilterCtx): FilterHit | null {
