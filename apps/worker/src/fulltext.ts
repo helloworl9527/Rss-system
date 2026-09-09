@@ -17,6 +17,7 @@ import { contentFingerprint, stripHtml } from '../../../packages/domain/src/norm
 import { extractSignals, prescreenMandatory, needsFulltext } from '../../../packages/domain/src/signals.ts';
 import { Throttler } from '../../../packages/connectors/src/throttle.ts';
 import { fulltextFetcher } from '../../../packages/connectors/src/fulltext.ts';
+import { circuitUntil, recordHostSuccess, recordRateLimit } from './host-circuit.ts';
 
 const argv = process.argv.slice(2);
 const RETRY = argv.includes('--retry');
@@ -58,8 +59,12 @@ const upd = db.prepare(`UPDATE item_versions SET
 const skip = db.prepare(
   `UPDATE item_versions SET fulltext_status='skipped', gate_reason=?, signals_json=?, prescreen_json=? WHERE id=?`);
 
-const sourceHost = (id: string) =>
-  ({ linuxdo: 'linux.do', v2ex: 'v2ex.com', elsewhere: 'elsewhere.news' }[id] ?? '');
+const sourceHost = (id: string, url: string | null = null) => {
+  const fixed = ({ linuxdo: 'linux.do', v2ex: 'v2ex.com', elsewhere: 'elsewhere.news' } as
+    Record<string, string>)[id];
+  if (fixed) return fixed;
+  try { return url ? new URL(url).hostname : ''; } catch { return ''; }
+};
 
 // 单轮配额按来源分设（rules.yaml max_fetch_per_run_by_source）
 const perSource: Record<string, number> = gateCfg.max_fetch_per_run_by_source ?? {};
@@ -76,9 +81,12 @@ for (const r of pending) {
   if ((used[r.source_id] ?? 0) >= capFor(r.source_id)) { gated++; continue; }
 
   // 先用摘要算一次信号，供门限判定
-  const pre = extractSignals(r.clean_text, r.html_excerpt ?? '', sourceHost(r.source_id));
+  const host = sourceHost(r.source_id, r.canonical_url);
+  const pre = extractSignals(r.clean_text, r.html_excerpt ?? '', host);
   const gate = r.source_id === 'elsewhere'
     ? { need: true, reason: 'elsewhere_require_full_article' }   // PRD 8.6：无条件打开原文
+    : r.source_id === 'jike'
+    ? { need: true, reason: 'jike_composite_child_require_full_article' }
     : needsFulltext(r.source_id, r.title, r.clean_text, !!r.is_excerpt, pre.signals);
 
   if (!gate.need) {
@@ -94,8 +102,15 @@ for (const r of pending) {
     skipped++; continue;
   }
 
-  const host = sourceHost(r.source_id);
-  const grp = throttler.groupFor(`https://${host}/`, null);
+  // RSS 与全文共享 linux.do 主机熔断；冷却期间不再试撞 Cloudflare。
+  const blockedUntil = host ? circuitUntil(db, host) : null;
+  if (blockedUntil) {
+    limitedSources.add(r.source_id);
+    console.log(`  ⏸ ${r.source_id} 主机熔断中（至 ${blockedUntil}），跳过本轮全文抓取`);
+    gated++;
+    continue;
+  }
+  const grp = throttler.groupFor(`https://${host}/`, r.source_id === 'linuxdo' ? 'fulltext_discourse' : null);
   // linux.do 在 Cloudflare 之后，undici 一律被质询 403，直接走 curl
   // 省掉一次注定失败的请求（详见 fetchViaCurl 注释）。
   const transport = r.source_id === 'linuxdo' ? 'curl' as const : 'auto' as const;
@@ -113,7 +128,8 @@ for (const r of pending) {
     // 不计入 fulltext_attempts（否则条目会被永久判死），跳过该来源剩余条目，
     // 但其他来源继续。下一轮 timer 形成天然冷却。
     limitedSources.add(r.source_id);
-    console.log(`  ⏸ ${r.source_id} 触发限流（${res.error}），跳过该来源剩余条目`);
+    const until = host ? recordRateLimit(db, host, res.httpCode, res.error) : null;
+    console.log(`  ⏸ ${r.source_id} 触发限流（${res.error}），熔断至 ${until ?? '下一轮'}，跳过该来源剩余条目`);
     continue;
   }
 
@@ -127,6 +143,8 @@ for (const r of pending) {
     failed++;
     continue;
   }
+
+  if (host) recordHostSuccess(db, host);
 
   const text = res.text;
   const minChars = r.source_id === 'elsewhere'

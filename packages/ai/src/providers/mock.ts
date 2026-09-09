@@ -85,6 +85,8 @@ export class MockProvider implements Provider {
 
 /** 依据请求里的候选，合成一份形状正确的响应。 */
 function synth(req: CompleteRequest, fault: Fault): unknown {
+  if (req.schemaName === 'telegram_window_summary') return synthTelegramSummary(req);
+  if (req.schemaName === 'source_profiler') return synthSourceProfiler(req);
   if (req.schemaName === 'review') return synthReview(req, fault);
   if (req.schemaName === 'compose') return synthCompose(req, fault);
   let payload: any = {};
@@ -113,6 +115,31 @@ function synth(req: CompleteRequest, fault: Fault): unknown {
     return base;
   });
   return { results };
+}
+
+function synthTelegramSummary(req: CompleteRequest): unknown {
+  const matches = [...req.userContent.matchAll(/<message id="(\d+)" time="([^"]+)"/g)];
+  return {
+    topics: ['窗口消息概览'], important: ['本窗口包含待归纳消息。'], viewpoints: [],
+    sources: matches.slice(0, 5).map(m => ({ messageId: Number(m[1]), time: m[2] })),
+    uncertainty: [],
+  };
+}
+
+function synthSourceProfiler(req: CompleteRequest): unknown {
+  let p: any = {};
+  try { p = JSON.parse(req.userContent); } catch { /* keep conservative defaults */ }
+  const parser = p.parser === 'atom' ? 'atom' : p.parser === 'telegram_web' ? 'telegram_web'
+    : p.parser === 'openai_release_notes_page' || p.parser === 'deepseek_page' ? 'fixed_web' : 'rss';
+  const samples = Array.isArray(p.samples) ? p.samples : [];
+  return {
+    source_type: parser, content_domain: 'technology', publisher_type: 'unknown', officiality: 'unknown',
+    default_category: 'tech', quality_profile: samples.length ? 'sampled' : 'unknown', freshness_profile: 'unknown',
+    fulltext_requirement: 'recommended', dedupe_strategy: 'canonical_url_then_title_time', risk_flags: [],
+    recommended_rule_profile: 'default', proposed_rule_diff: [],
+    evidence_sample_ids: samples.map((_: any, i: number) => `sample-${i + 1}`), confidence: samples.length ? 0.72 : 0.35,
+    capability_gap: null,
+  };
 }
 
 /** record 模式：把真实响应存盘供后续 replay。 */

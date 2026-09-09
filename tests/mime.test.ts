@@ -44,12 +44,12 @@ console.log('\n结构与编码：\n');
 
 console.log('\n中文主题编码（RFC 2047）：\n');
 {
-  const raw = buildMime({ ...base, subject: '十六源简报｜2026-08-23 晚报' });
+  const raw = buildMime({ ...base, subject: '十六源简报｜2026-08-23｜晚报' });
   const line = raw.split('\r\n').find(l => l.startsWith('Subject:'))!;
   ok('中文主题已 Base64 编码', line.includes('=?UTF-8?B?') && line.endsWith('?='));
   const enc = line.match(/=\?UTF-8\?B\?(.+)\?=/)![1]!;
   ok('解码后与原文一致',
-     Buffer.from(enc, 'base64').toString('utf8') === '十六源简报｜2026-08-23 晚报');
+     Buffer.from(enc, 'base64').toString('utf8') === '十六源简报｜2026-08-23｜晚报');
   const ascii = buildMime({ ...base, subject: 'Plain ASCII' });
   ok('纯 ASCII 主题不做多余编码',
      ascii.split('\r\n').find(l => l.startsWith('Subject:')) === 'Subject: Plain ASCII');

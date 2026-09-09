@@ -1,5 +1,5 @@
 // 聚类与排序（PRD 7.4 / 8.4 / 9.1）
-import { clusterCandidates, selectForBrief, scoreCluster, type ClusterInput }
+import { clusterCandidates, excludeCoveredToday, selectForBrief, scoreCluster, type ClusterInput }
   from '../packages/domain/src/cluster.ts';
 
 let fail = 0;
@@ -43,6 +43,124 @@ console.log('\n同关键词不等于重复（PRD 7.4 最易错项）：\n');
   ok('不同分区不合并', cs.length === 2);
 }
 
+console.log('\n模型事件键漂移时的轻微标题差异：\n');
+{
+  const cs = clusterCandidates([
+    it('mate-a', { title: '华为发布搭载麒麟 9050 Pro 芯片的 Mate XT 2 三折叠手机',
+      eventKey: 'huawei-kirin-9050-pro-mate-xt-2-launch-2026-09' }),
+    it('mate-b', { title: '华为推出搭载麒麟 9050 Pro 芯片的 Mate XT 2 三折叠手机',
+      eventKey: 'huawei-mate-xt-2-kirin-9050-pro-launch' }),
+  ]);
+  ok('同产品发布/推出的跨来源转述合并', cs.length === 1 && cs[0]?.members.length === 1);
+}
+{
+  const cs = clusterCandidates([
+    it('mate-release', { title: '华为发布 Mate XT 2 三折叠手机', eventKey: 'mate-release' }),
+    it('mate-price', { title: '华为公布 Mate XT 2 三折叠手机售价', eventKey: 'mate-price' }),
+  ]);
+  ok('产品发布与售价公布仍保持为不同事件', cs.length === 2);
+}
+
+console.log('\n人工确认的同事件别名：\n');
+{
+  const cs = clusterCandidates([
+    it('flood-a', { title: '尼泊尔北部与中国西藏接壤地区洪灾致超160人死亡',
+      eventKey: 'nepal-flood-160' }),
+    it('flood-b', { title: '尼泊尔与中国西藏边境山洪泥石流致近百人遇难',
+      eventKey: 'nepal-tibet-landslide-100' }),
+  ]);
+  ok('同一洪灾数字更新仍合并', cs.length === 1);
+}
+{
+  const cs = clusterCandidates([
+    it('quota-a', { title: 'Codex 重置了', eventKey: 'codex-reset' }),
+    it('quota-b', { title: 'Codex 并非额度用完后可无限使用', eventKey: 'luna-reserve' }),
+  ]);
+  ok('Codex 重置短讯与额度说明合并', cs.length === 1);
+}
+{
+  const cs = clusterCandidates([
+    it('cook-cn', { title: '库克卸任苹果 CEO 发全员信，称不会离开公司',
+      eventKey: 'apple-transition-cn', section: 'ai_tech' }),
+    it('cook-en', { title: 'RT Tim Cook: Sending love on my last day as CEO',
+      eventKey: 'tim-cook-last-day', section: 'society_life' }),
+  ]);
+  ok('库克卸任的中英文消息跨分区合并', cs.length === 1);
+  ok('库克事件统一归入科技趋势', cs[0]?.section === 'ai_tech');
+}
+
+console.log('\n确定性分区校正：\n');
+{
+  const cs = clusterCandidates([
+    it('website-rebuild', { title: 'Website Rebuild Skill 网站逆向与模块化移植工具',
+      eventKey: 'website-rebuild-skill', section: 'ai_tech', mandatoryClass: 'A' }),
+  ]);
+  ok('A 类可复用项目归入开源项目', cs[0]?.section === 'open_source_project');
+}
+
+console.log('\n同一自然日跨窗口去重：\n');
+{
+  const current = clusterCandidates([
+    it('phone', { title: '高通宣布全系列芯片涨价幅度',
+      eventKey: 'qualcomm-chip-price-rise', section: 'ai_tech' }),
+    it('cook', { title: 'RT Tim Cook: my last day as CEO',
+      eventKey: 'cook-last-day', section: 'society_life' }),
+    it('new', { title: '全新独立事件', eventKey: 'brand-new-event' }),
+  ]);
+  const r = excludeCoveredToday(current, [
+    { title: '国内多家手机厂商统一调价，华为多款机型涨价千元',
+      clusterKey: 'chinese-smartphone-price-increase-sept-2026:ai_tech:none' },
+    { title: '蒂姆·库克宣布卸任苹果 CEO 并留任执行主席',
+      clusterKey: 'apple-ceo-transition-2026:ai_tech:none' },
+  ]);
+  ok('午报手机调价覆盖晚报高通涨价', r.covered.some(x => x.cluster.primary.candidateId === 'phone'));
+  ok('午报库克消息覆盖晚报英文转述', r.covered.some(x => x.cluster.primary.candidateId === 'cook'));
+  ok('无关新事件正常保留', r.fresh.length === 1 && r.fresh[0]?.primary.candidateId === 'new');
+}
+{
+  const current = clusterCandidates([
+    it('same-url', { title: '同一新闻的另一种模型表达', eventKey: 'drifted-event-key',
+      url: 'https://news.example/item/1' }),
+    it('same-title', { title: '完全相同的访谈标题', eventKey: 'another-drifted-key',
+      url: 'https://news.example/item/2?new=1' }),
+  ]);
+  const r = excludeCoveredToday(current, [
+    { title: '原始标题', clusterKey: 'original-event:ai_tech:none',
+      sourceUrl: 'https://news.example/item/1' },
+    { title: '完全相同的访谈标题', clusterKey: 'other-event:quality_article:B',
+      sourceUrl: 'https://news.example/item/2' },
+  ]);
+  ok('event_key 漂移时相同原文 URL 仍会跨窗口去重',
+    r.covered.some(x => x.cluster.primary.candidateId === 'same-url'));
+  ok('event_key 与 URL 都漂移时完全相同标题仍会跨窗口去重',
+    r.covered.some(x => x.cluster.primary.candidateId === 'same-title'));
+}
+{
+  const current = clusterCandidates([
+    it('wording-drift', {
+      title: '华为推出搭载麒麟 9050 Pro 芯片的 Mate XT 2 三折叠手机',
+      eventKey: 'new-model-key', url: 'https://news.example/new-copy',
+    }),
+  ]);
+  const r = excludeCoveredToday(current, [{
+    title: '华为发布搭载麒麟 9050 Pro 芯片的 Mate XT 2 三折叠手机',
+    clusterKey: 'old-model-key:ai_tech:none', sourceUrl: 'https://news.example/old-copy',
+  }]);
+  ok('跨窗口标题仅发布/推出不同仍会去重', r.covered.length === 1);
+}
+{
+  const sameWindow = clusterCandidates([
+    it('qualcomm', { title: '高通宣布全系列芯片涨价幅度',
+      eventKey: 'qualcomm-price', section: 'ai_tech' }),
+    it('phones', { title: '国内多家手机厂商统一调价，华为多款机型涨价千元',
+      eventKey: 'phone-price', section: 'ai_tech' }),
+    it('brands', { title: '华为、小米、荣耀主力机型今日集中上调售价',
+      eventKey: 'brand-price', section: 'ai_tech' }),
+  ]);
+  ok('同一期高通涨价与手机厂商调价合并为一条',
+     sameWindow.length === 1 && sameWindow[0]?.members.length === 2);
+}
+
 console.log('\n排序权重（PRD 8.4 合计 100）：\n');
 {
   const hi = it('hi', { importance: 1, novelty: 1, sourcePriority: 1, isOfficial: true,
@@ -73,9 +191,18 @@ console.log('\n入选规则（PRD 8.4 / 9.1）：\n');
   ok('低分强制保留项仍入选',
      r2.selected.some(c => c.mandatoryClass === 'A' && c.score === 30));
 
-  const weak = Array.from({length: 10}, (_, i) => mk(i, 40));
+  const weak = Array.from({length: 10}, (_, i) => mk(i, 20));
   const r3 = selectForBrief(weak as any);
   ok('全部低于分数线 → 收 0 条（禁止凑数，PRD 9.1）', r3.selected.length === 0);
+
+  const boundary = selectForBrief([mk(95, 25), mk(96, 24.9)] as any);
+  ok('正例校准后的 25 分边界生效',
+     boundary.selected.length === 1 && boundary.selected[0]!.score === 25);
+
+  const humanRetained = mk(99, 20);
+  humanRetained.primary.decision = 'retain';
+  const r4 = selectForBrief([humanRetained] as any);
+  ok('人工 retain 不受分类和最低分限制', r4.selected.length === 1);
 }
 
 console.log(fail ? `\n❌ ${fail} 项失败` : '\n✅ 全部通过');

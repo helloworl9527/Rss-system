@@ -4,6 +4,7 @@ import { runTriage, decideEscalation, buildPayload, type Candidate, type TriageD
 import type { Provider, CompleteRequest, CompleteResult } from '../packages/ai/src/types.ts';
 import { ProviderError } from '../packages/ai/src/types.ts';
 import type { TriageResult } from '../packages/ai/src/schema.ts';
+import { loadRules } from '../packages/domain/src/rules.ts';
 
 let fail = 0;
 const ok = (name: string, cond: boolean, detail = '') => {
@@ -111,6 +112,15 @@ console.log('\n其余升级规则：\n');
   ok('ESC-006 Elsewhere 长文',
      decideEscalation(cand('a', { sourceId: 'elsewhere', body: 'x'.repeat(7000) }), mk({}), deps).rules.includes('ESC-006'));
   ok('模型自陈需复核', decideEscalation(cand('a'), mk({ escalation_reasons: ['两源冲突'] }), deps).rules.includes('ESC-MODEL'));
+  ok('人工正例否定的过滤理由触发 ESC-009',
+     decideEscalation(cand('a'), mk({ decision: 'filter', filter_reason: '纯个人主观讨论，无独立资讯价值' }),
+       { ...deps, invalidFilterReasonFragments: ['个人主观', '无独立资讯价值'] }).rules.includes('ESC-009'));
+  const guarded = loadRules().ai_filter_guard.invalid_reason_fragments as string[];
+  for (const reason of ['仅为活动预告', '仅为传闻', '销量榜单', '仅为快讯', '日常资讯汇总',
+                        '正文仅为一句话', '低信息密度', '缺乏任何实质性事实细节'])
+    ok(`新增正例理由“${reason}”触发 ESC-009`,
+       decideEscalation(cand('a'), mk({ decision: 'filter', filter_reason: reason }),
+         { ...deps, invalidFilterReasonFragments: guarded }).rules.includes('ESC-009'));
   ok('正常候选不升级', decideEscalation(cand('a'), mk({}), deps).rules.length === 0);
 }
 

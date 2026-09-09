@@ -4,6 +4,8 @@
  *
  *   node scripts/golden-mark.mjs keep c123 c145 c160
  *   node scripts/golden-mark.mjs keep c123 --class A
+ *   node scripts/golden-mark.mjs keep c123 --section quality_article
+ *   node scripts/golden-mark.mjs keep v694 v666 --same-event-as v694,v666
  *   node scripts/golden-mark.mjs drop c200 c201        确认「过滤是对的」
  *   node scripts/golden-mark.mjs list                  看已标注进度
  *   node scripts/golden-mark.mjs sweep                 上一期附录里没被点名的，全部记为「过滤得对」
@@ -28,6 +30,17 @@ const argv = process.argv.slice(2);
 const cmd = argv[0];
 const clsIdx = argv.indexOf('--class');
 const forcedClass = clsIdx > 0 ? argv[clsIdx + 1] : null;
+const sectionIdx = argv.indexOf('--section');
+const forcedSection = sectionIdx > 0 ? argv[sectionIdx + 1] : null;
+const validSections = ['ai_tech', 'developer_product', 'quality_article', 'society_life'];
+if (forcedSection && !validSections.includes(forcedSection)) {
+  console.error(`分区必须是 ${validSections.join(' / ')}`);
+  process.exit(1);
+}
+const sameIdx = argv.indexOf('--same-event-as');
+const sameEventRefs = sameIdx > 0
+  ? String(argv[sameIdx + 1] ?? '').split(/[\s,]+/).filter(Boolean).map(x => x.toLowerCase())
+  : [];
 // 支持三种引用：c<候选ID>（邮件附录里的编号）、v<版本ID>（无候选时用）、
 // 以及 --title <关键词>（简报里的标题被 compose 改写过，原标题需按关键词找）
 const refs = argv.slice(1).filter(a => /^[cv]\d+$/i.test(a)).map(a => a.toLowerCase());
@@ -167,9 +180,11 @@ for (const { ref, r } of targets) {
     expected: {
       decision: isKeep ? (cls !== 'none' ? 'retain' : 'normal') : 'filter',
       mandatoryClass: cls,
-      section: null,
+      section: forcedSection ?? byId.get(id)?.expected?.section ?? null,
       filterRuleId: isKeep ? null : (r.filter_rule_id ?? null),
-      sameEventAs: byId.get(id)?.expected?.sameEventAs ?? [],
+      sameEventAs: sameEventRefs.length
+        ? sameEventRefs.filter(x => x !== id)
+        : byId.get(id)?.expected?.sameEventAs ?? [],
       mustMention: byId.get(id)?.expected?.mustMention ?? [],
     },
     extracted: {

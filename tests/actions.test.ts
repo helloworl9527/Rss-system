@@ -3,8 +3,8 @@ import { rmSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb, migrate, nowIso } from '../packages/db/src/index.ts';
-import { overrideCandidate, toggleSource, planResend, executeResend,
-         permanentOverrideFor, ActionError } from '../packages/web/src/actions.ts';
+import { overrideCandidate, toggleSource, updateSourceGroup, planResend, executeResend,
+         permanentOverrideFor, updateSourceUrl, ActionError } from '../packages/web/src/actions.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'brief-a-'));
 const db = openDb(join(dir, 'a.db'));
@@ -13,6 +13,8 @@ const now = nowIso();
 
 db.prepare(`INSERT INTO sources (id,name,display_name,category,host_group,harvest_tier,
   config_json,source_version,created_at,updated_at) VALUES ('s1','S1','S1','forum','direct','standard','{}',1,?,?)`).run(now, now);
+db.prepare(`INSERT INTO source_endpoints (source_id,priority,url,parser,enabled,etag,last_modified)
+  VALUES ('s1',1,'https://old.example/feed.xml','rss',1,'old-etag','yesterday')`).run();
 const runId = Number(db.prepare(`INSERT INTO runs (window_key,window_label,window_start_at,
   window_end_at,scheduled_at,status,trigger) VALUES ('2026-08-23:evening','晚报',?,?,?,'running','timer')`)
   .run(now, now, now).lastInsertRowid);
@@ -64,6 +66,15 @@ console.log('\n改分类：\n');
      mandatoryClass: 'X', reason: '测试非法输入' }), 400));
 }
 
+console.log('\n人工保留：\n');
+{
+  overrideCandidate(db, { candidateId: cid, action: 'filter', reason: '先验证过滤状态' });
+  const r = overrideCandidate(db, { candidateId: cid, action: 'retain', reason: '用户确认为正例并要求保留' });
+  ok('retain 可覆盖过滤且无需伪造 A-D 分类',
+     r.decision === 'retain' && cand().decision === 'retain' && cand().mandatory_class === 'A');
+  ok('retain 清除旧过滤理由', cand().filter_reason === null && cand().filter_rule_id === null);
+}
+
 console.log('\n永久规则 vs 仅本次（PRD 16.4）：\n');
 {
   ok('仅本次不产生 canonical_key 规则', permanentOverrideFor(db, 'https://x/1') === null);
@@ -84,6 +95,35 @@ console.log('\n来源启停（FR-001）：\n');
   toggleSource(db, 's1', true, '来源已恢复');
   ok('可再启用', (db.prepare(`SELECT enabled FROM sources WHERE id='s1'`).get() as any).enabled === 1);
   ok('不存在的来源 404', threw(() => toggleSource(db, 'nope', false, '合理理由'), 404));
+}
+
+console.log('\n编辑来源 URL：\n');
+{
+  const probe = async (_db: any, o: any) => ({ ok: true as const, outcome: 'ok',
+    parsedCount: 12, sample: [], latencyMs: 1, testedUrl: o.url });
+  ok('空理由被拒', await (async () => { try {
+    await updateSourceUrl(db, { sourceId: 's1', url: 'https://new.example/feed.xml', reason: '' }, probe as any);
+    return false; } catch (e) { return e instanceof ActionError && e.code === 400; } })());
+  const r = await updateSourceUrl(db, { sourceId: 's1', url: 'https://new.example/feed.xml',
+    reason: '订阅地址已经迁移' }, probe as any);
+  const ep = db.prepare(`SELECT * FROM source_endpoints WHERE source_id='s1' AND priority=1`).get() as any;
+  ok('测试通过后更新 URL', r.parsedCount === 12 && ep.url === 'https://new.example/feed.xml');
+  ok('切换 URL 后清空条件请求缓存', ep.etag === null && ep.last_modified === null);
+  ok('记录永久端点覆盖', (db.prepare(`SELECT count(*) c FROM manual_overrides
+    WHERE target_type='source_endpoint' AND target_id='s1:1' AND action='edit_url'`).get() as any).c === 1);
+  const a = audits().at(-1)!;
+  const p = JSON.parse(a.payload_json);
+  ok('审计记录新旧 URL 与理由', a.action === 'source_url_updated' &&
+    p.oldUrl.includes('old.example') && p.newUrl.includes('new.example') && p.reason.includes('迁移'));
+}
+
+console.log('\n来源展示分组：\n');
+{
+  ok('无理由调整分组被拒', threw(() => updateSourceGroup(db, 's1', 'openai', ''), 400));
+  const r = updateSourceGroup(db, 's1', 'openai', '归入官方厂商来源');
+  ok('分组修改生效', r.sourceGroup === 'openai' &&
+     (db.prepare(`SELECT source_group FROM sources WHERE id='s1'`).get() as any).source_group === 'openai');
+  ok('非法分组被拒', threw(() => updateSourceGroup(db, 's1', 'other', '测试非法分组'), 400));
 }
 
 console.log('\n补发两步确认（PRD 16.5 / FR-054）：\n');
@@ -128,11 +168,11 @@ console.log('\n审计完整性：\n');
   const all = audits();
   // 校验具体动作集合比数量更有意义：失败的操作不应留痕，成功的必须留痕
   const acts = all.map(a => a.action).sort();
-  const expect = ['manual_filter','manual_include','manual_reclassify','manual_resend',
-                  'source_disabled','source_enabled'].sort();
+  const expect = ['manual_filter','manual_filter','manual_include','manual_reclassify','manual_resend','manual_retain',
+                  'source_disabled','source_enabled','source_group_updated','source_url_updated'].sort();
   ok('留痕动作与成功的写操作一一对应',
      JSON.stringify(acts) === JSON.stringify(expect), acts.join(', '));
-  ok('被拒绝的操作未留痕（无理由/非法值/序号冲突）', all.length === 6);
+  ok('被拒绝的操作未留痕（无理由/非法值/序号冲突）', all.length === 10);
   ok('每条审计都带理由',
      all.every(a => { const p = JSON.parse(a.payload_json ?? '{}'); return !!p.reason; }));
   ok('每条审计都记录操作者',

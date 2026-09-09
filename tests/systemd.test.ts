@@ -86,6 +86,16 @@ console.log('\n定时器完整性：\n');
   ok('brief-run 超时足够长（真实模型调用慢）',
      Number(longRun.match(/^TimeoutStartSec=(\d+)/m)?.[1] ?? 0) >= 900,
      longRun.match(/^TimeoutStartSec=.*/m)?.[0] ?? '未设置');
+  ok('brief-run 失败后自动重试', /^Restart=on-failure$/m.test(longRun));
+  ok('brief-run 重试间隔不少于 5 分钟',
+     /^RestartSec=(?:5min|300s)$/m.test(longRun),
+     longRun.match(/^RestartSec=.*/m)?.[0] ?? '未设置');
+  ok('brief-run 最多重试 3 次（首次 + 3 次）',
+     /^StartLimitBurst=4$/m.test(longRun),
+     longRun.match(/^StartLimitBurst=.*/m)?.[0] ?? '未设置');
+  ok('brief-run 重试计数窗口覆盖最坏运行时长',
+     /^StartLimitIntervalSec=3h$/m.test(longRun),
+     longRun.match(/^StartLimitIntervalSec=.*/m)?.[0] ?? '未设置');
 }
 
 console.log(fail ? `\n❌ ${fail} 项失败` : '\n✅ 全部通过');

@@ -1,6 +1,6 @@
 [Unit]
 Description=十六源日报 管理后台（Fastify，仅监听 127.0.0.1）
-Documentation=file:/opt/briefing-system/deploy/Caddyfile
+Documentation=file:/opt/briefing-system/deploy/nginx/brief.xmcode.tech.conf
 After=network-online.target
 
 Wants=network-online.target

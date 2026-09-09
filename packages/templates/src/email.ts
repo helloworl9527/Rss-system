@@ -36,6 +36,8 @@ export type BriefData = {
   windowRange: string;       // 人读的窗口区间
   highlights: string[];      // 核心要点 5–8 条
   sections: Array<{ id: string; title: string; items: BriefItem[] }>;
+  /** 仅用于同一批数据的版式对照邮件。 */
+  comparisonLabel?: '旧版' | '优化版' | '优化修正版';
   audit: {
     /** 强制保留候选未收录时必须逐条列出（PRD 9.3） */
     mandatoryMisses: AuditEntry[];
@@ -153,11 +155,12 @@ function renderItem(it: BriefItem, index: number): string {
       <td valign="top">
         ${badges ? `<div style="margin:0 0 6px;">${badges}</div>` : ''}
         <div style="font-size:17px;font-weight:650;line-height:1.45;color:${C.ink};
-          letter-spacing:-.01em;">${esc(it.title)}</div>
+          letter-spacing:-.01em;">${url ? `<a href="${esc(url)}" style="color:${C.ink};
+          text-decoration:none;">${esc(it.title)}</a>` : esc(it.title)}</div>
         <div style="margin:10px 0 0;font-size:15px;line-height:1.7;color:${C.ink};
           font-weight:500;">${esc(it.conclusion)}</div>
-        <div style="margin:9px 0 0;font-size:14.5px;line-height:1.75;color:${C.body};">
-          ${it.summarySentences.map(esc).join(' ')}</div>
+        ${it.summarySentences.length ? `<div style="margin:9px 0 0;font-size:14.5px;line-height:1.75;color:${C.body};">
+          ${it.summarySentences.map(esc).join(' ')}</div>` : ''}
         ${late}${others}
         <div style="margin:14px 0 0;padding:11px 0 0;border-top:1px solid ${C.lineSoft};font-size:13px;">
           <span style="color:${C.faint};">来源渠道：</span>${
@@ -173,37 +176,20 @@ function renderItem(it: BriefItem, index: number): string {
 }
 
 export function renderHtml(d: BriefData): string {
-  const subject = `十六源简报｜${d.date} ${d.windowLabel}`;
   const total = d.sections.reduce((n, s) => n + s.items.length, 0);
-  const preheader = d.highlights[0] ?? `本期收录 ${total} 条`;
+  const subject = subjectOf(d);
+  const preheader = `本期收录 ${total} 条，全部完整展示`;
   const parts: string[] = [];
 
   // 页眉
   parts.push(`<tr><td style="padding:0 4px 20px;">
     <div style="font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:${C.faint};
-      font-weight:600;">SIXTEEN SOURCES</div>
+      font-weight:600;">INTELLIGENCE BRIEF</div>
     <div style="margin:7px 0 0;font-size:25px;font-weight:700;color:${C.ink};letter-spacing:-.02em;">
       ${esc(d.date)} ${esc(d.windowLabel)}</div>
     <div style="margin:6px 0 0;font-size:13px;color:${C.muted};">
       窗口 ${esc(d.windowRange)} &nbsp;·&nbsp; 收录 ${total} 条</div>
   </td></tr>`);
-
-  // 核心要点
-  if (d.highlights.length) {
-    const li = d.highlights.map((h, i) => `<tr>
-      <td width="24" valign="top" style="width:24px;padding:0 0 9px;font-size:13px;font-weight:700;
-        color:${C.accent};font-variant-numeric:tabular-nums;line-height:1.7;">${i + 1}</td>
-      <td valign="top" style="padding:0 0 9px;font-size:14.5px;line-height:1.7;color:${C.ink};">
-        ${esc(h)}</td></tr>`).join('');
-    parts.push(`<tr><td style="padding:0 0 24px;">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
-       style="background:${C.accentSoft};border-radius:10px;">
-      <tr><td style="padding:18px 22px;">
-        <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;
-          color:${C.accent};font-weight:700;margin:0 0 12px;">核心要点</div>
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${li}</table>
-      </td></tr></table></td></tr>`);
-  }
 
   // 分区与条目
   let n = 0;
@@ -305,7 +291,7 @@ export function renderHtml(d: BriefData): string {
 
   parts.push(`<tr><td style="padding:20px 4px 0;text-align:center;font-size:11.5px;
     color:${C.faint};line-height:1.7;">
-    十六源智能日报系统 · 每日 08:00 / 12:00 / 22:00（台北）<br>
+    智能资讯简报 · 每日 08:00 / 12:00 / 22:00（台北）<br>
     本邮件由服务器自动生成，内容以原文为准</td></tr>`);
 
   return wrap(parts.join('\n'), subject, preheader);
@@ -314,14 +300,9 @@ export function renderHtml(d: BriefData): string {
 /** multipart/alternative 的纯文本备用正文（PRD 9.4）。 */
 export function renderText(d: BriefData): string {
   const L: string[] = [];
-  L.push(`十六源简报 · ${d.windowLabel}`);
+  L.push(`智能资讯简报 · ${d.windowLabel}`);
   L.push(`${d.date} · 窗口 ${d.windowRange}`);
   L.push('');
-  if (d.highlights.length) {
-    L.push('【核心要点】');
-    d.highlights.forEach((h, i) => L.push(`${i + 1}. ${h}`));
-    L.push('');
-  }
   for (const s of d.sections) {
     if (!s.items.length) continue;
     L.push(`【${s.title}】`);
@@ -371,7 +352,11 @@ export function renderText(d: BriefData): string {
   return L.join('\n');
 }
 
-export const subjectOf = (d: BriefData) => `十六源简报｜${d.date} ${d.windowLabel}`;
+export const subjectOf = (d: BriefData & { comparisonLabel?: string }) => {
+  const total = d.sections.reduce((n, s) => n + s.items.length, 0);
+  return `智能资讯简报｜${d.date}｜${d.windowLabel}｜${total}条` +
+    (d.comparisonLabel ? `｜${d.comparisonLabel}` : '');
+};
 
 /** 渲染后的硬性校验（PRD 9.4 / 17.3）。任一项失败都不得发送。 */
 export function checkEmail(html: string, text: string): string[] {

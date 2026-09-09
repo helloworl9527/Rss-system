@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { candidateEligibleSql } from '../../../packages/db/src/eligibility.ts';
 /**
  * 用当前规则重算升级判定（不调模型）。
  *
@@ -46,7 +47,7 @@ const rows = db.prepare(`
   JOIN item_versions v ON v.id = c.item_version_id
   JOIN feed_items f ON f.id = v.item_id
   JOIN evaluations e ON e.candidate_id = c.id AND e.stage = 'luna'
-  WHERE c.run_id = ? AND e.result_json IS NOT NULL
+  WHERE ${candidateEligibleSql()} AND c.run_id = ? AND e.result_json IS NOT NULL
   ORDER BY c.id`).all(run.id) as Row[];
 
 if (!rows.length) { console.log(`run #${run.id} 没有可重算的判定（先跑 triage）`); db.close(); process.exit(0); }

@@ -24,7 +24,7 @@ export type ComposeInput = {
   /** 程序判定的来源事实，供模型决定是否点明来源局限（compose.md 表格） */
   sourceEvidence?: Record<string, boolean | string>;
   /** L2/L3 已产出的文案，有则直接复用 */
-  precomposed?: { conclusion: string; summarySentences: string[] } | null;
+  precomposed?: { title?: string; conclusion: string; summarySentences: string[] } | null;
 };
 
 export type ComposeOutcome = {
@@ -41,6 +41,8 @@ export type ComposeDeps = {
   batchSize: number;
   bodyCharsMax: number;
   outputTokensMax: number;
+  /** 兼容线路的批次冷却时间；默认 0，不影响官方接口与测试。 */
+  interBatchDelayMs?: number;
   /** 邮件里禁止出现的字段名（PRD 9.2），生成后校验 */
   forbiddenFields?: string[];
   onUsage?: (u: CompleteResult['usage'], model: string) => void;
@@ -105,7 +107,7 @@ export async function runCompose(
       outcomes.push({
         candidateId: it.candidateId, status: 'reused', attempts: 0,
         result: {
-          candidate_id: it.candidateId, title: it.title,
+          candidate_id: it.candidateId, title: it.precomposed.title?.trim() || it.title,
           conclusion: it.precomposed.conclusion,
           summary_sentences: it.precomposed.summarySentences.slice(0, 3),
           source_limitations: it.sourceLimitations,
@@ -116,6 +118,8 @@ export async function runCompose(
 
   // 2. 其余分批生成
   for (let i = 0; i < pending.length; i += deps.batchSize) {
+    if (i > 0 && (deps.interBatchDelayMs ?? 0) > 0)
+      await new Promise(resolve => setTimeout(resolve, deps.interBatchDelayMs));
     const batch = pending.slice(i, i + deps.batchSize);
     outcomes.push(...await composeBatch(batch, deps, (u, m) => {
       usedInput += u.inputTokens; usedOutput += u.outputTokens; calls++; deps.onUsage?.(u, m);

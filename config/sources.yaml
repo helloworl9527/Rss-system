@@ -3,16 +3,16 @@
 # 对应 PRD 4.1 / 4.3，端点优先级结构见实施方案 2.2
 #
 # 【endpoints 语义】按 priority 升序尝试，priority 1 失败才回退。
-# 每轮采集都从 priority 1 重新开始，不做粘性缓存 —— PRD 18 章要求
-# 「不得因为过去曾 404 而跳过抓取」。每次尝试都写审计。
+# 每轮采集都从 priority 1 重新开始；只有仍处于 403/429 冷却期的主机
+# 会被暂时跳过。普通 404/5xx 不做粘性缓存，每次尝试都写审计。
 #
 # 【实测基线】2026-08-23 从 52.141.58.148 测得，见各源 probe 注释。
 # 新增或改端点后必须跑 `node scripts/probe-sources.mjs` 更新基线。
 # ============================================================
 
 meta:
-  source_version: 1
-  updated_at: "2026-08-23"
+  source_version: 8
+  updated_at: "2026-09-08"
   probe_baseline_date: "2026-08-23"
   probe_from_ip: "52.141.58.148"
 
@@ -37,13 +37,13 @@ host_groups:
     min_interval_ms: 1000
     timeout_ms: 20000
     max_retries: 2
-  mystool:
-    hosts: [mystool.me]
+  github_x_rss:
+    hosts: [helloworl9527.github.io]
     concurrency: 2
     min_interval_ms: 1000
     timeout_ms: 20000
     max_retries: 2
-    note: "6 个 X 源单点依赖；公共 RSSHub 的 twitter 路由实测全部 503，无替代"
+    note: "X RSS 由 helloworl9527/x-rss-feed GitHub Actions 每天三次生成并发布到 GitHub Pages"
   fulltext_discourse:
     # linux.do 走 /t/topic/{id}.json（59KB）而非 HTML（422KB）。
     # 【实测限流】36 次请求以 2s 间隔突发后被 Cloudflare 判定限流，
@@ -54,9 +54,19 @@ host_groups:
     # 必须走 curl 通道（TLS 指纹差异，补请求头无效）。
     hosts: [linux.do]
     concurrency: 1
-    min_interval_ms: 10000
+    min_interval_ms: 15000
+    jitter_ms: 3000
     timeout_ms: 25000
     max_retries: 1
+  linuxdo_feed:
+    # 官方 RSS 与全文共享 Cloudflare 防护。保持串行，并由持久化主机熔断器
+    # 在 403/429 后执行 1h → 6h → 24h 冷却；镜像不受该熔断影响。
+    hosts: [linux.do]
+    concurrency: 1
+    min_interval_ms: 15000
+    jitter_ms: 3000
+    timeout_ms: 25000
+    max_retries: 0
   fulltext_v2ex:
     # v2ex 走 /api/topics/show.json（3.4KB）而非 HTML（120KB），未见限流。
     hosts: [v2ex.com, www.v2ex.com]
@@ -65,11 +75,18 @@ host_groups:
     timeout_ms: 25000
     max_retries: 1
   direct:
-    hosts: [linuxdorss.longpink.com, elsewhere.news, api-docs.deepseek.com]
+    hosts: [linuxdorss.longpink.com, elsewhere.news, api-docs.deepseek.com, www.supertechfans.com]
     concurrency: 2
     min_interval_ms: 1000
     timeout_ms: 20000
     max_retries: 2
+  jina_reader:
+    hosts: [r.jina.ai]
+    concurrency: 1
+    min_interval_ms: 2000
+    timeout_ms: 30000
+    max_retries: 1
+    note: "仅用于读取被源站 Cloudflare 拦截的公开官方页面；响应由本地解析并落库"
 
 # ------------------------------------------------------------
 # 抓取默认值（PRD 4.4）
@@ -109,6 +126,20 @@ harvest_tiers:
 # ------------------------------------------------------------
 sources:
 
+  - id: supertechfans_cn
+    name: SuperTechFans HackerNews 每日摘要
+    display_name: SuperTechFans
+    site_url: "https://www.supertechfans.com/cn/"
+    category: tech
+    source_group: unclassified
+    harvest_tier: standard
+    enabled: true
+    priority: 3
+    host_group: direct
+    endpoints:
+      - { url: "https://www.supertechfans.com/cn/index.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-09-06", status: 200, items: 5, bytes: 363903, content_type: "application/xml", span_days: 4 }
+
   - id: linuxdo
     name: LINUX DO 热门话题
     harvest_tier: ranking_feed          # 20 分钟 —— 榜单型，热度轮转
@@ -122,6 +153,8 @@ sources:
     require_fulltext: true           # 实测 39/39 条截断，必须开原帖（规则 0b）
     endpoints:
       - { url: "https://linuxdorss.longpink.com/top.xml", parser: rss, priority: 1 }
+      - { url: "https://linux.do/top.rss?period=daily", parser: rss, priority: 2, host_group: linuxdo_feed }
+      - { url: "https://linux.do/latest.rss", parser: rss, priority: 3, host_group: linuxdo_feed }
     probe: { date: "2026-08-23", status: 200, items: 39, span_hours: 27.7, latency_s: 0.81 }
 
   - id: jike
@@ -133,6 +166,7 @@ sources:
     enabled: true
     priority: 3
     host_group: rsshub
+    require_fulltext: true           # 聚合帖的镇小报子项只有标题，必须打开原帖
     endpoints:
       - { url: "https://hub.slarker.me/jike/topic/553870e8e4b0cafb0a1bef68", parser: rss, priority: 1 }
       - { url: "https://rsshub.rssforever.com/jike/topic/553870e8e4b0cafb0a1bef68", parser: rss, priority: 2 }
@@ -243,9 +277,9 @@ sources:
     category: tech
     enabled: true
     priority: 4
-    host_group: mystool
+    host_group: github_x_rss
     endpoints:
-      - { url: "https://mystool.me/x-rss-feed/feeds/weixin_wechat.xml", parser: rss, priority: 1 }
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/weixin_wechat.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 18, span_hours: 1150.3, latency_s: 0.25 }
 
   - id: deepseek
@@ -254,6 +288,7 @@ sources:
     display_name: DeepSeek 更新日志
     site_url: "https://api-docs.deepseek.com/zh-cn/updates/"          # 人类可访问的主页，邮件里渠道名指向此处
     category: ai
+    source_group: deepseek
     enabled: true
     priority: 2
     host_group: direct
@@ -268,6 +303,183 @@ sources:
     # HTML 页面，无 <item> 结构，探测脚本的 items 计数不适用（显示 0 属正常）
     probe: { date: "2026-08-23", status: 200, items_na: true, bytes: 46433, latency_s: 0.43 }
 
+  - id: openai_news
+    name: OpenAI News
+    display_name: OpenAI News
+    site_url: "https://openai.com/news/"
+    category: ai
+    source_group: openai
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 1
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://openai.com/news/rss.xml", parser: rss, priority: 1 }
+
+  - id: openai_release_notes
+    name: OpenAI 产品更新日志
+    display_name: OpenAI Release Notes
+    site_url: "https://openai.com/products/release-notes/"
+    category: ai
+    source_group: openai
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 1
+    host_group: jina_reader
+    official: true
+    endpoints:
+      - { url: "https://r.jina.ai/https://openai.com/products/release-notes/", parser: openai_release_notes_page, priority: 1 }
+    probe: { date: "2026-09-06", status: 200, items: 5, bytes: 8637, content_type: "text/plain" }
+    note: "官方 RSS 在服务器出口触发 Cloudflare 403 challenge；改由 Jina Reader 读取同一官方产品更新页，覆盖 ChatGPT、Codex、API 等栏目。"
+
+  - id: anthropic_news_rsshub
+    name: Anthropic News（RSSHub）
+    display_name: Anthropic News · RSSHub
+    site_url: "https://www.anthropic.com/news"
+    category: ai
+    source_group: claude
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 2
+    host_group: rsshub
+    official: true
+    endpoints:
+      - { url: "https://hub.slarker.me/anthropic/news", parser: rss, priority: 1 }
+      - { url: "https://rsshub.app/anthropic/news", parser: rss, priority: 2 }
+    probe: { date: "2026-09-06", status: 200, items: 10 }
+    note: "官方路由无必填参数；rsshub.app 限制服务器访问，现有 RSSHub 实例作为主端点，原地址作为备用。"
+
+  - id: anthropic_engineering_rsshub
+    name: Anthropic Engineering（RSSHub）
+    display_name: Anthropic Engineering · RSSHub
+    site_url: "https://www.anthropic.com/engineering"
+    category: ai
+    source_group: claude
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 2
+    host_group: rsshub
+    official: true
+    endpoints:
+      - { url: "https://hub.slarker.me/anthropic/engineering", parser: rss, priority: 1 }
+      - { url: "https://rsshub.app/anthropic/engineering", parser: rss, priority: 2 }
+    probe: { date: "2026-09-06", status: 200, items: 20 }
+    note: "官方路由无必填参数；rsshub.app 限制服务器访问，现有 RSSHub 实例作为主端点，原地址作为备用。"
+
+  - id: anthropic_community_rss
+    name: Anthropic RSS（社区维护）
+    display_name: Anthropic News · Community RSS
+    site_url: "https://www.anthropic.com/"
+    category: ai
+    source_group: claude
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 2
+    host_group: direct
+    endpoints:
+      - { url: "https://tim-hilde.github.io/anthropic-rss/rss.xml", parser: rss, priority: 1 }
+
+  - id: claude_code_changelog
+    name: Claude Code Changelog
+    display_name: Claude Code Changelog
+    site_url: "https://code.claude.com/docs/en/changelog"
+    category: ai
+    source_group: claude
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 1
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://code.claude.com/docs/en/changelog/rss.xml", parser: rss, priority: 1 }
+
+  - id: google_ai_blog
+    name: Google AI Blog
+    display_name: Google AI Blog
+    site_url: "https://blog.google/innovation-and-ai/technology/ai/"
+    category: ai
+    source_group: google
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 1
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://blog.google/innovation-and-ai/technology/ai/rss/", parser: rss, priority: 1 }
+
+  - id: google_deepmind_blog
+    name: Google DeepMind Blog
+    display_name: Google DeepMind Blog
+    site_url: "https://deepmind.google/blog/"
+    category: ai
+    source_group: google
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 1
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://deepmind.google/blog/rss.xml", parser: rss, priority: 1 }
+
+  - id: google_research_blog
+    name: Google Research Blog
+    display_name: Google Research Blog
+    site_url: "https://research.google/blog/"
+    category: ai
+    source_group: google
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 1
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://research.google/blog/rss/", parser: rss, priority: 1 }
+
+  - id: google_blog_all
+    name: Google Blog 全站
+    display_name: Google Blog 全站
+    site_url: "https://blog.google/feed/"
+    category: tech
+    source_group: google
+    harvest_tier: standard
+    enabled: true
+    priority: 1
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://blog.google/rss/", parser: rss, priority: 1 }
+    note: "用户提供的 /feed/ 是 HTML 列表页；使用官网公布的 /rss/ 全站订阅。"
+
+  - id: cloudflare_blog_zh
+    name: Cloudflare 中文博客
+    display_name: Cloudflare 中文博客
+    site_url: "https://blog.cloudflare.com/zh-cn/"
+    category: tech
+    source_group: cloudflare
+    harvest_tier: standard
+    enabled: true
+    priority: 1
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://blog.cloudflare.com/zh-cn/rss", parser: rss, priority: 1 }
+
+  - id: hermes_agent_releases
+    name: Hermes Agent Releases
+    display_name: Hermes Agent
+    site_url: "https://github.com/NousResearch/hermes-agent/releases"
+    category: ai
+    source_group: hermes
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 2
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://github.com/NousResearch/hermes-agent/releases.atom", parser: atom, priority: 1 }
+    probe: { date: "2026-09-06", status: 200, items: 10, content_type: "application/atom+xml" }
+
   - id: x_openai
     name: X @OpenAI
     harvest_tier: standard          # 60 分钟 —— 跨度 107h
@@ -276,10 +488,10 @@ sources:
     category: ai
     enabled: true
     priority: 1
-    host_group: mystool
+    host_group: github_x_rss
     official: true
     endpoints:
-      - { url: "https://mystool.me/x-rss-feed/feeds/openai.xml", parser: rss, priority: 1 }
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/openai.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 5, span_hours: 107.0, latency_s: 0.30 }
 
   - id: x_github
@@ -288,12 +500,13 @@ sources:
     display_name: "@GitHub"
     site_url: "https://x.com/GitHub"          # 人类可访问的主页，邮件里渠道名指向此处
     category: developer
+    source_group: github
     enabled: true
     priority: 2
-    host_group: mystool
+    host_group: github_x_rss
     official: true
     endpoints:
-      - { url: "https://mystool.me/x-rss-feed/feeds/github.xml", parser: rss, priority: 1 }
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/github.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 13, span_hours: 234.1, latency_s: 0.27 }
 
   - id: x_claudeai
@@ -302,12 +515,13 @@ sources:
     display_name: "@ClaudeAI"
     site_url: "https://x.com/ClaudeAI"          # 人类可访问的主页，邮件里渠道名指向此处
     category: ai
+    source_group: claude
     enabled: true
     priority: 1
-    host_group: mystool
+    host_group: github_x_rss
     official: true
     endpoints:
-      - { url: "https://mystool.me/x-rss-feed/feeds/claudeai.xml", parser: rss, priority: 1 }
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/claudeai.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 4, span_hours: 281.0, latency_s: 0.28 }
 
   - id: x_elonmusk
@@ -318,11 +532,11 @@ sources:
     category: society
     enabled: true
     priority: 7                      # 高噪声，默认低权重（PRD 4.1）
-    host_group: mystool
+    host_group: github_x_rss
     high_noise: true
     verify_major_news: true
     endpoints:
-      - { url: "https://mystool.me/x-rss-feed/feeds/elonmusk.xml", parser: rss, priority: 1 }
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/elonmusk.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 20, span_hours: 61.5, latency_s: 0.24 }
 
   - id: x_bbchinesd
@@ -333,11 +547,11 @@ sources:
     category: society
     enabled: true
     priority: 5
-    host_group: mystool
+    host_group: github_x_rss
     # 原账号与实际 feed 身份需在后台显示并可修正（PRD 4.1）
     identity_needs_review: true
     endpoints:
-      - { url: "https://mystool.me/x-rss-feed/feeds/bbchinesd.xml", parser: rss, priority: 1 }
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/bbchinesd.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 20, span_hours: 42.2, latency_s: 0.24 }
 
   - id: elsewhere
@@ -363,7 +577,7 @@ sources:
     category: ai
     enabled: true
     priority: 2                      # Codex 产品/政策优先候选（PRD 4.1）
-    host_group: mystool
+    host_group: github_x_rss
     endpoints:
-      - { url: "https://mystool.me/x-rss-feed/feeds/thsottiaux.xml", parser: rss, priority: 1 }
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/thsottiaux.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 19, span_hours: 129.2, latency_s: 0.26 }

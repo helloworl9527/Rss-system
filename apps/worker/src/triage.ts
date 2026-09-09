@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { candidateEligibleSql } from '../../../packages/db/src/eligibility.ts';
 /**
  * L1 判定 CLI —— 把编排器接到数据库。
  *
@@ -19,6 +20,7 @@ import type { TriageResult } from '../../../packages/ai/src/schema.ts';
 
 const argv = process.argv.slice(2);
 const DRY = argv.includes('--dry');
+const RETRY_REUSED = argv.includes('--retry-reused');
 const runArg = argv.includes('--run') ? Number(argv[argv.indexOf('--run') + 1]) : null;
 
 // 把后台设置的供应商与 API key 注入 env（环境变量优先）
@@ -49,8 +51,11 @@ type Row = {
   cid: number; vid: number; source_id: string; category: string; title: string;
   clean_text: string; fulltext_text: string | null; canonical_url: string | null;
   published_at: string | null; signals_json: string | null; prescreen_json: string | null;
-  content_hash: string; decision: string;
+  content_hash: string; decision: string | null;
 };
+const successfulReuse = `e.stage='luna' AND e.prompt_version=? AND e.response_id IS NULL
+  AND e.result_json IS NOT NULL AND json_extract(e.result_json,'$.error') IS NULL
+  AND json_extract(e.result_json,'$.decision') IS NOT NULL`;
 const rows = db.prepare(`
   SELECT c.id cid, c.item_version_id vid, f.source_id, s.category, v.title,
          v.clean_text, v.fulltext_text, f.canonical_url, f.published_at,
@@ -59,10 +64,21 @@ const rows = db.prepare(`
   JOIN item_versions v ON v.id = c.item_version_id
   JOIN feed_items f ON f.id = v.item_id
   JOIN sources s ON s.id = f.source_id
-  WHERE c.run_id = ? AND c.decision IN ('retain','normal','escalate')
+  WHERE ${candidateEligibleSql()} AND c.run_id = ? AND (
+      c.decision IS NULL OR c.decision IN ('retain','normal','escalate')
+      ${RETRY_REUSED ? `OR (c.decision='filter' AND EXISTS
+        (SELECT 1 FROM evaluations er WHERE er.candidate_id=c.id AND
+         ${successfulReuse.replaceAll('e.', 'er.')}))` : ''}
+    )
     AND NOT EXISTS (SELECT 1 FROM evaluations e
-                    WHERE e.candidate_id = c.id AND e.stage = 'luna')
-  ORDER BY c.id`).all(run.id) as Row[];
+                    WHERE e.candidate_id = c.id AND e.stage IN ('luna','terra','sol')
+                      AND e.result_json IS NOT NULL
+                      AND json_extract(e.result_json,'$.error') IS NULL
+                      AND json_extract(e.result_json,'$.decision') IS NOT NULL
+                      ${RETRY_REUSED ? `AND NOT (${successfulReuse})` : ''})
+  ORDER BY c.id`).all(...(RETRY_REUSED
+    ? [run.id, promptVersion, promptVersion]
+    : [run.id])) as Row[];
 
 if (!rows.length) { console.log(`run #${run.id} (${run.window_key}) 没有待判定候选`); db.close(); process.exit(0); }
 
@@ -79,19 +95,27 @@ const cands: Candidate[] = rows.map(r => {
     signals: Object.entries(sig).filter(([, v]) => v).map(([k]) => k),
     repos: [], officialLinks: [],
     prescreenClasses: r.prescreen_json ? JSON.parse(r.prescreen_json) : [],
-    contentHash: r.content_hash,
+    // 某些“每日汇总”RSS 的多条子消息共享正文，但标题不同；只按正文哈希
+    // 会把 A 消息的事件键复用给 B 消息，造成错误聚类和跨窗口过滤。
+    contentHash: sha256(`${r.content_hash}\0${r.title.trim().toLowerCase()}`),
   };
 });
 
 // ---- 指纹复用缓存：同内容此前已有合格结果就不再调模型（PRD 15.2）----
 const cachedByHash = new Map<string, TriageResult>();
 for (const e of db.prepare(`
-  SELECT v.content_hash h, e.result_json j FROM evaluations e
+  SELECT v.content_hash h, v.title, e.result_json j FROM evaluations e
   JOIN candidates c ON c.id = e.candidate_id
   JOIN item_versions v ON v.id = c.item_version_id
-  WHERE e.stage='luna' AND e.prompt_version=? AND e.result_json IS NOT NULL`)
+  WHERE e.stage='luna' AND e.prompt_version=? AND e.result_json IS NOT NULL
+    AND json_extract(e.result_json,'$.error') IS NULL
+    AND json_extract(e.result_json,'$.decision') IS NOT NULL
+    ${RETRY_REUSED ? 'AND e.response_id IS NOT NULL' : ''}`)
   .all(promptVersion) as any[]) {
-  try { cachedByHash.set(e.h, JSON.parse(e.j)); } catch { /* 损坏的记录跳过 */ }
+  try {
+    const key = sha256(`${e.h}\0${String(e.title).trim().toLowerCase()}`);
+    cachedByHash.set(key, JSON.parse(e.j));
+  } catch { /* 损坏的记录跳过 */ }
 }
 
 // ---- 供应商 ----
@@ -111,6 +135,7 @@ const deps: TriageDeps = {
   cachedByHash,
   isHighRisk,
   majorNewsTypes: rules.major_news_types ?? [],
+  invalidFilterReasonFragments: rules.ai_filter_guard?.invalid_reason_fragments ?? [],
 };
 
 console.log(`run #${run.id} ${run.window_key} | 供应商 ${cfg.provider}${cfg.model ? '/' + cfg.model : ''} | Prompt ${promptVersion}`);

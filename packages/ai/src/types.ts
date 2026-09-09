@@ -10,7 +10,7 @@
  *   · Gemini       —— generateContent + responseSchema
  */
 
-export type ProviderName = 'mock' | 'openai' | 'deepseek' | 'qwen' | 'anthropic' | 'gemini';
+export type ProviderName = 'mock' | 'openai' | 'openai_compatible' | 'deepseek' | 'qwen' | 'anthropic' | 'gemini';
 
 /** 归一化后的用量口径。各家字段名不同，由适配器负责翻译。 */
 export type Usage = {
@@ -69,7 +69,7 @@ export type ProviderConfig = {
   provider: ProviderName;
   model: string;
   apiKey?: string;
-  /** OpenAI 兼容厂商的自定义端点。 */
+  /** 可选自定义 API 根地址；留空时各适配器使用厂商官方默认地址。 */
   baseUrl?: string;
   timeoutMs?: number;
   /** 强制覆盖 strictness（例如某 Qwen 模型支持 json_schema）。 */

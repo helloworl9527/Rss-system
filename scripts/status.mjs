@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // 采集健康速览：node scripts/status.mjs
 import { openDb } from '../packages/db/src/index.ts';
-const db = openDb(process.env.DATABASE_PATH ?? '/var/lib/briefing/brief.db');
+// 本地开发与 systemd 共用同一入口；生产环境仍通过 DATABASE_PATH 指向持久化目录。
+const db = openDb(process.env.DATABASE_PATH ?? './data/brief.db');
 const A = (s, ...a) => db.prepare(s).all(...a);
 const G = (s, ...a) => db.prepare(s).get(...a);
 const ago = (t) => t ? `${Math.round((Date.now() - Date.parse(t)) / 60000)}分钟前` : '从未';

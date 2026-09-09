@@ -63,11 +63,37 @@ console.log('\n格式约束（PRD 9.4）：\n');
 console.log('\n主题与纯文本备用（PRD 9.4 / 9.5）：\n');
 {
   const d = data();
-  ok('主题格式正确', subjectOf(d) === '十六源简报｜2026-08-23 晚报', subjectOf(d));
+  ok('主题使用通用名称并显示条数',
+    subjectOf(d) === '智能资讯简报｜2026-08-23｜晚报｜1条', subjectOf(d));
+  d.comparisonLabel = '优化版';
+  ok('对照邮件主题明确标记版本', subjectOf(d).endsWith('｜优化版'), subjectOf(d));
   const t = renderText(d);
-  ok('纯文本含核心要点', t.includes('【核心要点】'));
+  ok('纯文本不再展示核心要点', !t.includes('【核心要点】'));
+  ok('HTML 不再展示核心要点', !renderHtml(d).includes('核心要点'));
   ok('纯文本含来源链接', t.includes('https://linux.do/t/topic/1'));
   ok('纯文本含审计区', t.includes('【来源状态与过滤审计】'));
+}
+
+console.log('\n优化版完整展示：\n');
+{
+  const mk = (n: number, sourceId: string) => ({
+    title: `条目 ${n}`, conclusion: `结论 ${n}`, summarySentences: [`摘要 ${n}-1。`, `摘要 ${n}-2。`],
+    sourceName: sourceId, sourceId, sourceUrl: `https://example.com/${n}`,
+    score: 100 - n, bodyChars: 500,
+  });
+  const sections: BriefData['sections'] = [
+    { id: 'ai_tech', title: 'AI 与科技趋势', items: Array.from({length: 13}, (_, i) => mk(i + 1, `s${i}`)) },
+    { id: 'society', title: '社会与生活', items: [mk(14, 'hot'), mk(15, 'other')] },
+  ];
+  const d = data({ sections,
+    evalAppendix: { filtered: [{ ref:'c9', title:'附录条目', source:'测试源', url:null, reason:'过滤原因' }], pending: [] } });
+  const html = renderHtml(d), text = renderText(d);
+  ok('全部入选条目都按完整卡片显示', (html.match(/来源渠道：/g) ?? []).length === 15);
+  ok('不再显示更多值得看板块', !html.includes('更多值得看') && !text.includes('【更多值得看】'));
+  ok('每条的全部摘要句均显示', html.includes('摘要 1-1。') && html.includes('摘要 1-2。'));
+  ok('标题直接链接原文', /href="https:\/\/example\.com\/[^\"]+"[^>]*>条目/.test(html));
+  ok('评估附录继续保留', html.includes('评估附录') && html.includes('附录条目'));
+  ok('优化邮件通过安全校验', checkEmail(html, text).length === 0, checkEmail(html, text).join('; '));
 }
 
 console.log('\n渠道名可点击跳转到对应源：\n');

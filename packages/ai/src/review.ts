@@ -18,13 +18,14 @@ export const REVIEW_SCHEMA: JsonSchema = {
   additionalProperties: false,
   required: ['candidate_id', 'decision', 'mandatory_class', 'section', 'event_key',
              'confidence', 'filter_reason', 'conflicts', 'source_limitations',
-             'needs_higher_tier', 'higher_tier_reasons'],
+             'needs_higher_tier', 'higher_tier_reasons', 'conclusion',
+             'summary_sentences'],
   properties: {
     candidate_id: { type: 'string' },
     decision: { type: 'string', enum: ['retain', 'normal', 'filter'] },
     mandatory_class: { type: 'string', enum: ['A', 'B', 'C', 'D', 'none'] },
     section: { type: 'string',
-      enum: ['ai_tech', 'developer_product', 'quality_article', 'society_life'] },
+      enum: ['ai_tech', 'open_source_project', 'developer_product', 'quality_article', 'society_life'] },
     event_key: { type: 'string' },
     confidence: { type: 'number', minimum: 0, maximum: 1 },
     filter_reason: { type: ['string', 'null'] },
@@ -65,6 +66,8 @@ export type ReviewInput = Candidate & {
   escalationRules: string[];
   /** 同事件的其他来源条目，供交叉核验（PRD 15.1 L2「多来源合并」） */
   siblings?: Array<{ sourceId: string; title: string; excerpt: string; url: string | null }>;
+  /** 已有合格 L2 结果但 L3 失败时，直接从 L3 续跑，避免重做并覆盖 L2。 */
+  resumeTier?: 'L2' | 'L3';
 };
 
 export type ReviewOutcome = {
@@ -97,6 +100,8 @@ export type ReviewDeps = {
   onUsage?: (tier: 'L2' | 'L3', u: CompleteResult['usage'], model: string) => void;
   /** 同时在途的复核请求数，默认 1（顺序）。见 runTier 注释。 */
   concurrency?: number;
+  /** 人工正例归纳出的无效过滤理由。L2 命中则升 L3，L3 命中则回退 normal。 */
+  invalidFilterReasonFragments?: string[];
 };
 
 export type ReviewReport = {
@@ -167,7 +172,9 @@ async function reviewOne(
   const { provider, budget } = tier === 'L2' ? deps.l2 : deps.l3;
   let attempts = 0, lastErr = '';
   let lastKind: string | undefined;
-  let outCap = Math.min(budget.outputTokensMax, tier === 'L3' ? 8000 : 6000);
+  // 单条复核只需判定与 2–3 句摘要。过大的 max_tokens 会让部分兼容线路
+  // 预留过多上游资源并返回 502；保持充足余量，同时避免无意义的 5k–8k 上限。
+  let outCap = Math.min(budget.outputTokensMax, tier === 'L3' ? 3000 : 2000);
 
   for (let attempt = 0; attempt < 2; attempt++) {
     attempts++;
@@ -196,16 +203,32 @@ async function reviewOne(
     const errs = validate(res.data, REVIEW_SCHEMA);
     if (errs.length) { lastErr = `Schema 校验失败: ${errs.slice(0, 3).join('; ')}`; lastKind = 'schema'; continue; }
 
-    const r = res.data as ReviewResult;
+    let r = res.data as ReviewResult;
     if (r.candidate_id !== c.candidateId) {
       lastErr = `candidate_id 不匹配：期望 ${c.candidateId} 实得 ${r.candidate_id}`;
       lastKind = 'schema';
       continue;
     }
+    const badReason = r.decision === 'filter' && r.filter_reason
+      ? (deps.invalidFilterReasonFragments ?? []).find(x => r.filter_reason!.includes(x))
+      : null;
+    if (badReason && tier === 'L2') {
+      r = { ...r, needs_higher_tier: true,
+        higher_tier_reasons: [...r.higher_tier_reasons, `过滤理由命中人工正例保护：${badReason}`] };
+    } else if (badReason && tier === 'L3') {
+      // 两层模型仍只给出被人工明确否定的理由时，宁可进入普通排序，
+      // 不能让无效理由造成不可见的最终漏项。
+      r = { ...r, decision: 'normal', mandatory_class: 'none', filter_reason: null,
+        needs_higher_tier: false, higher_tier_reasons: [] };
+    }
     // L2 才判断是否上 L3；L3 之后不再升级（PRD 15.1）
     const p = tier === 'L2'
       ? shouldPromoteToL3(c, r, deps.highRiskKeywords, deps.isHighRisk)
       : { promote: false, rules: [] };
+    if (badReason && tier === 'L2' && !p.rules.includes('ESC-109')) {
+      p.promote = true;
+      p.rules.push('ESC-109');
+    }
     return { candidateId: c.candidateId, tier, result: r, status: 'ok',
              promote: p.promote, promoteRules: p.rules, attempts, responseId: res.responseId };
   }
@@ -292,8 +315,10 @@ export async function runReview(inputs: ReviewInput[], deps: ReviewDeps): Promis
     priorityOf(a, deps.highRiskKeywords, deps.isHighRisk) -
     priorityOf(b, deps.highRiskKeywords, deps.isHighRisk));
 
-  const promoted = await runTier(queue, 'L2', deps, deps.l2.budget, l2Used, outcomes, deferred);
-  await runTier(promoted, 'L3', deps, deps.l3.budget, l3Used, outcomes, deferred);
+  const resumeL3 = queue.filter(c => c.resumeTier === 'L3');
+  const startL2 = queue.filter(c => c.resumeTier !== 'L3');
+  const promoted = await runTier(startL2, 'L2', deps, deps.l2.budget, l2Used, outcomes, deferred);
+  await runTier([...resumeL3, ...promoted], 'L3', deps, deps.l3.budget, l3Used, outcomes, deferred);
 
   return { outcomes, l2Used, l3Used, deferred };
 }

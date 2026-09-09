@@ -16,19 +16,31 @@ import { dirname, join } from 'node:path';
  */
 
 export type SecretName =
-  | 'OPENAI_API_KEY' | 'DEEPSEEK_API_KEY' | 'DASHSCOPE_API_KEY'
-  | 'ANTHROPIC_API_KEY' | 'GEMINI_API_KEY';
+  | 'OPENAI_API_KEY' | 'OPENAI_COMPAT_API_KEY' | 'DEEPSEEK_API_KEY' | 'DASHSCOPE_API_KEY'
+  | 'ALLNET_API_KEY' | 'ANTHROPIC_API_KEY' | 'GEMINI_API_KEY' | 'SOURCE_PROFILER_API_KEY'
+  | 'TELEGRAM_API_ID' | 'TELEGRAM_API_HASH' | 'TELEGRAM_PHONE';
 
 export const SECRET_NAMES: SecretName[] = [
-  'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'DASHSCOPE_API_KEY',
-  'ANTHROPIC_API_KEY', 'GEMINI_API_KEY',
+  'OPENAI_API_KEY', 'OPENAI_COMPAT_API_KEY', 'DEEPSEEK_API_KEY', 'DASHSCOPE_API_KEY',
+  'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'SOURCE_PROFILER_API_KEY', 'ALLNET_API_KEY',
+  'TELEGRAM_API_ID', 'TELEGRAM_API_HASH', 'TELEGRAM_PHONE',
 ];
 
 /** 非密钥的普通设置，与密钥同文件但不加密语义（仍随文件一起加密落盘）。 */
 export type Settings = {
+  /** L1 默认供应商；aiProvider 保留用于旧版本保管库兼容。 */
   aiProvider?: string;
+  l1Provider?: string;
   l1Model?: string; l2Model?: string; l3Model?: string;
   l2Provider?: string; l3Provider?: string;
+  l1BaseUrl?: string; l2BaseUrl?: string; l3BaseUrl?: string;
+  sourceProfilerProvider?: string; sourceProfilerModel?: string;
+  sourceProfilerBaseUrl?: string; sourceProfilerCredentialRef?: string;
+  sourceProfilerTemperature?: string; sourceProfilerReasoningEffort?: string;
+  sourceProfilerMaxInputChars?: string; sourceProfilerMaxOutputTokens?: string;
+  sourceProfilerTimeoutMs?: string; sourceProfilerRetryPolicy?: string;
+  sourceProfilerFallbackProfile?: string; sourceProfilerEnabled?: string;
+  telegramProvider?: string; telegramModel?: string; telegramBaseUrl?: string;
 };
 
 export type Vault = { secrets: Partial<Record<SecretName, string>>; settings: Settings };
@@ -110,7 +122,7 @@ export function maskedSecrets(path = vaultPath()): Array<{ name: SecretName; set
   return SECRET_NAMES.map(name => {
     const val = v.secrets[name];
     return { name, set: !!val,
-             hint: val ? `${'•'.repeat(Math.min(12, Math.max(0, val.length - 4)))}${val.slice(-4)}` : '' };
+             hint: val ? (name.startsWith('TELEGRAM_') ? '••••••••' : `${'•'.repeat(Math.min(12, Math.max(0, val.length - 4)))}${val.slice(-4)}`) : '' };
   });
 }
 
@@ -129,11 +141,27 @@ export function resolveSettings(path = vaultPath()): Settings {
   try { s = loadVault(path).settings; } catch { /* 保管库不可用时退回纯 env */ }
   return {
     aiProvider: process.env.AI_PROVIDER ?? s.aiProvider,
+    l1Provider: process.env.AI_L1_PROVIDER ?? s.l1Provider ?? s.aiProvider,
     l1Model: process.env.AI_L1_MODEL ?? s.l1Model,
     l2Model: process.env.AI_L2_MODEL ?? s.l2Model,
     l3Model: process.env.AI_L3_MODEL ?? s.l3Model,
     l2Provider: process.env.AI_L2_PROVIDER ?? s.l2Provider,
     l3Provider: process.env.AI_L3_PROVIDER ?? s.l3Provider,
+    l1BaseUrl: process.env.AI_L1_BASE_URL ?? s.l1BaseUrl,
+    l2BaseUrl: process.env.AI_L2_BASE_URL ?? s.l2BaseUrl,
+    l3BaseUrl: process.env.AI_L3_BASE_URL ?? s.l3BaseUrl,
+    sourceProfilerProvider: process.env.SOURCE_PROFILER_PROVIDER ?? s.sourceProfilerProvider ?? 'mock',
+    sourceProfilerModel: process.env.SOURCE_PROFILER_MODEL ?? s.sourceProfilerModel ?? 'mock-profiler',
+    sourceProfilerBaseUrl: process.env.SOURCE_PROFILER_BASE_URL ?? s.sourceProfilerBaseUrl,
+    sourceProfilerCredentialRef: process.env.SOURCE_PROFILER_CREDENTIAL_REF ?? s.sourceProfilerCredentialRef ?? 'SOURCE_PROFILER_API_KEY',
+    sourceProfilerTemperature: process.env.SOURCE_PROFILER_TEMPERATURE ?? s.sourceProfilerTemperature ?? '0.1',
+    sourceProfilerReasoningEffort: process.env.SOURCE_PROFILER_REASONING_EFFORT ?? s.sourceProfilerReasoningEffort,
+    sourceProfilerMaxInputChars: process.env.SOURCE_PROFILER_MAX_INPUT_CHARS ?? s.sourceProfilerMaxInputChars ?? '24000',
+    sourceProfilerMaxOutputTokens: process.env.SOURCE_PROFILER_MAX_OUTPUT_TOKENS ?? s.sourceProfilerMaxOutputTokens ?? '1800',
+    sourceProfilerTimeoutMs: process.env.SOURCE_PROFILER_TIMEOUT_MS ?? s.sourceProfilerTimeoutMs ?? '30000',
+    sourceProfilerRetryPolicy: process.env.SOURCE_PROFILER_RETRY_POLICY ?? s.sourceProfilerRetryPolicy ?? '1',
+    sourceProfilerFallbackProfile: process.env.SOURCE_PROFILER_FALLBACK_PROFILE ?? s.sourceProfilerFallbackProfile,
+    sourceProfilerEnabled: process.env.SOURCE_PROFILER_ENABLED ?? s.sourceProfilerEnabled ?? 'true',
   };
 }
 
@@ -146,9 +174,24 @@ export function hydrateEnv(path = vaultPath()): { loaded: string[]; error?: stri
       if (val && !process.env[k]) { process.env[k] = val; loaded.push(k); }
     const s = v.settings;
     const map: Array<[string, string | undefined]> = [
-      ['AI_PROVIDER', s.aiProvider], ['AI_L1_MODEL', s.l1Model],
+      ['AI_PROVIDER', s.aiProvider], ['AI_L1_PROVIDER', s.l1Provider],
+      ['AI_L1_MODEL', s.l1Model],
       ['AI_L2_MODEL', s.l2Model], ['AI_L3_MODEL', s.l3Model],
       ['AI_L2_PROVIDER', s.l2Provider], ['AI_L3_PROVIDER', s.l3Provider],
+      ['AI_L1_BASE_URL', s.l1BaseUrl], ['AI_L2_BASE_URL', s.l2BaseUrl],
+      ['AI_L3_BASE_URL', s.l3BaseUrl],
+      ['SOURCE_PROFILER_PROVIDER', s.sourceProfilerProvider],
+      ['SOURCE_PROFILER_MODEL', s.sourceProfilerModel],
+      ['SOURCE_PROFILER_BASE_URL', s.sourceProfilerBaseUrl],
+      ['SOURCE_PROFILER_CREDENTIAL_REF', s.sourceProfilerCredentialRef],
+      ['SOURCE_PROFILER_TEMPERATURE', s.sourceProfilerTemperature],
+      ['SOURCE_PROFILER_REASONING_EFFORT', s.sourceProfilerReasoningEffort],
+      ['SOURCE_PROFILER_MAX_INPUT_CHARS', s.sourceProfilerMaxInputChars],
+      ['SOURCE_PROFILER_MAX_OUTPUT_TOKENS', s.sourceProfilerMaxOutputTokens],
+      ['SOURCE_PROFILER_TIMEOUT_MS', s.sourceProfilerTimeoutMs],
+      ['SOURCE_PROFILER_RETRY_POLICY', s.sourceProfilerRetryPolicy],
+      ['SOURCE_PROFILER_FALLBACK_PROFILE', s.sourceProfilerFallbackProfile],
+      ['SOURCE_PROFILER_ENABLED', s.sourceProfilerEnabled],
     ];
     for (const [k, val] of map)
       if (val && !process.env[k]) { process.env[k] = val; loaded.push(k); }

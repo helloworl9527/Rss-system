@@ -38,7 +38,10 @@ export class AnthropicProvider implements Provider {
         '未安装 @anthropic-ai/sdk。执行 npm i @anthropic-ai/sdk 后再用 anthropic 供应商。');
     }
     // 不传 apiKey 时 SDK 自行从 ANTHROPIC_API_KEY / auth profile 解析
-    this.#client = this.#cfg.apiKey ? new Anthropic({ apiKey: this.#cfg.apiKey }) : new Anthropic();
+    const options: Record<string, unknown> = {};
+    if (this.#cfg.apiKey) options.apiKey = this.#cfg.apiKey;
+    if (this.#cfg.baseUrl) options.baseURL = this.#cfg.baseUrl.replace(/\/$/, '');
+    this.#client = new Anthropic(options);
     return this.#client;
   }
 

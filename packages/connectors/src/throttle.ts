@@ -4,6 +4,7 @@
  */
 export type GroupCfg = {
   concurrency: number; min_interval_ms: number; timeout_ms: number; max_retries: number;
+  jitter_ms?: number;
 };
 
 export class HostGroup {
@@ -16,7 +17,9 @@ export class HostGroup {
 
   async run<T>(fn: () => Promise<T>): Promise<T> {
     await new Promise<void>(res => { this.#queue.push(res); this.#pump(); });
-    const gap = this.cfg.min_interval_ms - (Date.now() - this.#lastStart);
+    const targetGap = this.cfg.min_interval_ms +
+      (this.cfg.jitter_ms ? Math.floor(Math.random() * (this.cfg.jitter_ms + 1)) : 0);
+    const gap = targetGap - (Date.now() - this.#lastStart);
     if (gap > 0) await new Promise(r => setTimeout(r, gap));
     this.#lastStart = Date.now();
     try { return await fn(); }

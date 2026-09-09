@@ -1,5 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Throttler } from './throttle.ts';
 
 const execFileAsync = promisify(execFile);
@@ -13,6 +16,8 @@ export type FetchOutcome =
 export type FetchResult = {
   outcome: FetchOutcome;
   httpCode?: number;
+  contentType?: string | null;
+  retryAfterMs?: number;
   body?: string;
   bytes?: number;
   etag?: string | null;
@@ -52,17 +57,18 @@ export async function fetchOnce(
     const latencyMs = Date.now() - t0;
 
     if (r.status === 304)
-      return { outcome: 'not_modified', httpCode: 304, latencyMs };
+      return { outcome: 'not_modified', httpCode: 304, contentType: r.headers.get('content-type'), latencyMs };
 
     if (!r.ok) {
-      return { outcome: 'fetch_failed', httpCode: r.status, latencyMs,
+      return { outcome: r.status === 429 ? 'rate_limited' : 'fetch_failed', httpCode: r.status, contentType: r.headers.get('content-type'),
+               retryAfterMs: r.headers.get('retry-after') ? Number(r.headers.get('retry-after')) * 1000 : undefined, latencyMs,
                errorClass: r.status >= 500 ? 'http_5xx' : 'http_4xx',
                errorMessage: `HTTP ${r.status}` };
     }
 
     // 体积上限：边读边计数，超限即断（PRD 4.4 防资源耗尽）
     const reader = r.body?.getReader();
-    if (!reader) return { outcome: 'source_anomaly', httpCode: r.status, latencyMs,
+    if (!reader) return { outcome: 'source_anomaly', httpCode: r.status, contentType: r.headers.get('content-type'), latencyMs,
                           errorClass: 'empty', errorMessage: '响应无 body' };
     const chunks: Uint8Array[] = [];
     let total = 0;
@@ -72,7 +78,7 @@ export async function fetchOnce(
       total += value.byteLength;
       if (total > opts.maxBytes) {
         await reader.cancel();
-        return { outcome: 'fetch_failed', httpCode: r.status, latencyMs: Date.now() - t0,
+        return { outcome: 'fetch_failed', httpCode: r.status, contentType: r.headers.get('content-type'), latencyMs: Date.now() - t0,
                  errorClass: 'too_large', errorMessage: `响应超过 ${opts.maxBytes} 字节上限` };
       }
       chunks.push(value);
@@ -81,10 +87,10 @@ export async function fetchOnce(
 
     // 200 但空 feed → source_anomaly，不得写成「无更新」（PRD 18 章）
     if (body.trim().length === 0)
-      return { outcome: 'source_anomaly', httpCode: r.status, bytes: 0, latencyMs: Date.now() - t0,
+      return { outcome: 'source_anomaly', httpCode: r.status, contentType: r.headers.get('content-type'), bytes: 0, latencyMs: Date.now() - t0,
                errorClass: 'empty', errorMessage: '200 但响应体为空' };
 
-    return { outcome: 'ok', httpCode: r.status, body, bytes: total,
+    return { outcome: 'ok', httpCode: r.status, contentType: r.headers.get('content-type'), body, bytes: total,
              etag: r.headers.get('etag'), lastModified: r.headers.get('last-modified'),
              latencyMs: Date.now() - t0 };
   } catch (e: any) {
@@ -107,33 +113,58 @@ export async function fetchOnce(
  */
 export async function fetchViaCurl(
   url: string,
-  opts: { timeoutMs: number; userAgent: string; maxBytes: number },
+  opts: { timeoutMs: number; userAgent: string; maxBytes: number;
+          etag?: string | null; lastModified?: string | null },
 ): Promise<FetchResult> {
   const t0 = Date.now();
   const SEP = '\n__CURL_META__';
+  const tempDir = mkdtempSync(join(tmpdir(), 'brief-curl-'));
+  const headerPath = join(tempDir, 'headers');
   try {
-    const { stdout } = await execFileAsync('curl', [
+    const args = [
       '-sS', '-L', '--compressed',
       '--max-time', String(Math.ceil(opts.timeoutMs / 1000)),
       '--max-redirs', '3',
       '-A', opts.userAgent,
-      '-w', `${SEP}%{http_code}`,
-      url,
-    ], { maxBuffer: opts.maxBytes + 4096, timeout: opts.timeoutMs + 2000, encoding: 'utf8' });
+      '--dump-header', headerPath,
+    ];
+    if (opts.etag) args.push('-H', `If-None-Match: ${opts.etag}`);
+    if (opts.lastModified) args.push('-H', `If-Modified-Since: ${opts.lastModified}`);
+    // Ubuntu 22.04 自带 curl 7.81，不支持较新的 %header{name} write-out。
+    // 响应头单独落到受控临时目录，兼容旧版 curl 并避免污染正文。
+    args.push('-w', `${SEP}%{http_code}\n%{content_type}`, url);
+    const { stdout } = await execFileAsync('curl', args,
+      { maxBuffer: opts.maxBytes + 4096, timeout: opts.timeoutMs + 2000, encoding: 'utf8' });
 
     const i = stdout.lastIndexOf(SEP);
     if (i < 0) return { outcome: 'fetch_failed', latencyMs: Date.now() - t0,
                         errorClass: 'network', errorMessage: 'curl 未返回状态码' };
     const body = stdout.slice(0, i);
-    const code = Number(stdout.slice(i + SEP.length).trim());
+    const meta = stdout.slice(i + SEP.length).split(/\r?\n/);
+    const code = Number(meta[0]?.trim());
+    const contentType = meta[1]?.trim() || null;
+    const rawHeaders = readFileSync(headerPath, 'utf8');
+    // -L 时 dump-header 含多个响应块；只取最终响应的头。
+    const blocks = rawHeaders.split(/\r?\n\r?\n/).filter(b => /^HTTP\//i.test(b.trim()));
+    const finalHeaders = blocks.at(-1) ?? rawHeaders;
+    const header = (name: string) =>
+      finalHeaders.match(new RegExp(`^${name}:\\s*(.+)$`, 'im'))?.[1]?.trim() || null;
+    const etag = header('etag');
+    const lastModified = header('last-modified');
+    const retryRaw = header('retry-after');
+    const retrySeconds = retryRaw && /^\d+$/.test(retryRaw)
+      ? Number(retryRaw)
+      : retryRaw ? Math.max(0, Math.ceil((Date.parse(retryRaw) - Date.now()) / 1000)) : 0;
     const latencyMs = Date.now() - t0;
 
-    if (code === 304) return { outcome: 'not_modified', httpCode: 304, latencyMs };
+    if (code === 304) return { outcome: 'not_modified', httpCode: 304, contentType, latencyMs };
     // Cloudflare 限流返回 429 且无 Retry-After，响应体是「Just a moment」质询页；
     // 403 + 同样的质询页也属同一类。都归为 rate_limited。
     const isChallenge = /Just a moment|cf-mitigated|__cf_chl/i.test(body.slice(0, 600));
-    if (code === 429 || (code === 403 && isChallenge))
-      return { outcome: 'rate_limited', httpCode: code, latencyMs,
+    const protectedHost = (() => { try { return new URL(url).hostname === 'linux.do'; } catch { return false; } })();
+    if (code === 429 || (code === 403 && (isChallenge || protectedHost)))
+      return { outcome: 'rate_limited', httpCode: code, contentType, latencyMs,
+               retryAfterMs: retrySeconds > 0 ? retrySeconds * 1000 : undefined,
                errorClass: 'rate_limited', errorMessage: `HTTP ${code} 限流/质询` };
     if (code < 200 || code >= 300)
       return { outcome: 'fetch_failed', httpCode: code, latencyMs,
@@ -145,13 +176,14 @@ export async function fetchViaCurl(
       return { outcome: 'fetch_failed', httpCode: code, latencyMs,
                errorClass: 'too_large', errorMessage: `响应超过 ${opts.maxBytes} 字节上限` };
 
-    return { outcome: 'ok', httpCode: code, body, bytes: Buffer.byteLength(body), latencyMs };
+    return { outcome: 'ok', httpCode: code, contentType, body, bytes: Buffer.byteLength(body),
+             etag, lastModified, latencyMs };
   } catch (e: any) {
     const timedOut = e?.killed || /ETIMEDOUT|timeout/i.test(String(e?.message));
     return { outcome: 'fetch_failed', latencyMs: Date.now() - t0,
              errorClass: timedOut ? 'timeout' : 'network',
              errorMessage: String(e?.stderr || e?.message || e).slice(0, 300) };
-  }
+  } finally { rmSync(tempDir, { recursive: true, force: true }); }
 }
 
 /**
@@ -188,19 +220,35 @@ export async function fetchWithFallback(
   endpoints: Endpoint[],
   throttler: Throttler,
   defaults: { userAgent: string; maxBytes: number },
+  unavailableHosts: ReadonlySet<string> = new Set(),
 ): Promise<{ attempts: Attempt[]; success: Attempt | null }> {
   const attempts: Attempt[] = [];
+  const rateLimitedHosts = new Set<string>();
   for (const ep of [...endpoints].sort((a, b) => a.priority - b.priority)) {
+    let host = '';
+    try { host = new URL(ep.url).hostname; } catch { /* fetch will report invalid URL */ }
+    if (unavailableHosts.has(host) || rateLimitedHosts.has(host)) continue;
     const group = throttler.groupFor(ep.url, ep.host_group);
-    const res = await group.run(() => fetchOnce(ep.url, {
-      timeoutMs: group.cfg.timeout_ms,
-      userAgent: defaults.userAgent,
-      maxBytes: defaults.maxBytes,
-      etag: ep.etag, lastModified: ep.last_modified,
-    }));
-    const a: Attempt = { ...res, endpoint: ep, isFallback: ep.priority > 1 };
-    attempts.push(a);
-    if (res.outcome === 'ok' || res.outcome === 'not_modified') return { attempts, success: a };
+    const maxAttempts = Math.max(1, group.cfg.max_retries + 1);
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      // linux.do 会按 TLS 指纹质询 Node/undici；直接使用 curl，避免一次注定失败的请求。
+      const request = host === 'linux.do' ? fetchViaCurl : fetchOnce;
+      const res = await group.run(() => request(ep.url, {
+        timeoutMs: group.cfg.timeout_ms,
+        userAgent: defaults.userAgent,
+        maxBytes: defaults.maxBytes,
+        etag: ep.etag, lastModified: ep.last_modified,
+      }));
+      const a: Attempt = { ...res, endpoint: ep, isFallback: ep.priority > 1 };
+      attempts.push(a);
+      if (res.outcome === 'ok' || res.outcome === 'not_modified') return { attempts, success: a };
+      // 限流后不在同一主机继续尝试其它 URL，也不做秒级重试；由持久化熔断器冷却。
+      if (res.outcome === 'rate_limited') { rateLimitedHosts.add(host); break; }
+      const retryable = res.errorClass === 'http_5xx' || res.errorClass === 'network' || res.errorClass === 'timeout';
+      if (!retryable || attempt === maxAttempts - 1) break;
+      const delay = res.retryAfterMs && res.retryAfterMs > 0 ? Math.min(res.retryAfterMs, 60000) : [2000, 8000, 30000][attempt]!;
+      await new Promise(resolve => setTimeout(resolve, delay + Math.floor(Math.random() * 250)));
+    }
   }
   return { attempts, success: null };
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { candidateEligibleSql, eligibilitySignature, assertEligibilityUnchanged } from '../../../packages/db/src/eligibility.ts';
 /**
  * 简报组装与投递（PRD 9 / 12.1 后半段）。
  *
@@ -10,12 +11,11 @@
  * 投递由 deliveries 唯一键兜底，重跑不会重复发送（PRD 12.3 / 24.1-P0）。
  */
 import { readFileSync } from 'node:fs';
-import { openDb, nowIso, type DB } from '../../../packages/db/src/index.ts';
+import { openDb, nowIso, sha256, type DB } from '../../../packages/db/src/index.ts';
 import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
-import { pickHighlights } from '../../../packages/domain/src/highlights.ts';
 import { windowFromKey } from '../../../packages/domain/src/normalize.ts';
-import { clusterCandidates, selectForBrief, type ClusterInput }
+import { clusterCandidates, excludeCoveredToday, selectForBrief, type ClusterInput }
   from '../../../packages/domain/src/cluster.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
 import { runCompose, type ComposeInput } from '../../../packages/ai/src/compose.ts';
@@ -27,6 +27,12 @@ import { mailerFromEnv } from '../../../packages/templates/src/mailer.ts';
 const argv = process.argv.slice(2);
 const NO_SEND = argv.includes('--no-send');
 const SHADOW = argv.includes('--shadow');
+const REGENERATE = argv.includes('--regenerate');
+const ALLOW_PARTIAL = argv.includes('--allow-partial');
+const comparisonArg = argv.includes('--comparison-label') ? argv[argv.indexOf('--comparison-label') + 1] : null;
+if (comparisonArg && comparisonArg !== '旧版' && comparisonArg !== '优化版' && comparisonArg !== '优化修正版')
+  throw new Error('--comparison-label 仅接受“旧版”“优化版”或“优化修正版”');
+const COMPARISON_LABEL = comparisonArg as BriefData['comparisonLabel'];
 const runArg = argv.includes('--run') ? Number(argv[argv.indexOf('--run') + 1]) : null;
 
 // 把后台设置的供应商与 API key 注入 env（环境变量优先）
@@ -42,6 +48,15 @@ const run = (runArg
   : db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get()) as any;
 if (!run) { console.log('没有可用的 run'); db.close(); process.exit(0); }
 
+const initialEligibility = eligibilitySignature(db,run.id);
+function checkEligibility() {
+  try { assertEligibilityUnchanged(db,run.id,initialEligibility); }
+  catch(e:any) {
+    db.prepare("UPDATE runs SET status='partial',error=? WHERE id=?").run(e.message,run.id);
+    db.prepare("INSERT INTO audit_events(run_id,entity_type,entity_id,action,payload_json,created_at) VALUES(?,'run',?,'brief_eligibility_changed',?,?)").run(run.id,String(run.id),JSON.stringify({error:e.message}),nowIso());
+    throw e;
+  }
+}
 const win = windowFromKey(run.window_key);
 const fmt = (d: Date) => new Intl.DateTimeFormat('sv-SE', {
   timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
@@ -55,6 +70,7 @@ type Row = {
   late_discovery: number; origin_window_key: string; first_seen_at: string;
   signals_json: string | null; filter_rule_id: string | null; filter_reason: string | null;
   is_official: number; result_json: string | null;
+  compose_json: string | null;
 };
 const rows = db.prepare(`
   SELECT c.id cid, c.item_version_id vid, f.source_id, s.category, s.priority,
@@ -65,17 +81,39 @@ const rows = db.prepare(`
          v.signals_json, c.filter_rule_id, c.filter_reason,
          (json_extract(s.config_json,'$.official') IS NOT NULL) is_official,
          (SELECT e.result_json FROM evaluations e WHERE e.candidate_id=c.id
+           AND e.stage IN ('sol','terra','luna')
            ORDER BY CASE e.stage WHEN 'sol' THEN 0 WHEN 'terra' THEN 1 ELSE 2 END, e.id DESC LIMIT 1) result_json
+         ,(SELECT e.result_json FROM evaluations e WHERE e.candidate_id=c.id
+           AND e.stage='compose' ORDER BY e.id DESC LIMIT 1) compose_json
   FROM candidates c
   JOIN item_versions v ON v.id=c.item_version_id
   JOIN feed_items f ON f.id=v.item_id
   JOIN sources s ON s.id=f.source_id
-  WHERE c.run_id=?`).all(run.id) as Row[];
+  WHERE ${candidateEligibleSql()} AND c.run_id=?`).all(run.id) as Row[];
 
 if (!rows.length) { console.log(`run #${run.id} 没有候选`); db.close(); process.exit(0); }
 
+// 完整性门禁：任何未完成 AI 判定的候选都会让简报失真。除非人工明确
+// 使用 --allow-partial，本期不得持久化、发送或被标记为 succeeded。
+const unresolved = rows.filter(r => r.decision == null || r.decision === 'escalate');
+const maxUnresolved = Number(rules.brief?.completeness_gate?.max_unresolved ?? 0);
+if (!ALLOW_PARTIAL && unresolved.length > maxUnresolved) {
+  const nullCount = unresolved.filter(r => r.decision == null).length;
+  const pendingCount = unresolved.length - nullCount;
+  const message = `完整性门禁阻断：未判定 ${nullCount} 条，待复核 ${pendingCount} 条`;
+  db.prepare(`UPDATE runs SET status='partial',stage='review',error=?,finished_at=? WHERE id=?`)
+    .run(message, nowIso(), run.id);
+  db.prepare(`INSERT INTO audit_events
+    (run_id,entity_type,entity_id,action,payload_json,created_at) VALUES (?,?,?,?,?,?)`)
+    .run(run.id, 'run', String(run.id), 'brief_completeness_blocked',
+      JSON.stringify({ unresolved: unresolved.length, nullCount, pendingCount, maxUnresolved }), nowIso());
+  console.error(`❌ ${message}；拒绝生成或发送残缺简报`);
+  db.close(); process.exit(2);
+}
+
 const included = rows.filter(r => r.decision === 'retain' || r.decision === 'normal');
 const parseEval = (r: Row) => { try { return r.result_json ? JSON.parse(r.result_json) : null; } catch { return null; } };
+const parseCompose = (r: Row) => { try { return r.compose_json ? JSON.parse(r.compose_json) : null; } catch { return null; } };
 
 // ---------- 2. 聚类与排序 ----------
 const inputs: ClusterInput[] = included.map(r => {
@@ -94,10 +132,43 @@ const inputs: ClusterInput[] = included.map(r => {
   };
 });
 const clusters = clusterCandidates(inputs);
-const { selected, dropped } = selectForBrief(clusters);
+
+// 同一台北自然日跨窗口去重：早报出现后，午报/晚报的同义转述不再进入正文。
+// 只查已经实际发送的简报，发送失败或草稿不能占掉后续窗口的事件。
+const day = run.window_key.slice(0, 10);
+const previousToday = db.prepare(`
+  SELECT bi.title, bi.source_url sourceUrl, sc.cluster_key clusterKey
+  FROM brief_items bi
+  JOIN briefs b ON b.id=bi.brief_id AND b.status='final'
+  JOIN runs pr ON pr.id=b.run_id
+  JOIN story_clusters sc ON sc.id=bi.story_cluster_id
+  WHERE pr.id<>? AND pr.window_key LIKE ? AND pr.window_end_at < ?
+    AND EXISTS (SELECT 1 FROM deliveries d WHERE d.brief_id=b.id AND d.status='sent')
+  ORDER BY pr.window_end_at`).all(run.id, `${day}:%`, run.window_end_at) as
+  Array<{ title: string; clusterKey: string; sourceUrl: string | null }>;
+const daily = excludeCoveredToday(clusters, previousToday);
+if (daily.covered.length) {
+  const mark = db.prepare(`UPDATE candidates SET decision='filter',filter_rule_id='DF-047',
+    filter_reason='同一事件已在当天较早窗口推送，本窗口不再重复' WHERE id=?`);
+  db.transaction(() => {
+    for (const x of daily.covered) {
+      for (const m of [x.cluster.primary, ...x.cluster.members]) {
+        mark.run(Number(m.candidateId.slice(1)));
+        const row = rows.find(r => r.cid === Number(m.candidateId.slice(1)));
+        if (row) {
+          row.decision = 'filter'; row.filter_rule_id = 'DF-047';
+          row.filter_reason = '同一事件已在当天较早窗口推送，本窗口不再重复';
+        }
+      }
+      console.log(`  ↪ 当日去重：${x.cluster.primary.title}（较早窗口：${x.previous.title}）`);
+    }
+  })();
+}
+const { selected, dropped } = selectForBrief(daily.fresh);
 
 console.log(`run #${run.id} ${run.window_key} ${run.window_label}`);
-console.log(`候选 ${rows.length} → 入选候选 ${included.length} → 聚类 ${clusters.length} → 选中 ${selected.length}`);
+console.log(`候选 ${rows.length} → 入选候选 ${included.length} → 聚类 ${clusters.length}` +
+  ` → 当日重复 ${daily.covered.length} → 选中 ${selected.length}`);
 
 if (!selected.length) {
   // PRD 9.1：合格内容不足时允许少于 5 条，禁止用旧消息凑数 —— 一条不够也如实反映
@@ -129,6 +200,9 @@ const byCid = new Map(rows.map(r => [`c${r.cid}`, r]));
 const composeInputs: ComposeInput[] = selected.map(c => {
   const r = byCid.get(c.primary.candidateId)!;
   const e = parseEval(r);
+  const cached = parseCompose(r);
+  const prepared = cached?.conclusion && cached?.summary_sentences?.length >= 2 ? cached
+    : e?.conclusion && e?.summary_sentences?.length >= 2 ? e : null;
   return {
     candidateId: c.primary.candidateId,
     sourceName: r.source_id, sourceUrl: r.url, title: r.title, body: r.body,
@@ -136,17 +210,21 @@ const composeInputs: ComposeInput[] = selected.map(c => {
     contributions: c.members.map(m => ({ sourceName: m.sourceId, url: m.url })),
     sourceLimitations: e?.source_limitations ?? [],
     sourceEvidence: sourceEvidence(r),
-    precomposed: e?.conclusion && e?.summary_sentences?.length >= 2
-      ? { conclusion: e.conclusion, summarySentences: e.summary_sentences } : null,
+    precomposed: prepared
+      ? { title: prepared.title, conclusion: prepared.conclusion,
+          summarySentences: prepared.summary_sentences } : null,
   };
 });
 
 const cfg = providerFromEnv('L1');
 const provider = await createProvider(cfg);
+const composePromptText = readFileSync('./config/prompts/compose.md', 'utf8');
+const composePromptVersion = `compose-v${rules.meta.rule_version}-${sha256(composePromptText).slice(0, 8)}`;
 const composed = composeInputs.length
   ? await runCompose(composeInputs, {
-      provider, systemPrompt: readFileSync('./config/prompts/compose.md', 'utf8'),
-      batchSize: 4, bodyCharsMax: 4000,
+      provider, systemPrompt: composePromptText,
+      batchSize: Number(process.env.AI_COMPOSE_BATCH_SIZE ?? 4), bodyCharsMax: 4000,
+      interBatchDelayMs: Number(process.env.AI_COMPOSE_BATCH_DELAY_MS ?? 0),
       outputTokensMax: rules.ai?.budget_per_run?.luna?.output_tokens_max ?? 8000,
       forbiddenFields: rules.brief?.item_fields_forbidden ?? [],
     })
@@ -154,9 +232,31 @@ const composed = composeInputs.length
 
 const copy = new Map(composed.outcomes.filter(o => o.result).map(o => [o.candidateId, o.result!]));
 const composeFailed = composed.outcomes.filter(o => !o.result);
+// 成功文案跨重试缓存。供应商限流时补发可能需多轮完成；若只放内存，
+// 每轮都会重做已经成功的批次，既浪费额度又更容易再次触发限流。
+const newlyComposed = composed.outcomes.filter(o => o.status === 'ok' && o.result);
+if (newlyComposed.length) {
+  const exists = db.prepare(`SELECT 1 FROM evaluations
+    WHERE candidate_id=? AND stage='compose' AND prompt_version=? LIMIT 1`);
+  const insert = db.prepare(`INSERT INTO evaluations
+    (candidate_id,stage,model,prompt_version,result_json,created_at)
+    VALUES (?,'compose',?,?,?,?)`);
+  db.transaction(() => {
+    for (const o of newlyComposed) {
+      const cid = Number(o.candidateId.slice(1));
+      if (!exists.get(cid, composePromptVersion))
+        insert.run(cid, provider.model, composePromptVersion, JSON.stringify(o.result), nowIso());
+    }
+  })();
+  console.log(`文案缓存：新增 ${newlyComposed.length} 条，后续重试直接复用`);
+}
 if (composed.calls)
   console.log(`文案：调用 ${composed.calls} 次，复用 ${composed.outcomes.filter(o => o.status === 'reused').length} 条`);
 if (composeFailed.length) console.log(`⚠️  ${composeFailed.length} 条文案生成失败，已从简报中剔除并转人工`);
+if (REGENERATE && composeFailed.length) {
+  console.error('❌ 补发要求完整成稿：存在文案失败，拒绝持久化或发送残缺简报');
+  db.close(); process.exit(1);
+}
 
 // ---------- 4. 组装 BriefData ----------
 const SECTIONS = rules.brief?.sections ?? [];
@@ -169,13 +269,14 @@ for (const c of selected) {
   const cp = copy.get(c.primary.candidateId);
   if (!cp) continue;                                     // 文案失败的不进简报
   items.push({
-    section: c.section, score: c.score,
+    section: c.section,
     title: cp.title || r.title,
     conclusion: cp.conclusion,
     summarySentences: cp.summary_sentences,
     sourceName: r.display_name || r.source_id,
     sourceSite: r.site_url,
     sourceUrl: r.url,
+    score: c.score,
     otherSources: c.members.map(m => {
       const mr = byCid.get(m.candidateId);
       return { name: mr?.display_name || m.sourceId, site: mr?.site_url ?? null };
@@ -188,12 +289,9 @@ for (const c of selected) {
   });
 }
 
-// 核心要点：每分区保底一条 + 余额按分数补 + 同类合并（详见 highlights.ts）
-const [hMin, hMax] = rules.brief?.sections?.[0]?.count ?? [5, 8];
-void hMin;
-const highlights = pickHighlights(
-  items, SECTIONS.map((x: any) => x.id).filter((id: string) => id !== 'core_highlights' && id !== 'audit'),
-  hMax);
+// 用户已明确永久关闭“核心要点”；正文分区本身即为完整内容，避免同一条
+// 在邮件顶部和正文重复展示。保留 BriefData 字段为空以兼容历史渲染器。
+const highlights: string[] = [];
 
 // 审计区（PRD 9.3）
 const filtered = rows.filter(r => r.decision === 'filter');
@@ -229,15 +327,20 @@ const entry = (r: Row, reason: string) =>
 
 const seen = new Set((db.prepare('SELECT item_version_id v FROM appendix_seen').all() as any[])
   .map(x => x.v));
+// 对照邮件必须复用旧版刚刚展示过的附录，而不能因为旧版已投递就变成空附录。
+const comparisonAppendix = COMPARISON_LABEL ? new Set((db.prepare(`
+  SELECT a.item_version_id v FROM appendix_seen a JOIN briefs b ON b.id=a.brief_id
+  WHERE b.run_id=?`).all(run.id) as any[]).map(x => x.v)) : new Set<number>();
 
 let evalAppendix: BriefData['evalAppendix'] = null;
 let appendixNew: Row[] = [];
 if (wantAppendix) {
-  const fresh = (d: string) => rows.filter(r => r.decision === d && !seen.has(r.vid));
+  const fresh = (d: string) => rows.filter(r => r.decision === d
+    && (!seen.has(r.vid) || comparisonAppendix.has(r.vid)));
   const filtered = fresh('filter'), pending = fresh('escalate');
   appendixNew = [...filtered, ...pending];
   const repeated = rows.filter(r => (r.decision === 'filter' || r.decision === 'escalate')
-                                 && seen.has(r.vid)).length;
+    && seen.has(r.vid) && !comparisonAppendix.has(r.vid)).length;
   evalAppendix = {
     filtered: filtered.map(r => entry(r, r.filter_reason ?? r.filter_rule_id ?? '未记录原因')),
     pending: pending.map(r => entry(r, '待复核：名额不足或需人工判断')),
@@ -246,14 +349,16 @@ if (wantAppendix) {
   console.log(`附录：新增 ${appendixNew.length} 条，跳过已列过的 ${repeated} 条`);
 }
 
+const sectionData = (SECTIONS.filter((s: any) => s.id !== 'core_highlights' && s.id !== 'audit'))
+  .map((s: any) => ({ id: s.id, title: s.title,
+    items: items.filter(i => i.section === s.id).sort((a, b) => b.score - a.score) }));
 const data: BriefData = {
   date: run.window_key.slice(0, 10),
   windowLabel: run.window_label,
   windowRange: `${fmt(win.start)}–${fmt(win.end)}`,
   highlights,
-  sections: (SECTIONS.filter((s: any) => s.id !== 'core_highlights' && s.id !== 'audit'))
-    .map((s: any) => ({ id: s.id, title: s.title,
-      items: items.filter(i => i.section === s.id).sort((a, b) => b.score - a.score) })),
+  sections: sectionData,
+  comparisonLabel: COMPARISON_LABEL,
   audit: {
     mandatoryMisses,
     counts: [
@@ -299,7 +404,7 @@ function renderWithinLimit(d: BriefData) {
 }
 
 const { html, text, trimmed } = renderWithinLimit(data);
-const subject = subjectOf(data);
+const subject = subjectOf(data) + (REGENERATE && !COMPARISON_LABEL ? '｜补发' : '');
 if (trimmed) console.log(`⚠️  附录省略 ${trimmed} 条以控制邮件体积`);
 const errs = checkEmail(html, text);
 if (errs.length) {
@@ -310,21 +415,28 @@ if (errs.length) {
 console.log(`简报：${items.length} 条 / ${Math.round(Buffer.byteLength(html, 'utf8') / 1024)} KB / 主题「${subject}」`);
 if (sectionTitle('audit')) { /* 分区标题已由 rules 提供 */ }
 
+checkEligibility();
+
 // ---------- 6. 持久化不可变版本（FR-052） ----------
 const existing = db.prepare(
-  `SELECT id, version FROM briefs WHERE run_id=? ORDER BY version DESC LIMIT 1`).get(run.id) as any;
+  `SELECT id, version, eligibility_signature FROM briefs WHERE run_id=? ORDER BY version DESC LIMIT 1`).get(run.id) as any;
 const version = (existing?.version ?? 0) + 1;
 let briefId: number;
 
-if (existing && !argv.includes('--regenerate')) {
+if (existing && !REGENERATE && db.prepare("SELECT 1 FROM deliveries WHERE brief_id=? AND recipient=? AND delivery_type=? AND status='sent'").get(existing.id,process.env.MAIL_TO??'',SHADOW?'shadow':'primary')) {
+  console.log('本期已投递，不重复发送'); db.close(); process.exit(0);
+}
+if (existing && !REGENERATE && existing.eligibility_signature===initialEligibility) {
   briefId = existing.id;
   console.log(`已存在简报 #${briefId}（v${existing.version}），复用；加 --regenerate 可生成新版本`);
 } else {
   briefId = Number(db.transaction(() => {
+    checkEligibility();
     const id = Number(db.prepare(`INSERT INTO briefs (run_id,version,subject,text_body,html_body,
       html_bytes,status,rule_version,created_at) VALUES (?,?,?,?,?,?,'final',?,?)`)
       .run(run.id, version, subject, text, html, Buffer.byteLength(html, 'utf8'),
            rules.meta.rule_version, nowIso()).lastInsertRowid);
+    db.prepare('UPDATE briefs SET eligibility_signature=? WHERE id=?').run(initialEligibility,id);
     if (existing) db.prepare(`UPDATE briefs SET status='superseded' WHERE id=?`).run(existing.id);
 
     const insCluster = db.prepare(`INSERT INTO story_clusters (cluster_key,canonical_title,
@@ -374,9 +486,11 @@ if (NO_SEND) {
   if (note) console.log(`投递通道：${kind} —— ${note}`);
   else console.log(`投递通道：${kind}`);
 
+  checkEligibility();
   const r = await deliver(db, mailer, {
     briefId, recipient: to,
-    deliveryType: SHADOW ? 'shadow' : 'primary',
+    assertEligible: checkEligibility,
+    deliveryType: SHADOW ? 'shadow' : REGENERATE ? 'resend' : 'primary',
     subject, text, html,
     environment: SHADOW ? 'shadow' : undefined,
   });
@@ -397,6 +511,6 @@ if (NO_SEND) {
     console.error('永久失败 —— 简报已持久化，修复凭证后可用后台补发');
 }
 
-db.prepare(`UPDATE runs SET status='succeeded', stage='sending', finished_at=? WHERE id=?`)
+db.prepare(`UPDATE runs SET status='succeeded', stage='sending', finished_at=?, error=NULL WHERE id=?`)
   .run(nowIso(), run.id);
 db.close();

@@ -11,6 +11,7 @@ console.log('实测误伤案例（来自 2026-08-22 真实运行）：\n');
     ['Telegram 代理：WebSocket 封装转发加密的 MTProxy 流量', '加密', false],
     ['香港有没有几十港币通宵的网吧', '币', false],
     ['deepseek-V4-Flash-Vision-Exp 目前只是试验品阶段', '试验', false],
+    ['具身数据报告讨论数据合规，由无限基金 SEE Fund 联合发布', '合规/基金', false],
     ['绿洲资本是天使轮独家投资方及最大机构股东', '投资', true],
   ];
   for (const [text, , expect] of cases) {

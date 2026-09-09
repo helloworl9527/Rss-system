@@ -59,6 +59,8 @@ export type TriageDeps = {
   /** 带守卫的高风险判定；未提供时退回裸关键词匹配 */
   isHighRisk?: (text: string) => boolean;
   majorNewsTypes?: string[];
+  /** 人工正例归纳出的无效过滤理由；命中时不得直接过滤，必须升级。 */
+  invalidFilterReasonFragments?: string[];
   onUsage?: (u: CompleteResult['usage'], model: string) => void;
 };
 
@@ -108,6 +110,9 @@ export function decideEscalation(
   const hay = `${c.title}\n${c.body}`;
 
   if (c.prescreenClasses.length > 0 && r.decision === 'filter') rules.push('ESC-005');
+  if (r.decision === 'filter' && r.filter_reason &&
+      (deps.invalidFilterReasonFragments ?? []).some(x => r.filter_reason!.includes(x)))
+    rules.push('ESC-009');
   if (r.confidence < 0.75) rules.push('ESC-001');
   // 用带守卫的匹配替代裸 includes —— 实测裸匹配 7 条命中里 6 条是误伤
   // （「量化」← 轻量化控制、「币」← 港币、「试验」← 试验品阶段）

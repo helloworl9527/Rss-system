@@ -9,6 +9,108 @@ export type RawItem = {
   author: string | null;
 };
 
+/**
+ * 把“一觉醒来发生了什么 MM月DD日”一类聚合日报拆成独立消息。
+ * 聚合帖里的每个编号有自己的标题和原文 URL，本质上是不同事件；如果把整帖
+ * 当成一个候选，模型只能给整包一个分区/event_key，无法逐条分类与去重。
+ */
+export function expandCompositeDigest(item: RawItem): RawItem[] {
+  const superTechFans = expandSuperTechFansDigest(item);
+  if (superTechFans) return superTechFans;
+  if (!/^一觉醒来发生了什么\s+\d{2}月\d{2}日/.test(item.title.trim())) return [item];
+  const plain = String(item.html ?? '')
+    .replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\r/g, '');
+  const lines = plain.split('\n').map(x => x.trim()).filter(Boolean);
+  const out: RawItem[] = [];
+  let section = '资讯';
+  let pending: { title: string; index: string } | null = null;
+
+  for (const line of lines) {
+    if (/资讯快读/.test(line)) { section = '资讯快读'; pending = null; continue; }
+    if (/即刻镇小报/.test(line)) { section = '即刻镇小报'; pending = null; continue; }
+    const numbered = line.match(/^(\d+)[、.．]\s*(.+)$/);
+    if (numbered) {
+      pending = { index: numbered[1]!, title: numbered[2]!.trim() };
+      const inlineUrl = pending.title.match(/\s+(https:\/\/\S+)$/)?.[1];
+      if (inlineUrl) {
+        pending.title = pending.title.slice(0, -inlineUrl.length).trim();
+        out.push(child(inlineUrl)); pending = null;
+      }
+      continue;
+    }
+    const url = line.match(/^https:\/\/\S+/)?.[0];
+    if (pending && url) { out.push(child(url)); pending = null; continue; }
+    if (pending && !/^今日.+内容来自/.test(line)) pending.title += ` ${line}`;
+  }
+
+  // 至少拆出两条才视为聚合日报；格式异常时保留原条目，避免静默丢内容。
+  return out.length >= 2 ? out : [item];
+
+  function child(url: string): RawItem {
+    const p = pending!;
+    return {
+      title: p.title,
+      html: `${p.title}\n\n聚合栏目：${section}\n原合集：${item.title}`,
+      link: url,
+      guid: null,
+      publishedRaw: item.publishedRaw,
+      author: item.author,
+    };
+  }
+}
+
+/**
+ * SuperTechFans 每期 RSS 条目包含 10 篇独立的 Hacker News 消息。
+ * 数字 h2 到下一个 h2 是一篇消息；其中第一条外链是原文，HN item id
+ * 是跨日期、排名变化仍保持不变的条目标识。
+ */
+export function expandSuperTechFansDigest(item: RawItem): RawItem[] | null {
+  if (!/^\d{4}\s+\d{2}\s+\d{2}\s+HackerNews$/i.test(item.title.trim())) return null;
+
+  const decode = (s: string) => s
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&quot;/gi, '"').replace(/&apos;|&#39;/gi, "'")
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&rsquo;/gi, '’').replace(/&lsquo;/gi, '‘')
+    .replace(/&rdquo;/gi, '”').replace(/&ldquo;/gi, '“')
+    .replace(/&ndash;/gi, '–').replace(/&mdash;/gi, '—');
+  const headings = [...String(item.html ?? '').matchAll(/<h2\b[^>]*>([\s\S]*?)<\/h2>/gi)];
+  const out: RawItem[] = [];
+
+  for (let i = 0; i < headings.length; i++) {
+    const h = headings[i]!;
+    const heading = decode(h[1]!.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+    const numbered = heading.match(/^(\d+)\.\s*(.+?)(?:\s+#)?$/);
+    if (!numbered) continue;
+
+    const sectionStart = h.index! + h[0]!.length;
+    const sectionEnd = headings[i + 1]?.index ?? item.html.length;
+    const section = item.html.slice(sectionStart, sectionEnd).trim();
+    const urls = [...section.matchAll(/href=(?:&#34;|&quot;|["'])(https?:\/\/.*?)(?:&#34;|&quot;|["'])/gi)]
+      .map(m => decode(m[1]!));
+    const link = urls.find(u => !u.startsWith('https://news.ycombinator.com/item?')) ?? urls[0] ?? item.link;
+    const hnId = section.match(/https:\/\/news\.ycombinator\.com\/item\?id=(\d+)/i)?.[1] ?? null;
+    const date = item.title.trim().slice(0, 10).replace(/\s/g, '-');
+    const title = numbered[2]!.trim();
+
+    out.push({
+      title,
+      html: section,
+      link,
+      guid: hnId ? `hn:${hnId}` : `supertechfans:${date}:${title}`.slice(0, 190),
+      publishedRaw: item.publishedRaw,
+      author: 'SuperTechFans',
+    });
+  }
+
+  // 页面结构异常时保留整篇，避免静默丢失该期内容。
+  return out.length >= 2 ? out : [item];
+}
+
 const xml = new XMLParser({
   ignoreAttributes: false, attributeNamePrefix: '@', cdataPropName: '__cdata',
   trimValues: true, parseTagValue: false,
@@ -145,11 +247,55 @@ export function parseDeepseekPage(body: string): RawItem[] {
   return out;
 }
 
+/**
+ * OpenAI 产品更新页经 Jina Reader 转换后的 Markdown。
+ *
+ * 官方 RSS 在当前服务器出口会触发 Cloudflare challenge，但同一官方页面经
+ * Jina Reader 可返回重复结构：产品、日期、发布阶段、二级标题、正文。
+ * 条目标识只使用产品、日期和标题，代理抓取时间不会制造重复条目。
+ */
+export function parseOpenAIReleaseNotesPage(body: string): RawItem[] {
+  const PAGE = 'https://openai.com/products/release-notes/';
+  const marker = 'Markdown Content:';
+  const content = body.includes(marker)
+    ? body.slice(body.indexOf(marker) + marker.length).trim()
+    : body.trim();
+  const entry = /(?:^|\n)([^\n]{1,50})\n\n([A-Z][a-z]{2} \d{1,2}, \d{4})\n\n([^\n]{1,40})\n\n## ([^\n]+)\n/g;
+  const matches = [...content.matchAll(entry)];
+  const out: RawItem[] = [];
+
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i]!;
+    const product = m[1]!.trim();
+    const date = m[2]!.trim();
+    const stage = m[3]!.trim();
+    const title = m[4]!.trim();
+    const start = m.index! + m[0]!.length;
+    const end = matches[i + 1]?.index ?? content.length;
+    const section = content.slice(start, end).trim();
+    const source = section.match(/\[View source[^\]]*\]\((https?:\/\/[^)]+)\)/i)?.[1] ?? PAGE;
+    const stable = `${date}:${product}:${title}`.toLowerCase().replace(/\s+/g, ' ').trim();
+
+    out.push({
+      title,
+      html: `产品：${product}\n发布阶段：${stage}\n\n${section}`,
+      link: source,
+      guid: `openai-release:${stable}`,
+      publishedRaw: date,
+      author: `OpenAI · ${product}`,
+    });
+  }
+  return out;
+}
+
 export function parseBy(parser: string, body: string, ctx: { channel?: string }): RawItem[] {
+  let parsed: RawItem[];
   switch (parser) {
-    case 'rss': case 'atom':   return parseFeed(body);
-    case 'telegram_web':       return parseTelegramWeb(body, ctx.channel ?? '');
-    case 'deepseek_page':      return parseDeepseekPage(body);
+    case 'rss': case 'atom':   parsed = parseFeed(body); break;
+    case 'telegram_web':       parsed = parseTelegramWeb(body, ctx.channel ?? ''); break;
+    case 'deepseek_page':      parsed = parseDeepseekPage(body); break;
+    case 'openai_release_notes_page': parsed = parseOpenAIReleaseNotesPage(body); break;
     default: throw new Error(`未知解析器: ${parser}`);
   }
+  return parsed.flatMap(expandCompositeDigest);
 }

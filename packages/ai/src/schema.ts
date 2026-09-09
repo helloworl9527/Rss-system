@@ -15,7 +15,7 @@ import type { JsonSchema } from './types.ts';
  * 且被过滤的 68 条不再浪费输出 token，更符合 PRD 1.3「AI 最小化」。
  */
 
-const SECTIONS = ['ai_tech', 'developer_product', 'quality_article', 'society_life'];
+const SECTIONS = ['ai_tech', 'open_source_project', 'developer_product', 'quality_article', 'society_life'];
 
 /** 第一段：只判定，不写摘要。 */
 export const TRIAGE_SCHEMA: JsonSchema = {

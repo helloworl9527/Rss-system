@@ -14,8 +14,12 @@ brief.xmcode.tech {
 		-Server
 	}
 
+	# RSS 地址包含高熵订阅令牌；禁止浏览器把完整地址作为 Referer 外发。
+	@rss path /rss/*
+	header @rss >Referrer-Policy "no-referrer"
+
 	# 健康检查不写访问日志，避免噪声
-	@health path /health/*
+	@health path /health/* /rss/*
 	log_skip @health
 
 	reverse_proxy 127.0.0.1:3000 {

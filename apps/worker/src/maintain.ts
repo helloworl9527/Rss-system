@@ -8,6 +8,8 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { openDb, nowIso } from '../../../packages/db/src/index.ts';
+import { readyTelegramDb } from '../../../packages/telegram/src/db.ts';
+import { cleanupTelegram } from '../../../packages/telegram/src/maintenance.ts';
 
 const DB_PATH = process.env.DATABASE_PATH ?? './data/brief.db';
 const BACKUP_DIR = process.env.BACKUP_DIR ?? '/var/lib/briefing/backups';
@@ -64,3 +66,20 @@ db.pragma('wal_checkpoint(TRUNCATE)');
 const size = statSync(DB_PATH).size;
 console.log(`数据库 ${(size / 1024 / 1024).toFixed(1)} MB，WAL 已 checkpoint`);
 db.close();
+
+// ---- 5. Telegram 使用独立数据库，但共享同一维护生命周期 ----
+const telegramPath = process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3';
+const telegramDb = readyTelegramDb(telegramPath);
+const telegramTmp = join(BACKUP_DIR, `telegram-${stamp}.db`);
+await telegramDb.backup(telegramTmp);
+const telegramGz = gzipSync(readFileSync(telegramTmp));
+writeFileSync(`${telegramTmp}.gz`, telegramGz);
+unlinkSync(telegramTmp);
+const telegramBackups = readdirSync(BACKUP_DIR).filter(f => /^telegram-\d{4}-\d{2}-\d{2}\.db\.gz$/.test(f)).sort().reverse();
+const telegramWeekly = telegramBackups.filter(f => new Date(f.slice(9, 19)).getUTCDay() === 1);
+const telegramKeep = new Set([...telegramBackups.slice(0, KEEP_DAILY), ...telegramWeekly.slice(0, KEEP_WEEKLY)]);
+for (const f of telegramBackups) if (!telegramKeep.has(f)) unlinkSync(join(BACKUP_DIR, f));
+const telegramCleaned = cleanupTelegram(telegramDb);
+telegramDb.pragma('wal_checkpoint(TRUNCATE)');
+console.log(`Telegram 备份: ${telegramTmp}.gz；清理消息 ${telegramCleaned.messages}、URL ${telegramCleaned.urls}、总结 ${telegramCleaned.summaries}`);
+telegramDb.close();

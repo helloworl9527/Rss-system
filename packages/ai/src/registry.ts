@@ -14,6 +14,7 @@ export async function createProvider(cfg: ProviderConfig): Promise<Provider> {
       return new MockProvider(cfg);
     }
     case 'openai':
+    case 'openai_compatible':
     case 'deepseek':
     case 'qwen': {
       const { OpenAICompatProvider } = await import('./providers/openai-compat.ts');
@@ -34,6 +35,7 @@ export async function createProvider(cfg: ProviderConfig): Promise<Provider> {
 
 const KEY_ENV: Record<string, string> = {
   openai: 'OPENAI_API_KEY',
+  openai_compatible: 'OPENAI_COMPAT_API_KEY',
   deepseek: 'DEEPSEEK_API_KEY',
   qwen: 'DASHSCOPE_API_KEY',
   anthropic: 'ANTHROPIC_API_KEY',
@@ -47,14 +49,35 @@ const KEY_ENV: Record<string, string> = {
  * L2/L3 用强模型复核，这正是 PRD 15.1 分级调用的意图。
  */
 export function providerFromEnv(tier: 'L1' | 'L2' | 'L3'): ProviderConfig {
-  const provider = (process.env['AI_' + tier + '_PROVIDER']
-    ?? process.env.AI_PROVIDER ?? 'mock') as ProviderName;
+  const value = (name: string): string | undefined => {
+    const v = process.env[name]?.trim();
+    return v || undefined;
+  };
+  const l1Provider = (value('AI_L1_PROVIDER') ?? value('AI_PROVIDER') ?? 'mock') as ProviderName;
+  const l1Model = value('AI_L1_MODEL') ?? '';
+  const l1BaseUrl = value('AI_L1_BASE_URL') ?? value('AI_BASE_URL');
+  const l1Strictness = value('AI_L1_STRICTNESS') as ProviderConfig['strictness'];
+
+  const explicitProvider = tier === 'L1' ? value('AI_L1_PROVIDER') : value(`AI_${tier}_PROVIDER`);
+  const provider = (tier === 'L1' ? l1Provider : explicitProvider ?? l1Provider) as ProviderName;
+  const sameAsL1 = provider === l1Provider;
+  const model = tier === 'L1'
+    ? l1Model
+    : value(`AI_${tier}_MODEL`) ?? l1Model;
+  // L2/L3 选择“同 L1”时，OpenAI Compatible 必须连 Base URL 一起继承；
+  // 显式换成另一厂商且未填地址时，则交给适配器使用该厂商官方默认地址。
+  const baseUrl = tier === 'L1'
+    ? l1BaseUrl
+    : value(`AI_${tier}_BASE_URL`) ?? (sameAsL1 ? l1BaseUrl : undefined);
+  const strictness = (tier === 'L1'
+    ? l1Strictness
+    : value(`AI_${tier}_STRICTNESS`) as ProviderConfig['strictness'] ?? (sameAsL1 ? l1Strictness : undefined));
   const keyName = KEY_ENV[provider];
   return {
     provider,
-    model: process.env['AI_' + tier + '_MODEL'] ?? '',
+    model,
     apiKey: keyName ? process.env[keyName] : undefined,
-    baseUrl: process.env['AI_' + tier + '_BASE_URL'] ?? process.env.AI_BASE_URL,
-    strictness: process.env['AI_' + tier + '_STRICTNESS'] as ProviderConfig['strictness'],
+    baseUrl,
+    strictness,
   };
 }

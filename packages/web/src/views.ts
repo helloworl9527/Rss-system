@@ -10,12 +10,6 @@ export const esc = (s: unknown): string => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-const safeHref = (u: unknown): string | null => {
-  if (!u) return null;
-  try { const x = new URL(String(u)); return x.protocol === 'https:' ? x.toString() : null; }
-  catch { return null; }
-};
-
 const ago = (t: unknown): string => {
   if (!t) return '—';
   const m = Math.round((Date.now() - Date.parse(String(t))) / 60000);
@@ -96,6 +90,10 @@ input:focus,select:focus{outline:2px solid var(--accent-soft);outline-offset:0;b
 input::placeholder{color:var(--faint)}
 form.inline{display:flex;gap:6px;align-items:center;margin:0;flex-wrap:wrap}
 form.inline input[name=reason]{width:158px}
+details{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden}
+summary{cursor:pointer;padding:11px 14px;font-weight:650;color:var(--ink)}
+details>table{border-width:1px 0 0;border-radius:0}
+details.vendor{margin:8px 12px 12px}
 
 form.login{max-width:352px;margin:11vh auto;background:var(--card);border:1px solid var(--line);
   border-radius:14px;padding:30px 28px}
@@ -122,7 +120,7 @@ export function layout(title: string, body: string, csrf: string): string {
 <title>${esc(title)} · 十六源简报后台</title><style>${CSS}</style></head><body>
 <header>
   <span class="brand">十六源简报</span>
-  <a href="/">仪表盘</a><a href="/sources">来源</a><a href="/runs">运行</a><a href="/audit">审计</a><a href="/settings">设置</a>
+  <a href="/">仪表盘</a><a href="/sources">来源</a><a href="/allnet">全网热点</a><a href="/telegram">Telegram 订阅</a><a href="/settings">设置</a>
   <form method="post" action="/logout"><input type="hidden" name="csrf" value="${esc(csrf)}"><button>登出</button></form>
 </header><main>${body}</main></body></html>`;
 }
@@ -150,8 +148,12 @@ const healthDot = (h: string) =>
   `<span class="${healthCls(h)}"><span class="dot" style="background:currentColor"></span>${healthTxt(h)}</span>`;
 
 type Src = { id: string; display_name: string; category: string; health: string;
+  source_group: string;
+  allnet_json?: string | null;
   harvest_tier: string; consecutive_failures: number; last_success_at: string | null;
-  last_http_code: number | null; last_error: string | null; latest_item_at: string | null; enabled: number };
+  last_http_code: number | null; last_error: string | null; latest_item_at: string | null; enabled: number;
+  onboarding_status?: string; observation_until?: string | null;
+  endpoint_url?: string | null; endpoint_parser?: string | null };
 
 function sourceTable(sources: Src[]): string {
   return `<table><tr><th>来源</th><th>分类</th><th>采集档</th><th>健康</th>
@@ -159,7 +161,7 @@ function sourceTable(sources: Src[]): string {
     sources.map(s => `<tr>
       <td>${esc(s.display_name)}<div class="muted">${esc(s.id)}</div></td>
       <td>${esc(s.category)}</td><td>${esc(s.harvest_tier)}</td>
-      <td>${healthDot(s.health)}${s.enabled ? '' : ' <span class="pill">已停用</span>'}</td>
+      <td>${healthDot(s.health)} <span class="pill">${esc(s.onboarding_status ?? (s.enabled ? 'ACTIVE' : 'DISABLED'))}</span>${s.enabled ? '' : `<span class="pill">${s.allnet_json?'未参与日报':'已停用'}</span>`}</td>
       <td>${esc(ago(s.last_success_at))}</td><td>${esc(ago(s.latest_item_at))}</td>
       <td>${s.consecutive_failures || ''}</td>
       <td class="muted">${esc(String(s.last_error ?? '').slice(0, 60))}</td>
@@ -167,7 +169,7 @@ function sourceTable(sources: Src[]): string {
 }
 
 export function renderDashboard(o: {
-  csrf: string; sources: Src[]; harvests: any[]; runs: any[]; stats: any;
+  csrf: string; sources: Src[]; harvests: any[]; stats: any;
 }): string {
   const s = o.stats;
   const bad = o.sources.filter(x => x.health === 'failing' || x.health === 'degraded');
@@ -180,53 +182,90 @@ export function renderDashboard(o: {
     <div class="card"><div class="n">${esc(s.items)}</div><div class="l">条目</div></div>
     <div class="card"><div class="n">${esc(s.versions)}</div><div class="l">版本</div></div>
     <div class="card"><div class="n">${esc(s.candidates)}</div><div class="l">候选</div></div>
+    <div class="card"><div class="n">${esc(s.onboardingPending ?? 0)}</div><div class="l">待审批来源</div></div>
+    <div class="card"><div class="n">${esc(s.profilerCalls ?? 0)}</div><div class="l">Profiler 调用</div></div>
   </div>
   ${bad.length ? `<div class="note">${bad.length} 个来源处于降级或失败状态：${bad.map(b => esc(b.id)).join('、')}</div>` : ''}
   ${s.pendingFulltext ? `<div class="note">待抓原帖全文 ${esc(s.pendingFulltext)} 条</div>` : ''}
   <p class="muted">最近采集：${lastH ? `#${esc(lastH.id)} ${esc(lastH.status)} ${esc(ago(lastH.started_at))}，
     来源 ${esc(lastH.sources_ok)}/${esc(lastH.sources_attempted)}，新条目 ${esc(lastH.new_items)}` : '尚无记录'}
-    ｜ 投递：${esc(deliv)}</p>
-  <h2>来源健康</h2>${sourceTable(o.sources)}
-  <h2>最近运行</h2>${runsTable(o.runs)}`;
+    ｜ 投递：${esc(deliv)} ｜ AI token：${esc(s.aiTokens ?? 0)} ｜ 成本：$${Number(s.aiCostUsd ?? 0).toFixed(4)}</p>
+  <h2>来源健康</h2>${sourceTable(o.sources)}`;
   return layout('仪表盘', body, o.csrf);
 }
 
 const PARSERS = [['rss','RSS / Atom'],['telegram_web','Telegram 网页版 (t.me/s/…)'],
-                 ['deepseek_page','DeepSeek 更新日志页']];
+                 ['deepseek_page','DeepSeek 更新日志页'],
+                 ['openai_release_notes_page','OpenAI 产品更新页（Jina）']];
 const CATS = [['ai','AI 与科技'],['developer','开发者与产品'],['tech','技术资讯'],
               ['article','优质文章'],['society','社会与生活'],['forum','论坛']];
 const TIERS = [['standard','标准 60 分钟'],['ranking_feed','榜单型 20 分钟'],
                ['official_changelog','官方日志 120 分钟'],['slow','低频 240 分钟']];
+const SOURCE_GROUPS = [['unclassified','未归类'],['openai','OpenAI'],['claude','Claude'],
+                       ['google','Google'],['deepseek','DeepSeek'],['cloudflare','Cloudflare'],
+                       ['github','GitHub'],['hermes','Hermes Agent'],['meituan','美团'],
+                       ['zhihu','知乎热搜'],['weibo','微博热搜'],['baidu','百度热搜']];
 const opts = (list: string[][], cur = '') =>
   list.map(([v, l]) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(l)}</option>`).join('');
 
 export function renderSources(o: {
   csrf: string; sources: Array<Src & { managed_by?: string }>;
   tests?: Array<{ url: string; outcome: string; parsed_count: number | null; error: string | null; started_at: string }>;
+  proposals?: any[];
+  allnetCandidates?: Array<{id:number;title:string;existing?:string}>; allnetQuery?: string; baseUrl?:string;
   form?: Record<string, string>; saved?: string; error?: string;
 }): string {
   const f = o.form ?? {};
   const admin = o.sources.filter(s => s.managed_by === 'admin');
 
-  const manageRows = o.sources.map(s => `<tr>
+  const allnetConfig = (s:Src) => `<a href="/allnet#${esc(s.id)}">管理全网热点采集与 RSS</a><div class="muted">此页开关仅控制参与日报，独立采集状态见全网热点页。</div>`;
+  const manageRow = (s: Src & { managed_by?: string }) => `<tr>
     <td>${esc(s.display_name)}<div class="muted">${esc(s.id)}
       ${s.managed_by === 'admin' ? '<span class="pill accent">后台新增</span>' : ''}</div></td>
-    <td>${healthDot(s.health)}</td>
-    <td>${esc(ago(s.last_success_at))}</td>
+    <td style="min-width:300px">
+      ${s.allnet_json ? allnetConfig(s) : s.endpoint_url ? `<form method="post" action="/sources/${esc(s.id)}/url">
+        <input type="hidden" name="csrf" value="${esc(o.csrf)}">
+        <input name="url" type="url" value="${esc(s.endpoint_url)}" required
+          style="width:100%;min-width:280px" aria-label="${esc(s.display_name)}订阅 URL">
+        <div class="inline" style="display:flex;gap:6px;margin-top:6px">
+          <input name="reason" placeholder="修改理由（必填）" required minlength="4" style="flex:1">
+          <button>测试并保存</button>
+        </div>
+        <div class="muted">解析器：${esc(s.endpoint_parser ?? '—')}</div>
+      </form>` : '<span class="muted">无主订阅地址</span>'}
+    </td>
+    <td>${healthDot(s.health)}${s.enabled ? '' : `<span class="pill">${s.allnet_json?'未参与日报':'已停用'}</span>`}<div class="muted">${esc(ago(s.last_success_at))}</div>
+      <form method="post" action="/sources/${esc(s.id)}/group" class="inline" style="margin-top:6px">
+        <input type="hidden" name="csrf" value="${esc(o.csrf)}">
+        <select name="source_group">${opts(SOURCE_GROUPS, s.source_group)}</select>
+        <input name="reason" placeholder="调整理由（必填）" required minlength="4"><button>调整分组</button>
+      </form></td>
     <td>
       <form method="post" action="/sources/${esc(s.id)}/toggle" class="inline">
         <input type="hidden" name="csrf" value="${esc(o.csrf)}">
         <input type="hidden" name="enabled" value="${s.enabled ? 'false' : 'true'}">
         <input type="hidden" name="redirect" value="/sources">
         <input name="reason" placeholder="理由（必填）" required minlength="4">
-        <button>${s.enabled ? '停用' : '启用'}</button>
+        <button>${s.allnet_json ? (s.enabled ? '停用参与日报' : '启用参与日报') : (s.enabled ? '停用' : '启用')}</button>
       </form>
-      ${s.managed_by === 'admin' ? `<form method="post" action="/sources/${esc(s.id)}/delete" class="inline" style="margin-top:5px">
+      ${s.managed_by === 'admin' && !s.allnet_json ? `<form method="post" action="/sources/${esc(s.id)}/delete" class="inline" style="margin-top:5px">
         <input type="hidden" name="csrf" value="${esc(o.csrf)}">
         <input type="hidden" name="redirect" value="/sources">
         <input name="reason" placeholder="删除理由（必填）" required minlength="4">
         <button>删除</button></form>` : ''}
-    </td></tr>`).join('');
+    </td></tr>`;
+  const manageTable = (sources: Array<Src & { managed_by?: string }>) => sources.length
+    ? `<table><tr><th>来源</th><th>订阅 URL</th><th>状态 / 分组</th><th>操作</th></tr>${sources.map(manageRow).join('')}</table>`
+    : '<p class="muted" style="padding:0 14px 12px">暂无来源。</p>';
+  const vendors = SOURCE_GROUPS.slice(1).filter(([key])=>!['zhihu','weibo','baidu'].includes(key!)).map(([key, label]) => {
+    const rows = o.sources.filter(s => s.source_group === key);
+    return `<details class="vendor" open><summary>${esc(label)}（${rows.length}）</summary>${manageTable(rows)}</details>`;
+  }).join('');
+  const vendorCount = o.sources.filter(s => !['unclassified','zhihu','weibo','baidu'].includes(s.source_group)).length;
+  const unclassified = o.sources.filter(s => s.source_group === 'unclassified');
+  const groupedSources = `<details open><summary>科技厂商（${vendorCount}）</summary>${vendors}</details>
+    <details open><summary>社会生活</summary>${SOURCE_GROUPS.filter(([key])=>['zhihu','weibo','baidu'].includes(key!)).map(([key,label])=>`<details open><summary>${esc(label)}</summary>${key==='baidu'?'<p class="muted">暂不可用 · 等待上游开放，无订阅地址</p>':''}${manageTable(o.sources.filter(s=>s.source_group===key))}</details>`).join('')}</details>
+    <details open><summary>未归类（${unclassified.length}）</summary>${manageTable(unclassified)}</details>`;
 
   const testRows = (o.tests ?? []).map(t => `<tr>
     <td class="${t.outcome === 'ok' ? 'ok' : 'bad'}"><span class="dot" style="background:currentColor"></span>${esc(t.outcome)}</td>
@@ -239,9 +278,12 @@ export function renderSources(o: {
   ${o.saved ? `<div class="note">${esc(o.saved)}</div>` : ''}
   ${o.error ? `<div class="err">${esc(o.error)}</div>` : ''}
 
+  <h2>RSS 来源分类</h2>
+  <p class="sub">共 ${o.sources.length} 个来源，其中后台新增 ${admin.length} 个。分组仅用于后台整理，不改变日报筛选。</p>
+  ${groupedSources}
+
   <h2>新增来源</h2>
-  <p class="sub">添加前会先做一次测试抓取：URL 需为 https，且不得指向内网或云元数据地址。
-    新增的来源由后台管理，不受 config/sources.yaml 同步影响。</p>
+  <p class="sub">系统会先做 SSRF/协议/体积检查并抓取样本，随后由独立 Source Profiler 生成画像与规则提案；人工批准前不会采集，也不会进入日报。</p>
   <form method="post" action="/sources/add">
     <input type="hidden" name="csrf" value="${esc(o.csrf)}">
     <table><tr><th>字段</th><th>值</th><th>说明</th></tr>
@@ -255,6 +297,8 @@ export function renderSources(o: {
           <td class="muted">多数订阅源选 RSS / Atom</td></tr>
       <tr><td>分类</td><td><select name="category">${opts(CATS, f.category ?? 'tech')}</select></td>
           <td class="muted">决定进简报的哪个分区</td></tr>
+      <tr><td>来源分组</td><td><select name="source_group">${opts(SOURCE_GROUPS, f.source_group ?? 'unclassified')}</select></td>
+          <td class="muted">用于后台归类展示，默认未归类</td></tr>
       <tr><td>采集频率</td><td><select name="tier">${opts(TIERS, f.tier ?? 'standard')}</select></td>
           <td class="muted">榜单型条目轮转快，需更密</td></tr>
       <tr><td>优先级</td><td><input name="priority" type="number" min="1" max="9" value="${esc(f.priority ?? '5')}" style="width:70px"></td>
@@ -263,8 +307,7 @@ export function renderSources(o: {
           <td class="muted">RSS 只给摘要时勾选，会额外打开原文</td></tr>
     </table>
     <p>
-      <button class="primary">测试并添加</button>
-      <button name="skip_test" value="1" title="跳过测试强制添加">跳过测试添加</button>
+      <button class="primary">探测并生成提案</button>
     </p>
   </form>
 
@@ -279,97 +322,34 @@ export function renderSources(o: {
   ${testRows ? `<h2>最近测试记录</h2>
     <table><tr><th>结果</th><th>URL</th><th>条数</th><th>错误</th><th>时间</th></tr>${testRows}</table>` : ''}
 
-  <h2>全部来源（${o.sources.length}，其中后台新增 ${admin.length}）</h2>
-  ${sourceTable(o.sources)}
-
-  <h2>启停与删除</h2>
-  <p class="sub">操作需填理由并写入审计。config/sources.yaml 里的来源只能停用，
-    要改 URL 或删除请编辑配置文件后执行同步。</p>
-  <table><tr><th>来源</th><th>健康</th><th>最近成功</th><th>操作</th></tr>${manageRows}</table>`;
+  ${o.proposals?.length ? `<h2>来源画像与审批提案</h2><table><tr><th># / 来源</th><th>状态</th><th>画像摘要</th><th>证据与模型</th><th>操作</th></tr>${o.proposals.map((p: any) => {
+    const prof = (() => { try { return JSON.parse(p.source_profile_json ?? '{}'); } catch { return {}; } })();
+    const action = ['HUMAN_REVIEW','AI_ANALYZED'].includes(p.status) ? `<form method="post" action="/sources/proposals/${esc(p.id)}/approve" class="inline"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><button class="primary">批准并观察</button></form><form method="post" action="/sources/proposals/${esc(p.id)}/reject" class="inline"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><input name="reason" required minlength="4" placeholder="拒绝理由"><button>拒绝</button></form>` : '';
+    return `<tr><td>#${esc(p.id)}<div class="muted">${esc(p.source_name)}<br>${esc(p.source_url)}</div></td><td>${esc(p.status)}${p.confidence != null ? ` <span class="pill">置信度 ${Math.round(Number(p.confidence)*100)}%</span>` : ''}</td><td>${esc([prof.source_type, prof.content_domain, prof.publisher_type, prof.officiality].filter(Boolean).join(' · ') || p.error || '待分析')}</td><td class="muted">样本 ${esc((JSON.parse(p.evidence_sample_ids || '[]') as any[]).length)} 条 · ${esc(p.model_profile_id ?? '—')} / v${esc(p.model_config_version ?? '—')}<br>规则 diff ${esc((JSON.parse(p.rule_diff_json || '[]') as any[]).length)} 条</td><td>${action}</td></tr>`;
+  }).join('')}</table>` : ''}`;
   return layout('来源', body, o.csrf);
-}
-
-function runsTable(runs: any[]): string {
-  if (!runs.length) return '<p class="muted">尚无运行记录。</p>';
-  return `<table><tr><th>#</th><th>窗口</th><th>状态</th><th>阶段</th><th>候选</th><th>开始</th></tr>` +
-    runs.map(r => `<tr>
-      <td><a href="/runs/${esc(r.id)}">${esc(r.id)}</a></td>
-      <td>${esc(r.window_key)} <span class="pill">${esc(r.window_label)}</span></td>
-      <td class="${r.status === 'succeeded' ? 'ok' : r.status === 'failed' ? 'bad' : 'warn'}"><span class="dot" style="background:currentColor"></span>${esc(r.status)}</td>
-      <td>${esc(r.stage ?? '—')}</td><td>${esc(r.cands ?? 0)}</td>
-      <td>${esc(ago(r.started_at))}</td></tr>`).join('') + '</table>';
-}
-
-export function renderRuns(o: { csrf: string; runs: any[]; harvests: any[] }): string {
-  const h = `<h2>采集轮次</h2><table><tr><th>#</th><th>状态</th><th>来源</th><th>新条目</th><th>新版本</th><th>开始</th></tr>` +
-    o.harvests.map(x => `<tr><td>${esc(x.id)}</td>
-      <td class="${x.status === 'succeeded' ? 'ok' : x.status === 'failed' ? 'bad' : 'warn'}"><span class="dot" style="background:currentColor"></span>${esc(x.status)}</td>
-      <td>${esc(x.sources_ok)}/${esc(x.sources_attempted)}</td>
-      <td>${esc(x.new_items)}</td><td>${esc(x.new_versions)}</td>
-      <td>${esc(ago(x.started_at))}</td></tr>`).join('') + '</table>';
-  return layout('运行', `<h2>简报运行</h2>${runsTable(o.runs)}${h}`, o.csrf);
-}
-
-export function renderRunDetail(o: { csrf: string; run: any; candidates: any[] }): string {
-  const csrf = o.csrf;
-  const byDec: Record<string, any[]> = {};
-  for (const c of o.candidates) (byDec[c.decision] ??= []).push(c);
-  const label: Record<string, string> = {
-    retain: '强制保留', normal: '普通候选', escalate: '待复核', filter: '已过滤',
-  };
-  const sections = Object.entries(byDec).map(([dec, list]) => `
-    <h2>${esc(label[dec] ?? dec)}（${list.length}）</h2>
-    <table><tr><th>来源</th><th>标题</th><th>类别</th><th>补录</th><th>规则/原因</th><th>人工覆盖</th></tr>` +
-    list.map(c => {
-      const u = safeHref(c.canonical_url);
-      const act = dec === 'filter' ? 'include' : 'filter';
-      const label = dec === 'filter' ? '收录' : '过滤';
-      return `<tr><td>${esc(c.source_id)}</td>
-        <td>${u ? `<a href="${esc(u)}" rel="noopener noreferrer">${esc(c.title)}</a>` : esc(c.title)}</td>
-        <td>${c.mandatory_class && c.mandatory_class !== 'none' ? `<span class="pill">${esc(c.mandatory_class)}</span>` : '—'}</td>
-        <td>${c.late_discovery ? `<span class="pill">补录</span>` : '—'}</td>
-        <td class="muted">${esc(c.filter_rule_id ?? '')} ${esc(String(c.filter_reason ?? '').slice(0, 70))}</td>
-        <td><form method="post" action="/candidates/${esc(c.id)}/override" class="inline">
-          <input type="hidden" name="csrf" value="${esc(csrf)}">
-          <input type="hidden" name="action" value="${act}">
-          <input type="hidden" name="redirect" value="/runs/${esc(c.run_id)}">
-          <input name="reason" placeholder="理由（必填）" required minlength="4">
-          <select name="scope"><option value="once">仅本次</option><option value="permanent">永久规则</option></select>
-          <button>${label}</button>
-        </form></td>
-      </tr>`;
-    }).join('') + '</table>').join('');
-
-  const r = o.run;
-  return layout(`运行 #${r.id}`, `
-    <h2>运行 #${esc(r.id)} · ${esc(r.window_key)} ${esc(r.window_label)}</h2>
-    <p class="muted">状态 ${esc(r.status)} ｜ 阶段 ${esc(r.stage ?? '—')} ｜ 触发 ${esc(r.trigger)}
-      ｜ 窗口 ${esc(r.window_start_at)} → ${esc(r.window_end_at)}
-      ｜ 规则版本 ${esc(r.rule_version ?? '—')}</p>
-    ${o.candidates.length ? sections : '<p class="muted">该运行尚无候选。</p>'}`, o.csrf);
-}
-
-export function renderAudit(o: { csrf: string; events: any[] }): string {
-  const t = o.events.length
-    ? `<table><tr><th>时间</th><th>实体</th><th>动作</th><th>详情</th></tr>` +
-      o.events.map(e => `<tr><td>${esc(ago(e.created_at))}</td>
-        <td>${esc(e.entity_type)} ${esc(e.entity_id)}</td><td>${esc(e.action)}</td>
-        <td class="muted">${esc(String(e.payload_json ?? '').slice(0, 120))}</td></tr>`).join('') + '</table>'
-    : '<p class="muted">尚无审计事件。</p>';
-  return layout('审计', `<h2>审计事件</h2>${t}`, o.csrf);
 }
 
 const PROVIDERS = [
   ['mock', 'mock（本地假响应，不花钱）'],
   ['deepseek', 'DeepSeek'],
   ['openai', 'OpenAI'],
+  ['openai_compatible', 'OpenAI 兼容格式（自定义 Base URL）'],
   ['qwen', 'Qwen（DashScope 兼容模式）'],
   ['anthropic', 'Anthropic'],
   ['gemini', 'Gemini'],
 ];
+const BASE_URL_DEFAULTS = [
+  ['OpenAI', 'https://api.openai.com/v1'],
+  ['DeepSeek', 'https://api.deepseek.com/v1'],
+  ['Qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1'],
+  ['Anthropic', 'https://api.anthropic.com'],
+  ['Gemini', 'https://generativelanguage.googleapis.com/v1beta'],
+];
 const KEY_LABEL: Record<string, string> = {
-  OPENAI_API_KEY: 'OpenAI', DEEPSEEK_API_KEY: 'DeepSeek', DASHSCOPE_API_KEY: 'Qwen / DashScope',
-  ANTHROPIC_API_KEY: 'Anthropic', GEMINI_API_KEY: 'Gemini',
+  OPENAI_API_KEY: 'OpenAI', OPENAI_COMPAT_API_KEY: 'OpenAI 兼容格式', DEEPSEEK_API_KEY: 'DeepSeek', DASHSCOPE_API_KEY: 'Qwen / DashScope',
+  ALLNET_API_KEY: '全网热点', ANTHROPIC_API_KEY: 'Anthropic', GEMINI_API_KEY: 'Gemini', SOURCE_PROFILER_API_KEY: 'Source Profiler 独立密钥',
+  TELEGRAM_API_ID: 'Telegram API ID', TELEGRAM_API_HASH: 'Telegram API Hash', TELEGRAM_PHONE: 'Telegram 登录手机号',
 };
 
 export function renderSettings(o: {
@@ -380,9 +360,9 @@ export function renderSettings(o: {
   envOverrides: string[];
   saved?: string; error?: string;
 }): string {
-  const cur = o.settings.aiProvider ?? 'mock';
-  const providerOpts = PROVIDERS.map(([v, label]) =>
-    `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(label)}</option>`).join('');
+  const cur = o.settings.l1Provider ?? o.settings.aiProvider ?? 'mock';
+  const providerOpts = (selected: string) => PROVIDERS.map(([v, label]) =>
+    `<option value="${esc(v)}"${v === selected ? ' selected' : ''}>${esc(label)}</option>`).join('');
 
   const keyRows = o.secrets.map(k => `<tr>
     <td>${esc(KEY_LABEL[k.name] ?? k.name)}<div class="muted">${esc(k.name)}</div></td>
@@ -402,26 +382,80 @@ export function renderSettings(o: {
   ${o.envOverrides.length ? `<div class="note">以下项被环境变量覆盖，页面上的设置对它们无效：
     ${o.envOverrides.map(esc).join('、')}</div>` : ''}
 
-  <h2>AI 供应商</h2>
+  <h2>AI 模型与 API 地址</h2>
+  <p class="sub">每个层级的 Base URL 都可以直接编辑。留空使用所选厂商的官方默认地址；“OpenAI 兼容格式”没有默认地址，必须填写 API 根地址（通常以 /v1 结尾）。</p>
   <form method="post" action="/settings/ai">
     <input type="hidden" name="csrf" value="${esc(o.csrf)}">
-    <table><tr><th>层级</th><th>用途</th><th>供应商</th><th>模型 ID</th></tr>
+    <datalist id="base-url-defaults">${BASE_URL_DEFAULTS.map(([, url]) => `<option value="${esc(url)}">`).join('')}</datalist>
+    <table><tr><th>层级</th><th>用途</th><th>供应商</th><th>模型 ID</th><th>Base URL（可直接编辑）</th></tr>
       <tr><td>L1</td><td class="muted">批量判定，单期约 80 条 —— 花钱大头</td>
-        <td><select name="ai_provider">${providerOpts}</select></td>
-        <td><input name="l1_model" value="${esc(o.settings.l1Model ?? '')}" placeholder="模型 ID" style="width:200px"></td></tr>
+        <td><select name="l1_provider">${providerOpts(cur)}</select></td>
+        <td><input name="l1_model" value="${esc(o.settings.l1Model ?? '')}" placeholder="模型 ID" style="width:180px"></td>
+        <td><input name="l1_base_url" list="base-url-defaults" value="${esc(o.settings.l1BaseUrl ?? '')}" placeholder="留空 = 厂商默认地址" style="width:300px"></td></tr>
       <tr><td>L2</td><td class="muted">复核，单期最多 5 条</td>
-        <td><input name="l2_provider" value="${esc(o.settings.l2Provider ?? '')}" placeholder="留空则同 L1" style="width:130px"></td>
-        <td><input name="l2_model" value="${esc(o.settings.l2Model ?? '')}" placeholder="留空则同 L1" style="width:200px"></td></tr>
+        <td><select name="l2_provider"><option value="">同 L1</option>${providerOpts(o.settings.l2Provider ?? '')}</select></td>
+        <td><input name="l2_model" value="${esc(o.settings.l2Model ?? '')}" placeholder="留空则同 L1" style="width:180px"></td>
+        <td><input name="l2_base_url" list="base-url-defaults" value="${esc(o.settings.l2BaseUrl ?? '')}" placeholder="留空 = 厂商默认地址" style="width:300px"></td></tr>
       <tr><td>L3</td><td class="muted">高风险，单期最多 2 条</td>
-        <td><input name="l3_provider" value="${esc(o.settings.l3Provider ?? '')}" placeholder="留空则同 L1" style="width:130px"></td>
-        <td><input name="l3_model" value="${esc(o.settings.l3Model ?? '')}" placeholder="留空则同 L1" style="width:200px"></td></tr>
+        <td><select name="l3_provider"><option value="">同 L1</option>${providerOpts(o.settings.l3Provider ?? '')}</select></td>
+        <td><input name="l3_model" value="${esc(o.settings.l3Model ?? '')}" placeholder="留空则同 L1" style="width:180px"></td>
+        <td><input name="l3_base_url" list="base-url-defaults" value="${esc(o.settings.l3BaseUrl ?? '')}" placeholder="留空 = 厂商默认地址" style="width:300px"></td></tr>
     </table>
+    <p class="muted">默认地址：${BASE_URL_DEFAULTS.map(([name, url]) => `${esc(name)} = ${esc(url)}`).join(' ｜ ')}</p>
     <p><button class="primary" ${o.vaultOk ? '' : 'disabled'}>保存供应商设置</button></p>
   </form>
 
   <h2>API Key</h2>
   <p class="muted">加密存于 /var/lib/briefing/secrets.enc（0600），主密钥在 root 控制的
     /etc/briefing/env 中。页面只显示末四位，任何情况下不回显明文。</p>
-  <table><tr><th>厂商</th><th>状态</th><th>设置</th></tr>${keyRows}</table>`;
-  return layout('设置', body, o.csrf);
+  <table><tr><th>厂商</th><th>状态</th><th>设置</th></tr>${keyRows}</table>
+
+  <h2>Source Profiler（独立于 L1/L2/L3）</h2>
+  <p class="sub">用于新来源画像、样本证据和规则提案。保存后生成新的配置版本；连接/结构化输出测试通过后才可启用。</p>
+  <form method="post" action="/settings/source-profiler">
+    <input type="hidden" name="csrf" value="${esc(o.csrf)}">
+    <table><tr><th>字段</th><th>值</th><th>说明</th></tr>
+      <tr><td>供应商</td><td><select name="provider">${providerOpts(o.settings.sourceProfilerProvider ?? 'mock')}</select></td><td class="muted">选择 OpenAI 兼容格式时必须填写自定义 Base URL</td></tr>
+      <tr><td>模型 ID</td><td><input name="model" value="${esc(o.settings.sourceProfilerModel ?? '')}" style="width:220px"></td><td class="muted">独立模型，不继承 L1</td></tr>
+      <tr><td>Base URL</td><td><input name="base_url" list="base-url-defaults" value="${esc(o.settings.sourceProfilerBaseUrl ?? '')}" style="width:360px" placeholder="留空 = 厂商默认地址"></td><td class="muted">所有厂商均可覆盖；OpenAI 兼容格式必填</td></tr>
+      <tr><td>凭据引用</td><td><input name="credential_ref" value="${esc(o.settings.sourceProfilerCredentialRef ?? 'SOURCE_PROFILER_API_KEY')}" style="width:220px"></td><td class="muted">密钥名，不显示密钥内容</td></tr>
+      <tr><td>参数</td><td><input name="temperature" value="${esc(o.settings.sourceProfilerTemperature ?? '0.1')}" style="width:70px"> <input name="reasoning_effort" value="${esc(o.settings.sourceProfilerReasoningEffort ?? '')}" placeholder="reasoning effort" style="width:140px"></td><td></td></tr>
+      <tr><td>限制</td><td><input name="max_input_chars" value="${esc(o.settings.sourceProfilerMaxInputChars ?? '24000')}" style="width:100px"> <input name="max_output_tokens" value="${esc(o.settings.sourceProfilerMaxOutputTokens ?? '1800')}" style="width:100px"> <input name="timeout_ms" value="${esc(o.settings.sourceProfilerTimeoutMs ?? '30000')}" style="width:100px"></td><td class="muted">输入字符 / 输出 token / 超时毫秒</td></tr>
+      <tr><td>重试/回退</td><td><input name="retry_policy" value="${esc(o.settings.sourceProfilerRetryPolicy ?? '1')}" style="width:70px"> <input name="fallback_profile" value="${esc(o.settings.sourceProfilerFallbackProfile ?? '')}" placeholder="回退模型 profile" style="width:180px"></td><td></td></tr>
+      <tr><td>启用</td><td><select name="enabled"><option value="true"${o.settings.sourceProfilerEnabled !== 'false' ? ' selected' : ''}>启用</option><option value="false"${o.settings.sourceProfilerEnabled === 'false' ? ' selected' : ''}>停用</option></select></td><td class="muted">启用前后台会执行结构化输出测试</td></tr>
+    </table><p><button class="primary" ${o.vaultOk ? '' : 'disabled'}>测试并保存配置版本</button></p>
+  </form>`;
+  return layout('设置', body + `<h2>全网热点</h2><p>在上方密钥保管库保存或更新 ALLNET_API_KEY。全网热点页可按名称订阅。</p><form method="post" action="/settings/allnet/test"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><button>测试连通性</button></form>`, o.csrf);
+}
+
+export function renderAllnet(o: {
+  csrf:string; sources:Array<Src>; baseUrl?:string; saved?:string; error?:string;
+  allnetCandidates?:Array<{id:number;title:string;existing?:string}>; allnetQuery?:string;
+}):string {
+  const rows=o.sources.filter(s=>s.allnet_json).map(s=>{
+    const a=JSON.parse(s.allnet_json!);
+    const active=!!s.enabled || !!a.collection_enabled;
+    const url=a.token?`${o.baseUrl??''}/rss/allnet/${a.token}`:'';
+    return `<tr id="${esc(s.id)}"><td>${esc(s.display_name)}<div class="muted">上游 ID ${a.upstream_id}</div></td>
+      <td>${a.kind==='ranking'?'每轮前':'最新第一页，最多'} ${a.item_limit} 条<div>${a.kind==='ranking'?'20':'60'} 分钟</div></td>
+      <td>全网热点：${a.collection_enabled?'已启用':'已停用'}<br>参与日报：${s.enabled?'已启用':'已停用'}
+        <div>${active ? (!a.collection_enabled?'继续为日报采集':'正常采集') : '采集已停止，RSS 保留旧快照'}</div>
+        <form method="post" action="/allnet/${esc(s.id)}/toggle"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><input type="hidden" name="enabled" value="${a.collection_enabled?'false':'true'}"><button>${a.collection_enabled?'停用全网热点':'启用全网热点'}</button></form>
+        <a href="/sources">前往来源页管理参与日报</a></td>
+      <td>${healthDot(s.health)}<div>最近成功：${esc(a.snapshot_at??'尚无')}</div><div class="bad">${esc(s.last_error??'')}</div></td>
+      <td>${url?`<label>RSS URL（选中复制）<input readonly value="${esc(url)}" style="width:100%"></label>`:'RSS 令牌已撤销'}
+        <form method="post" action="/allnet/${esc(s.id)}/token"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><button name="action" value="reset">重置令牌</button><button name="action" value="revoke">撤销令牌</button></form></td></tr>`;
+  }).join('');
+  return layout('全网热点', `
+    <h2>全网热点订阅管理</h2>
+    ${o.saved?`<div class="note">${esc(o.saved)}</div>`:''}${o.error?`<div class="err">${esc(o.error)}</div>`:''}
+    <p>任一页面启用就继续采集；是否进入日报由来源页单独控制。新增订阅默认仅供 RSS。</p>
+    <table><tr><th>来源</th><th>采集范围</th><th>启停状态</th><th>采集健康</th><th>RSS 与令牌</th></tr>${rows||'<tr><td colspan="5">暂无订阅</td></tr>'}</table>
+    <p class="muted">百度热搜：暂不可用，等待上游开放。</p>
+  <h2>按名称添加全网热点订阅</h2>
+  <form method="post" action="/allnet/search"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><input name="name" required maxlength="100" placeholder="网站已有的来源名称"><input name="origin" type="url" placeholder="原站 HTTPS 地址（仅相对链接需要）"><button>搜索并订阅</button></form>
+  <p class="sub">唯一精确匹配时测试后直接订阅；多个候选请选择。无需 AI 画像审批。新增后请到来源页单独启用参与日报。</p>
+  ${(o.allnetCandidates??[]).map(c=>`<form method="post" action="/allnet/add"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><input type="hidden" name="name" value="${esc(o.allnetQuery??'')}"><input type="hidden" name="upstream_id" value="${c.id}"><span>${esc(c.title)}</span><input name="origin" type="url" placeholder="原站地址（如需要）"> ${c.existing?`<span>已订阅：${esc(c.existing)}</span>`:'<button>测试并订阅</button>'}</form>`).join('')}
+
+  `,o.csrf);
 }

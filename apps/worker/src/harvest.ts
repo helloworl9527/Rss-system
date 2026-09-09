@@ -7,6 +7,8 @@
  *   node apps/worker/src/harvest.ts --all      忽略 tier，全部采集
  *   node apps/worker/src/harvest.ts --source X 只采集指定来源
  */
+import { fetchAllnet, parseAllnet, type Subscription } from '../../../packages/connectors/src/allnet.ts';
+import { fetchArticle } from '../../../packages/connectors/src/fulltext.ts';
 import { gzipSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,6 +21,7 @@ import {
 import { Throttler } from '../../../packages/connectors/src/throttle.ts';
 import { fetchWithFallback, type Endpoint } from '../../../packages/connectors/src/fetch.ts';
 import { parseBy } from '../../../packages/connectors/src/parsers.ts';
+import { openCircuitHosts, recordHostSuccess, recordRateLimit } from './host-circuit.ts';
 
 const argv = process.argv.slice(2);
 const FORCE_ALL = argv.includes('--all');
@@ -39,7 +42,7 @@ type SrcRow = {
   id: string; name: string; harvest_tier: string; host_group: string;
   config_json: string; last_attempt_at: string | null; consecutive_failures: number;
 };
-const all = db.prepare('SELECT * FROM sources WHERE enabled = 1 ORDER BY priority, id').all() as SrcRow[];
+const all = db.prepare('SELECT * FROM sources WHERE enabled=1 OR EXISTS (SELECT 1 FROM allnet_subscriptions a WHERE a.source_id=sources.id AND a.collection_enabled=1) ORDER BY priority, id').all() as SrcRow[];
 const now = Date.now();
 const due = all.filter(s => {
   if (ONLY) return s.id === ONLY;
@@ -100,10 +103,28 @@ for (const src of due) {
   const eps = q.eps.all(src.id) as any[];
   const t0 = Date.now();
 
-  const { attempts, success } = await fetchWithFallback(
+  const subscription = db.prepare('SELECT * FROM allnet_subscriptions WHERE source_id=?').get(src.id) as Subscription | undefined;
+  const { attempts, success } = subscription ? await fetchAllnet(db, subscription) : await fetchWithFallback(
     eps as Endpoint[], throttler,
     { userAgent: defaults.user_agent,
-      maxBytes: cfgS.max_body_bytes ?? defaults.max_body_bytes });
+      maxBytes: cfgS.max_body_bytes ?? defaults.max_body_bytes },
+    openCircuitHosts(db));
+
+  // 将 403/429 熔断持久化。相同主机的其它端点本轮已由连接器跳过，
+  // 后续轮次也会等冷却结束；镜像位于不同主机，不受影响。
+  for (const a of attempts) {
+    let host = '';
+    try { host = new URL(a.endpoint.url).hostname; } catch { /* 已由抓取结果记录错误 */ }
+    if (host && a.outcome === 'rate_limited') {
+      const until = recordRateLimit(db, host, a.httpCode, a.errorMessage);
+      lines.push(`  ⏸ ${host} 已熔断至 ${until}`);
+    }
+  }
+  if (success) {
+    let successHost = '';
+    try { successHost = new URL(success.endpoint.url).hostname; } catch { /* ignore */ }
+    if (successHost) recordHostSuccess(db, successHost);
+  }
 
   // 所有尝试都落审计（PRD 18：回退过程必须可见）
   let attemptIds: number[] = [];
@@ -125,13 +146,16 @@ for (const src of due) {
     lines.push(`  ❌ ${src.id.padEnd(16)} 全部 ${attempts.length} 个端点失败 (${last?.errorClass})`);
     continue;
   }
-  okCount++;
 
   if (success.outcome === 'not_modified') {
+    okCount++;
     q.srcOk.run(nowIso(), nowIso(), 304, null, nowIso(), src.id);
     lines.push(`  ○ ${src.id.padEnd(16)} 304 无更新`);
     continue;
   }
+
+  if (success.endpoint.id)
+    q.epCache.run(success.etag ?? null, success.lastModified ?? null, success.endpoint.id);
 
   // ---- 落原始快照（内容未变则不重复落盘） ----
   const body = success.body!;
@@ -153,7 +177,7 @@ for (const src of due) {
   let raws;
   try {
     const channel = /telegram\/channel\/([^/?]+)|t\.me\/s\/([^/?]+)/.exec(success.endpoint.url);
-    raws = parseBy(success.endpoint.parser, body, { channel: channel?.[1] ?? channel?.[2] });
+    raws = subscription ? parseAllnet(JSON.parse(body), subscription) : parseBy(success.endpoint.parser, body, { channel: channel?.[1] ?? channel?.[2] });
   } catch (e: any) {
     q.srcFail.run(nowIso(), success.httpCode ?? null, `解析失败: ${e.message}`, nowIso(), src.id);
     lines.push(`  ❌ ${src.id.padEnd(16)} 解析失败: ${e.message}`);
@@ -168,6 +192,25 @@ for (const src of due) {
     continue;
   }
 
+  // Meituan article enrichment uses the original host without API credentials.
+  // Reuse saved article content to avoid refetching history and creating title-only versions.
+  if (subscription?.upstream_id === 864) {
+    for (const r of raws) {
+      const prior = r.link ? db.prepare(`SELECT f.published_at, v.clean_text FROM feed_items f
+        JOIN item_versions v ON v.id=f.current_version_id WHERE f.source_id=? AND f.canonical_url=?`).get(src.id, canonicalizeUrl(r.link)) as any : null;
+      if(prior) { r.publishedRaw=prior.published_at; r.html=prior.clean_text; continue; }
+      if (r.link && new URL(r.link).origin === 'https://tech.meituan.com') {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        const article = await fetchArticle(r.link, {userAgent:defaults.user_agent,timeoutMs:15000,maxBytes:2*1024*1024});
+        if (article.ok) { r.html=article.text??''; r.publishedRaw=article.publishedRaw??null; }
+        // Meituan's dated permalink is an original-site date, never the harvest time.
+        const date = new URL(r.link).pathname.match(/^\/(\d{4})\/(\d{2})\/(\d{2})\//);
+        if (!r.publishedRaw && date) r.publishedRaw=`${date[1]}-${date[2]}-${date[3]}T00:00:00+08:00`;
+      }
+    }
+  }
+
+  const previousSnapshotKeys = new Set<string>(subscription?.snapshot_json ? JSON.parse(subscription.snapshot_json).map((r:any)=>r.guid) : []);
   // ---- 归一化 + 落库 ----
   let ni = 0, nv = 0, latest: string | null = null;
   db.transaction(() => {
@@ -176,13 +219,15 @@ for (const src of due) {
       const t = normalizeTime(r.publishedRaw, cfgS.assumed_timezone ?? defaults.assumed_timezone,
         { historicalArchive: !!cfgS.historical_archive });
       if (t.utc && (!latest || t.utc > latest)) latest = t.utc;
+      if (subscription?.upstream_id === 864 && !t.utc) t.confidence = 'stale';
       const k = extractItemKey(r.link, r.guid, src.id, r.title, t.utc);
 
       let item = q.itemGet.get(src.id, k.key) as any;
       if (!item) {
+        const discoveredAt = subscription?.snapshot_at && r.guid && previousSnapshotKeys.has(r.guid) ? subscription.snapshot_at : nowIso();
         const win = t.utc ? windowOf(new Date(t.utc)).key : null;
         const id = q.itemIns.run(src.id, k.key, k.kind, cu, null, r.link ?? null,
-          t.utc, t.taipei, t.raw, t.confidence, nowIso(), runId, win, nowIso(), nowIso()).lastInsertRowid;
+          t.utc, t.taipei, t.raw, t.confidence, discoveredAt, runId, win, nowIso(), nowIso()).lastInsertRowid;
         item = { id: Number(id) };
         ni++;
       } else {
@@ -206,6 +251,8 @@ for (const src of due) {
     }
   })();
 
+  if (subscription) db.prepare('UPDATE allnet_subscriptions SET snapshot_json=?,snapshot_at=? WHERE source_id=?').run(JSON.stringify(raws),nowIso(),src.id);
+  okCount++;
   newItems += ni; newVersions += nv;
   q.srcOk.run(nowIso(), nowIso(), success.httpCode ?? 200, latest, nowIso(), src.id);
   const fb = success.isFallback ? ` [回退→P${success.endpoint.priority}]` : '';
@@ -216,6 +263,13 @@ db.prepare(`UPDATE harvest_runs SET finished_at=?, status=?, sources_attempted=?
   sources_ok=?, new_items=?, new_versions=? WHERE id=?`)
   .run(nowIso(), okCount === due.length ? 'succeeded' : okCount ? 'partial' : 'failed',
        due.length, okCount, newItems, newVersions, runId);
+
+// V2.2: approved sources remain in a three-window observation period before
+// becoming ACTIVE. The period is time-bounded so a healthy source graduates
+// automatically after the required windows have been observed.
+db.prepare(`UPDATE sources SET onboarding_status='ACTIVE', updated_at=?
+  WHERE onboarding_status='OBSERVATION' AND observation_until IS NOT NULL
+    AND observation_until <= datetime('now')`).run(nowIso());
 
 console.log(`采集轮次 #${runId}  (${due.length} 个到期来源${FORCE_ALL ? ', --all' : ''})`);
 lines.forEach(l => console.log(l));

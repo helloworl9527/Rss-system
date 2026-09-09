@@ -8,10 +8,10 @@ const cfg = loadSources();
 const now = nowIso();
 
 const upSrc = db.prepare(`
-  INSERT INTO sources (id,name,display_name,category,host_group,harvest_tier,enabled,priority,
+  INSERT INTO sources (id,name,display_name,category,source_group,host_group,harvest_tier,enabled,priority,
                        mandatory_retention,require_fulltext,config_json,source_version,
                        managed_by,site_url,created_at,updated_at)
-  VALUES (@id,@name,@display_name,@category,@host_group,@harvest_tier,@enabled,@priority,
+  VALUES (@id,@name,@display_name,@category,@source_group,@host_group,@harvest_tier,@enabled,@priority,
           @mandatory_retention,@require_fulltext,@config_json,@source_version,
           'config',@site_url,@now,@now)
   -- 只更新 config 归属的来源；后台新增的（managed_by='admin'）不得被覆盖
@@ -39,18 +39,31 @@ const disableEp = db.prepare(
 
 db.transaction(() => {
   for (const s of cfg.sources) {
+    // 后台永久启停是用户明确决定。配置同步只提供默认值，不能把后台已停用
+    // 的来源重新打开（或把后台已启用的来源再次关闭）。
+    const toggle = db.prepare(`SELECT action FROM manual_overrides
+      WHERE target_type='source' AND target_id=? AND action IN ('enable','disable')
+        AND scope='permanent' ORDER BY id DESC LIMIT 1`).get(s.id) as { action: string } | undefined;
+    const enabled = toggle ? toggle.action === 'enable' : !!s.enabled;
     upSrc.run({
       id: s.id, name: s.name, display_name: s.display_name, category: s.category,
+      source_group: s.source_group ?? 'unclassified',
       host_group: s.host_group, harvest_tier: s.harvest_tier,
-      enabled: s.enabled ? 1 : 0, priority: s.priority ?? 5,
+      enabled: enabled ? 1 : 0, priority: s.priority ?? 5,
       mandatory_retention: s.mandatory_retention ? 1 : 0,
       require_fulltext: s.require_fulltext ? 1 : 0,
       config_json: JSON.stringify(s), source_version: cfg.meta.source_version,
       site_url: s.site_url ?? null, now,
     });
-    for (const e of s.endpoints)
-      upEp.run({ source_id: s.id, priority: e.priority, url: e.url,
-                 parser: e.parser, host_group: e.host_group ?? null });
+    for (const e of s.endpoints) {
+      // 后台对单个端点的永久 URL 覆盖优先于 sources.yaml，避免同步时改回旧地址。
+      const overridden = db.prepare(`SELECT 1 FROM manual_overrides
+        WHERE target_type='source_endpoint' AND target_id=? AND action='edit_url'
+          AND scope='permanent' ORDER BY id DESC LIMIT 1`).get(`${s.id}:${e.priority}`);
+      if (!overridden)
+        upEp.run({ source_id: s.id, priority: e.priority, url: e.url,
+                   parser: e.parser, host_group: e.host_group ?? null });
+    }
     disableEp.run(s.id, JSON.stringify(s.endpoints.map((e: any) => e.priority)));
   }
 })();

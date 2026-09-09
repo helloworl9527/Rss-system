@@ -74,8 +74,11 @@ console.log('\n环境变量优先于保管库：\n');
   ok('env 覆盖保管库', resolveSecret('DEEPSEEK_API_KEY', P) === 'sk-from-env');
   delete process.env.DEEPSEEK_API_KEY;
 
-  setSettings({ aiProvider: 'deepseek', l1Model: 'cheap-1' }, P);
+  setSettings({ aiProvider: 'deepseek', l1Model: 'cheap-1',
+    l1BaseUrl: 'https://custom.example/v1', l2BaseUrl: '' }, P);
   ok('设置项可读回', resolveSettings(P).aiProvider === 'deepseek');
+  ok('自定义 Base URL 可保存并读回', resolveSettings(P).l1BaseUrl === 'https://custom.example/v1');
+  ok('Base URL 留空会清除覆盖并回到厂商默认', resolveSettings(P).l2BaseUrl === undefined);
   process.env.AI_PROVIDER = 'openai';
   ok('env 同样覆盖设置项', resolveSettings(P).aiProvider === 'openai');
   delete process.env.AI_PROVIDER;

@@ -1,3 +1,4 @@
+import { assertEligibilityUnchanged } from '../../db/src/eligibility.ts';
 import type { DB } from '../../db/src/index.ts';
 import { nowIso } from '../../db/src/index.ts';
 
@@ -29,6 +30,7 @@ export type DeliverOpts = {
   environment?: string;
   /** 首次失败后重试的间隔，网络类错误适用（PRD 17.2：30 秒后重试一次） */
   retryDelayMs?: number;
+  assertEligible?: () => void;
   sleep?: (ms: number) => Promise<void>;
 };
 
@@ -77,6 +79,14 @@ export async function deliver(
 
   // 首次失败自动重试一次；永久错误（认证失败、收件人无效）不盲目重试（FR-053）
   for (let i = 0; i < 2; i++) {
+    try {
+      o.assertEligible?.();
+      const brief=db.prepare('SELECT run_id,eligibility_signature FROM briefs WHERE id=?').get(o.briefId) as any;
+      if(brief?.eligibility_signature) assertEligibilityUnchanged(db,brief.run_id,brief.eligibility_signature);
+    } catch(e:any) {
+      markFail.run('failed',e.message,attempts,id);
+      throw e;
+    }
     attempts++;
     last = await mailer({ to: o.recipient, subject: o.subject, text: o.text, html: o.html, headers });
     if (last.ok) {

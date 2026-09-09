@@ -105,6 +105,21 @@ console.log('\nL2 → L3 升级（rules.yaml escalation.l2_to_l3）\n');
   ok('无触发条件 → 不升级', !shouldPromoteToL3(inp('a'), mk({}), hr).promote);
 }
 
+console.log('\n人工正例过滤理由保护：\n');
+{
+  const bad = { decision: 'filter' as const, filter_reason: '纯个人主观讨论，无独立资讯价值',
+    conclusion: null, summary_sentences: null };
+  const l2 = fake((req) => reply(bad, idOf(req)));
+  const l3 = fake((req) => reply(bad, idOf(req)));
+  const r = await runReview([inp('v1')], deps(l2, l3,
+    { invalidFilterReasonFragments: ['个人主观', '无独立资讯价值'] }));
+  const l2o = r.outcomes.find(o => o.tier === 'L2')!;
+  const l3o = r.outcomes.find(o => o.tier === 'L3')!;
+  ok('L2 命中无效理由时强制升 L3', l2o.promote && l2o.promoteRules.includes('ESC-109'));
+  ok('L3 仍只给无效理由时回退普通排序',
+     l3o.result?.decision === 'normal' && l3o.result.filter_reason === null);
+}
+
 console.log('\n完整两级链路：\n');
 {
   const l2seen: string[] = [], l3seen: string[] = [];
@@ -120,6 +135,19 @@ console.log('\n完整两级链路：\n');
   ok('L3 之后不再升级（PRD 15.1）', l3o.promote === false);
   ok('用量分层统计', r.l2Used.items === 2 && r.l3Used.items === 1,
      `L2=${r.l2Used.items} L3=${r.l3Used.items} in=${r.l2Used.input}/${r.l3Used.input}`);
+}
+
+console.log('\n失败续跑：\n');
+{
+  let l2calls = 0, l3calls = 0;
+  const l2 = fake((req) => { l2calls++; return reply({}, idOf(req)); });
+  const l3 = fake((req) => { l3calls++; return reply({}, idOf(req)); });
+  const r = await runReview([inp('resume', {
+    resumeTier: 'L3', priorDecision: 'normal', priorConfidence: 0.9,
+    escalationRules: ['ESC-103'],
+  })], deps(l2, l3));
+  ok('已有 L2 结果时不重复调用 L2', l2calls === 0 && r.l2Used.items === 0);
+  ok('直接续跑 L3 并产出结论', l3calls === 1 && r.outcomes[0]?.tier === 'L3' && !!r.outcomes[0]?.result);
 }
 
 console.log('\n失败路径：\n');
@@ -175,6 +203,8 @@ console.log('\nSchema 形状：\n');
   const req = REVIEW_SCHEMA as any;
   ok('conflicts 与 source_limitations 为必填',
      req.required.includes('conflicts') && req.required.includes('source_limitations'));
+  ok('严格模式要求所有属性列入 required',
+     Object.keys(req.properties).every(k => req.required.includes(k)));
   ok('decision 不含 escalate（复核层必须给结论）',
      !req.properties.decision.enum.includes('escalate'));
   ok('conclusion 允许为 null（判 filter 时）',

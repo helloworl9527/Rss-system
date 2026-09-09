@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { candidateEligibleSql } from '../../../packages/db/src/eligibility.ts';
 /**
  * L2/L3 复核 CLI（PRD 15.1 / 15.4）。
  *
@@ -30,6 +31,37 @@ const run = (runArg
   : db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 1').get()) as any;
 if (!run) { console.log('没有可用的 run'); db.close(); process.exit(0); }
 
+// 恢复运行时，L1 可能在历史失败记录之后重新把候选标为 escalate；若该候选
+// 已有成功的 L3 结论，必须以最高层级为准回填，不能因“已有 L3”被跳过后
+// 永久卡在待复核状态。
+if (!DRY) {
+  const settled = db.prepare(`
+    SELECT c.id cid, e.result_json result_json
+    FROM candidates c
+    JOIN evaluations e ON e.id=(
+      SELECT e3.id FROM evaluations e3
+      WHERE e3.candidate_id=c.id AND e3.stage='sol'
+        AND json_extract(e3.result_json,'$.error') IS NULL
+        AND json_extract(e3.result_json,'$.decision') IS NOT NULL
+      ORDER BY e3.id DESC LIMIT 1)
+    WHERE ${candidateEligibleSql()} AND c.run_id=? AND c.decision='escalate'`).all(run.id) as any[];
+  const apply = db.prepare(`UPDATE candidates SET decision=?,mandatory_class=?,section=?,filter_reason=?
+    WHERE id=?`);
+  let restored = 0;
+  db.transaction(() => {
+    for (const row of settled) {
+      try {
+        const value = JSON.parse(row.result_json);
+        if (!['retain', 'normal', 'filter'].includes(value.decision)) continue;
+        apply.run(value.decision, value.mandatory_class ?? 'none', value.section ?? null,
+          value.filter_reason ?? null, row.cid);
+        restored++;
+      } catch { /* 损坏记录不回填，继续进入正常复核 */ }
+    }
+  })();
+  if (restored) console.log(`最高层级回填：${restored} 条候选恢复为既有 L3 结论`);
+}
+
 const promptText = readFileSync('./config/prompts/review.md', 'utf8');
 const promptVersion = `review-v${rules.meta.rule_version}-${sha256(promptText).slice(0, 8)}`;
 if (!DRY)
@@ -43,19 +75,39 @@ type Row = {
   body: string; url: string | null; published_at: string | null;
   signals_json: string | null; prescreen_json: string | null;
   result_json: string | null; escalation_reasons: string | null;
+  l2_result_json: string | null; l2_escalation_reasons: string | null;
 };
 const rows = db.prepare(`
   SELECT c.id cid, c.item_version_id vid, f.source_id, s.category, v.title,
          coalesce(v.fulltext_text, v.clean_text) body, f.canonical_url url, f.published_at,
-         v.signals_json, v.prescreen_json, e.result_json, e.escalation_reasons
+         v.signals_json, v.prescreen_json,
+         (SELECT e1.result_json FROM evaluations e1
+          WHERE e1.candidate_id=c.id AND e1.stage='luna'
+            AND json_extract(e1.result_json,'$.error') IS NULL
+            AND json_extract(e1.result_json,'$.decision') IS NOT NULL
+          ORDER BY e1.id DESC LIMIT 1) result_json,
+         (SELECT e1.escalation_reasons FROM evaluations e1
+          WHERE e1.candidate_id=c.id AND e1.stage='luna'
+            AND json_extract(e1.result_json,'$.error') IS NULL
+            AND json_extract(e1.result_json,'$.decision') IS NOT NULL
+          ORDER BY e1.id DESC LIMIT 1) escalation_reasons,
+         (SELECT e2.result_json FROM evaluations e2
+          WHERE e2.candidate_id=c.id AND e2.stage='terra'
+            AND json_extract(e2.result_json,'$.error') IS NULL
+          ORDER BY e2.id DESC LIMIT 1) l2_result_json,
+         (SELECT e2.escalation_reasons FROM evaluations e2
+          WHERE e2.candidate_id=c.id AND e2.stage='terra'
+            AND json_extract(e2.result_json,'$.error') IS NULL
+          ORDER BY e2.id DESC LIMIT 1) l2_escalation_reasons
   FROM candidates c
   JOIN item_versions v ON v.id=c.item_version_id
   JOIN feed_items f ON f.id=v.item_id
   JOIN sources s ON s.id=f.source_id
-  LEFT JOIN evaluations e ON e.candidate_id=c.id AND e.stage='luna'
-  WHERE c.run_id=? AND c.decision='escalate'
+  WHERE ${candidateEligibleSql()} AND c.run_id=? AND c.decision='escalate'
     AND NOT EXISTS (SELECT 1 FROM evaluations e2
-                    WHERE e2.candidate_id=c.id AND e2.stage IN ('terra','sol'))
+                    WHERE e2.candidate_id=c.id AND e2.stage='sol'
+                      AND json_extract(e2.result_json,'$.error') IS NULL
+                      AND json_extract(e2.result_json,'$.decision') IS NOT NULL)
   ORDER BY c.id`).all(run.id) as Row[];
 
 if (!rows.length) { console.log(`run #${run.id} 没有待复核候选`); db.close(); process.exit(0); }
@@ -69,12 +121,13 @@ const siblingsOf = (cid: number, eventKey: string | null) => {
     FROM candidates c JOIN item_versions v ON v.id=c.item_version_id
     JOIN feed_items f ON f.id=v.item_id
     JOIN evaluations e ON e.candidate_id=c.id AND e.stage='luna'
-    WHERE c.run_id=? AND c.id<>? AND json_extract(e.result_json,'$.event_key')=?
+    WHERE ${candidateEligibleSql()} AND c.run_id=? AND c.id<>? AND json_extract(e.result_json,'$.event_key')=?
     LIMIT 4`).all(run.id, cid, eventKey)) as any[];
 };
 
 const inputs: ReviewInput[] = rows.map(r => {
   let m: any = {}; try { m = r.result_json ? JSON.parse(r.result_json) : {}; } catch { /* ignore */ }
+  let l2: any = {}; try { l2 = r.l2_result_json ? JSON.parse(r.l2_result_json) : {}; } catch { /* ignore */ }
   const sig = r.signals_json ? JSON.parse(r.signals_json) as Record<string, boolean> : {};
   return {
     candidateId: `c${r.cid}`, sourceId: r.source_id, sourceKind: r.category,
@@ -83,9 +136,12 @@ const inputs: ReviewInput[] = rows.map(r => {
     repos: [], officialLinks: [],
     prescreenClasses: r.prescreen_json ? JSON.parse(r.prescreen_json) : [],
     contentHash: '',
-    priorDecision: m.decision ?? 'unknown',
-    priorConfidence: m.confidence ?? 0,
-    escalationRules: r.escalation_reasons ? JSON.parse(r.escalation_reasons) : [],
+    priorDecision: l2.decision ?? m.decision ?? 'unknown',
+    priorConfidence: l2.confidence ?? m.confidence ?? 0,
+    escalationRules: r.l2_escalation_reasons
+      ? JSON.parse(r.l2_escalation_reasons)
+      : r.escalation_reasons ? JSON.parse(r.escalation_reasons) : [],
+    resumeTier: r.l2_result_json ? 'L3' : 'L2',
     siblings: siblingsOf(r.cid, m.event_key ?? null),
   };
 });
@@ -114,7 +170,10 @@ const deps: ReviewDeps = {
   systemPrompt: promptText,
   bodyCharsMax: rules.ai?.input_minimization?.body_chars_max ?? 8000,
   isHighRisk,
-  concurrency: rules.ai?.budget_per_run?.review_concurrency ?? DEFAULT_REVIEW_CONCURRENCY,
+  concurrency: Number(process.env.AI_REVIEW_CONCURRENCY
+    ?? rules.ai?.budget_per_run?.review_concurrency
+    ?? DEFAULT_REVIEW_CONCURRENCY),
+  invalidFilterReasonFragments: rules.ai_filter_guard?.invalid_reason_fragments ?? [],
 };
 
 console.log(`run #${run.id} ${run.window_key} | L2 ${l2.name}/${l2.model} · L3 ${l3.name}/${l3.model}`);

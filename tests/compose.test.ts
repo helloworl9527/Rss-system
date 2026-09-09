@@ -37,11 +37,12 @@ console.log('复用 L2/L3 已产出的文案：\n');
   let calls = 0;
   const p = fake((req) => { calls++; return res(itemsOf(req)); });
   const r = await runCompose([
-    inp('a', { precomposed: { conclusion: '复核层写好的结论', summarySentences: ['甲。','乙。'] } }),
+    inp('a', { precomposed: { title: '缓存中的完整标题', conclusion: '复核层写好的结论', summarySentences: ['甲。','乙。'] } }),
     inp('b'),
   ], deps(p));
   const reused = r.outcomes.find(o => o.candidateId === 'a')!;
   ok('已有文案的直接复用', reused.status === 'reused' && reused.result?.conclusion === '复核层写好的结论');
+  ok('复用文案时保留缓存标题', reused.result?.title === '缓存中的完整标题', reused.result?.title);
   ok('只为缺文案的调模型', calls === 1);
 }
 

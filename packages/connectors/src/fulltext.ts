@@ -4,6 +4,7 @@ import { stripHtml } from '../../domain/src/normalize.ts';
 export type FullText = {
   ok: boolean;
   rateLimited?: boolean;
+  httpCode?: number;
   text?: string;
   html?: string;
   title?: string;
@@ -24,6 +25,7 @@ export async function fetchLinuxdo(topicId: string, o: Opts): Promise<FullText> 
   const r = await fetchSmart(url, o);
   if (r.outcome !== 'ok' || !r.body)
     return { ok: false, rateLimited: r.outcome === 'rate_limited',
+             httpCode: r.httpCode,
              error: `${r.outcome}:${r.errorClass ?? r.httpCode ?? ''}`, fetchedUrl: url };
   try {
     const d = JSON.parse(r.body);
@@ -42,6 +44,7 @@ export async function fetchV2ex(topicId: string, o: Opts): Promise<FullText> {
   const r = await fetchSmart(url, o);
   if (r.outcome !== 'ok' || !r.body)
     return { ok: false, rateLimited: r.outcome === 'rate_limited',
+             httpCode: r.httpCode,
              error: `${r.outcome}:${r.errorClass ?? r.httpCode ?? ''}`, fetchedUrl: url };
   try {
     const arr = JSON.parse(r.body);
@@ -65,6 +68,7 @@ export async function fetchArticle(url: string, o: Opts): Promise<FullText> {
   const r = await fetchSmart(url, o);
   if (r.outcome !== 'ok' || !r.body)
     return { ok: false, rateLimited: r.outcome === 'rate_limited',
+             httpCode: r.httpCode,
              error: `${r.outcome}:${r.errorClass ?? r.httpCode ?? ''}`, fetchedUrl: url };
 
   const body = r.body
@@ -99,6 +103,7 @@ export function fulltextFetcher(sourceId: string, itemKey: string, canonicalUrl:
   switch (sourceId) {
     case 'linuxdo': { const id = idFrom('linuxdo:t:'); return id ? (o: Opts) => fetchLinuxdo(id, o) : null; }
     case 'v2ex':    { const id = idFrom('v2ex:t:');    return id ? (o: Opts) => fetchV2ex(id, o)    : null; }
+    case 'jike':
     case 'elsewhere': return canonicalUrl ? (o: Opts) => fetchArticle(canonicalUrl, o) : null;
     default: return null;
   }

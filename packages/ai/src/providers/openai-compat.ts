@@ -20,8 +20,54 @@ const DEFAULT_BASE: Record<string, string> = {
   qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
 };
 const DEFAULT_STRICTNESS: Record<string, Strictness> = {
-  openai: 'strict', deepseek: 'json', qwen: 'json',
+  openai: 'strict', openai_compatible: 'json', deepseek: 'json', qwen: 'json',
 };
+
+/**
+ * 兼容部分 OpenAI 兼容网关忽略 response_format 的情况：模型可能把合法
+ * JSON 包进 Markdown 围栏，或在前后加一句说明。先接受纯 JSON，再从围栏
+ * 或正文中提取首个括号平衡的 JSON 值；字符串内的括号不会干扰扫描。
+ */
+export function parseJsonResponse(text: string): unknown {
+  const input = String(text ?? '').trim();
+  if (!input) throw new SyntaxError('empty response');
+
+  try { return JSON.parse(input); } catch { /* 继续兼容解析 */ }
+
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/gi;
+  for (let m = fenced.exec(input); m; m = fenced.exec(input)) {
+    try { return JSON.parse(m[1]!.trim()); } catch { /* 尝试正文中的 JSON */ }
+  }
+
+  for (let start = 0; start < input.length; start++) {
+    const opener = input[start];
+    if (opener !== '{' && opener !== '[') continue;
+    const closer = opener === '{' ? '}' : ']';
+    const stack: string[] = [];
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < input.length; i++) {
+      const ch = input[i]!;
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{') stack.push('}');
+      else if (ch === '[') stack.push(']');
+      else if (ch === '}' || ch === ']') {
+        if (stack.pop() !== ch) break;
+        if (!stack.length) {
+          try { return JSON.parse(input.slice(start, i + 1)); } catch { break; }
+        }
+      }
+    }
+    void closer;
+  }
+  throw new SyntaxError('no valid JSON value found');
+}
 
 export class OpenAICompatProvider implements Provider {
   readonly name;
@@ -35,6 +81,8 @@ export class OpenAICompatProvider implements Provider {
     this.name = cfg.provider;
     this.model = cfg.model;
     this.strictness = cfg.strictness ?? DEFAULT_STRICTNESS[cfg.provider] ?? 'json';
+    if (cfg.provider === 'openai_compatible' && !cfg.baseUrl)
+      throw new ProviderError('bad_request', 'OpenAI 兼容格式必须填写 Base URL（例如 https://api.example.com/v1）');
     this.#base = (cfg.baseUrl ?? DEFAULT_BASE[cfg.provider] ?? DEFAULT_BASE.openai!).replace(/\/$/, '');
     this.#timeout = cfg.timeoutMs ?? 90_000;
     if (!cfg.apiKey) throw new ProviderError('auth', `${cfg.provider} 缺少 API key`);
@@ -84,7 +132,7 @@ export class OpenAICompatProvider implements Provider {
         `输出被 max_tokens 截断（已生成 ${j.usage?.completion_tokens ?? '?'} token）`);
 
     let data: unknown;
-    try { data = JSON.parse(text); }
+    try { data = parseJsonResponse(text); }
     catch {
       const hint = text ? `（前 200 字）: ${String(text).slice(0, 200)}` : '（响应体为空）';
       throw new ProviderError('bad_request', `响应不是合法 JSON${hint}`);
