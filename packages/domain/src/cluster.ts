@@ -53,6 +53,15 @@ export function eventPartOfClusterKey(clusterKey: string): string {
   return parts.length > 2 ? parts.slice(0, -2).join(':') : clusterKey;
 }
 
+/**
+ * 当天跨窗口去重时，忽略模型 event_key 末尾不一致的日期后缀。
+ * 同一事件在早报可能被标成 `...-2026`，午报又被标成
+ * `...-2026-09`；日期已由窗口限定，不应让这种格式漂移绕过去重。
+ */
+function dailyEventIdentity(eventKey: string): string {
+  return eventKey.replace(/-(?:20\d{2})(?:-\d{2})?(?:-\d{2})?$/, '');
+}
+
 export type PriorBriefEvent = { title: string; clusterKey: string; sourceUrl?: string | null };
 
 /** 同一标题是比模型事件键更强的信号；只做轻量规范化，避免模糊匹配误伤。 */
@@ -79,7 +88,7 @@ export function excludeCoveredToday(clusters: Cluster[], previous: PriorBriefEve
   const priorTitles = new Map<string, PriorBriefEvent>();
   for (const p of previous) {
     const raw = eventPartOfClusterKey(p.clusterKey);
-    priorKeys.set(canonicalEventIdentity(p.title, raw), p);
+    priorKeys.set(dailyEventIdentity(canonicalEventIdentity(p.title, raw)), p);
     if (p.sourceUrl) priorUrls.set(p.sourceUrl, p);
     priorTitles.set(normalizedEventWording(p.title), p);
   }
@@ -87,7 +96,7 @@ export function excludeCoveredToday(clusters: Cluster[], previous: PriorBriefEve
   const covered: Array<{ cluster: Cluster; previous: PriorBriefEvent }> = [];
   for (const c of clusters) {
     const raw = eventPartOfClusterKey(c.clusterKey);
-    const key = canonicalEventIdentity(c.primary.title, raw);
+    const key = dailyEventIdentity(canonicalEventIdentity(c.primary.title, raw));
     // 强信号优先：同一规范化原文 URL 或完全相同标题必定是重复；事件键
     // 只作为第三顺位。模型在不同层级可能为同一新闻生成不同 event_key。
     const prior = (c.primary.url ? priorUrls.get(c.primary.url) : undefined)

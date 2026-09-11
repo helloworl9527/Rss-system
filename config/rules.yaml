@@ -11,8 +11,8 @@
 # ============================================================
 
 meta:
-  rule_version: 14
-  updated_at: "2026-09-08"
+  rule_version: 15
+  updated_at: "2026-09-11"
   timezone: Asia/Taipei          # 全系统唯一时区基准（PRD 5.1）
   description: "初版：从 PRD V1.0 自然语言规则拆解而来，未经影子运行校准"
 
@@ -1024,6 +1024,16 @@ source_specific:
 clustering:
   # 人工确认的同事件别名：模型即使因数字更新生成不同 event_key，仍应合并。
   event_aliases:
+    # OpenAI 官方文章与其 X 账号转述经常在不同采集窗口到达；标题和
+    # event_key 会因语言/措辞不同而漂移，但以下组合明确指向同一发布事件。
+    - key: openai-chatgpt-financial-services-2026-09
+      require_all: [ChatGPT]
+      require_any: [金融服务, financial services]
+      force_section: ai_tech
+    - key: openai-gpt-live-1-api-2026-09
+      require_all: [GPT-Live-1]
+      require_any: [API, 语音, voice]
+      force_section: ai_tech
     - key: nepal-tibet-border-flood-2026-08
       require_all: [尼泊尔, 西藏]
       require_any: [洪灾, 洪水, 山洪, 泥石流]

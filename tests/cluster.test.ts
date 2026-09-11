@@ -149,6 +149,37 @@ console.log('\n同一自然日跨窗口去重：\n');
   ok('跨窗口标题仅发布/推出不同仍会去重', r.covered.length === 1);
 }
 {
+  // 官方文章与 X 转述可能跨窗口到达，标题语言和模型 event_key 均不同，
+  // 但确定性事件别名必须把它们视为同一事件。
+  const current = clusterCandidates([
+    it('financial-x', { title: 'Now available: ChatGPT for Financial Services',
+      eventKey: 'openai-chatgpt-financial-services-launch-2026-09', sourceId: 'x_openai' }),
+    it('live-x', { title: 'GPT-Live-1 is now available in the API',
+      eventKey: 'openai-gpt-live-1-api-release-2026-09', sourceId: 'x_openai' }),
+  ]);
+  const r = excludeCoveredToday(current, [
+    { title: 'OpenAI 推出面向金融服务行业的 ChatGPT',
+      clusterKey: 'openai-chatgpt-financial-services-launch-2026-09:ai_tech:none' },
+    { title: 'OpenAI API 上线 GPT-Live-1 实时语音模型',
+      clusterKey: 'openai-gpt-live-1-api-release:ai_tech:none' },
+  ]);
+  ok('金融服务版 ChatGPT 的 X 转述跨窗口去重',
+    r.covered.some(x => x.cluster.primary.candidateId === 'financial-x'));
+  ok('GPT-Live-1 的 X 转述跨窗口去重',
+    r.covered.some(x => x.cluster.primary.candidateId === 'live-x'));
+}
+{
+  const current = clusterCandidates([
+    it('date-drift', { title: '同一事件的新窗口转述',
+      eventKey: 'same-event-2026-09' }),
+  ]);
+  const r = excludeCoveredToday(current, [{
+    title: '同一事件的早报原文',
+    clusterKey: 'same-event-2026:ai_tech:none',
+  }]);
+  ok('同一事件键仅日期后缀漂移时跨窗口去重', r.covered.length === 1);
+}
+{
   const sameWindow = clusterCandidates([
     it('qualcomm', { title: '高通宣布全系列芯片涨价幅度',
       eventKey: 'qualcomm-price', section: 'ai_tech' }),
