@@ -374,38 +374,10 @@ const data: BriefData = {
 };
 
 // ---------- 5. 渲染与校验 ----------
-/**
- * 渲染并保证不超体积。
- * Gmail 在约 100 KB 处截断，超了会把正文尾部连同审计区一起吃掉。
- * 附录是辅助信息，正文与审计区是主体 —— 超限时只裁附录，
- * 并在邮件里说明被裁掉多少、去哪里看全量（后台运行详情页）。
- */
-function renderWithinLimit(d: BriefData) {
-  const cap = (rules.brief?.email?.html_size_max_kb ?? 100) * 1024;
-  let html = renderHtml(d), text = renderText(d);
-  if (!d.evalAppendix || Buffer.byteLength(html, 'utf8') <= cap * 0.92)
-    return { html, text, trimmed: 0 };
-
-  const all = [...d.evalAppendix.filtered];
-  const pend = [...d.evalAppendix.pending];
-  let keepF = all.length, keepP = pend.length, trimmed = 0;
-  // 先裁待复核（正文里已按判定分组可查），再裁已过滤
-  while (Buffer.byteLength(html, 'utf8') > cap * 0.92 && (keepF > 0 || keepP > 0)) {
-    if (keepP > 0) keepP = Math.max(0, keepP - 5); else keepF = Math.max(0, keepF - 5);
-    trimmed = (all.length - keepF) + (pend.length - keepP);
-    d.evalAppendix = {
-      filtered: all.slice(0, keepF), pending: pend.slice(0, keepP),
-      truncatedNote: `为控制邮件体积，附录省略了 ${trimmed} 条；` +
-        `全量可在后台运行详情页查看（run #${run.id}）。`,
-    };
-    html = renderHtml(d); text = renderText(d);
-  }
-  return { html, text, trimmed };
-}
-
-const { html, text, trimmed } = renderWithinLimit(data);
+// 用户要求邮件始终包含完整附录；不再按 HTML 字节数裁剪或拒绝发送。
+const html = renderHtml(data);
+const text = renderText(data);
 const subject = subjectOf(data) + (REGENERATE && !COMPARISON_LABEL ? '｜补发' : '');
-if (trimmed) console.log(`⚠️  附录省略 ${trimmed} 条以控制邮件体积`);
 const errs = checkEmail(html, text);
 if (errs.length) {
   console.error('❌ 邮件校验未通过，拒绝发送：');

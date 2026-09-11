@@ -163,7 +163,7 @@ console.log('\n审计区（PRD 9.3）：\n');
 
 console.log('\ncheckEmail 拦截：\n');
 {
-  ok('超大 HTML 被拦', checkEmail('x'.repeat(110*1024), 't').some(e => e.includes('100 KB')));
+  ok('超大 HTML 不因体积被拦截', checkEmail('x'.repeat(110*1024), 't').length === 0);
   ok('含 script 被拦', checkEmail('<script>a</script>', 't').some(e => e.includes('script')));
   ok('含 img 被拦', checkEmail('<img src=x>', 't').some(e => e.includes('图片')));
   ok('http 链接被拦', checkEmail('<a href="http://a.com">x</a>', 't').some(e => e.includes('非 HTTPS')));

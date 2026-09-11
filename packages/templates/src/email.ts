@@ -6,8 +6,8 @@
  * script / style / 事件处理器 / iframe 带进邮件。
  *
  * 格式约束：全部 CSS 内联，无 JavaScript、无外部字体、无远程样式表、
- * 无追踪像素、无装饰性图片；最大内容宽度 760px；总大小控制在 100 KB 内
- * （超过 Gmail 易截断）。
+ * 无追踪像素、无装饰性图片；最大内容宽度 760px。完整附录优先，
+ * 不按邮件体积裁剪内容。
  */
 
 export type BriefItem = {
@@ -361,8 +361,6 @@ export const subjectOf = (d: BriefData & { comparisonLabel?: string }) => {
 /** 渲染后的硬性校验（PRD 9.4 / 17.3）。任一项失败都不得发送。 */
 export function checkEmail(html: string, text: string): string[] {
   const errs: string[] = [];
-  const bytes = Buffer.byteLength(html, 'utf8');
-  if (bytes > 100 * 1024) errs.push(`HTML ${Math.round(bytes / 1024)} KB 超过 100 KB 上限`);
   if (/<script/i.test(html)) errs.push('HTML 含 <script>');
   if (/<iframe/i.test(html)) errs.push('HTML 含 <iframe>');
   // 只在真实标签内部查事件处理器。被转义的正文里出现 "onerror=" 属于

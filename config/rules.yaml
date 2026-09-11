@@ -11,7 +11,7 @@
 # ============================================================
 
 meta:
-  rule_version: 15
+  rule_version: 16
   updated_at: "2026-09-11"
   timezone: Asia/Taipei          # 全系统唯一时区基准（PRD 5.1）
   description: "初版：从 PRD V1.0 自然语言规则拆解而来，未经影子运行校准"
@@ -1279,8 +1279,6 @@ brief:
       evening: 晚报
     max_width_px: 760
     mobile_preview_px: 375
-    html_size_warn_kb: 80
-    html_size_max_kb: 100       # 超过 Gmail 易截断（PRD 17.3）
     multipart_alternative: true
     inline_css_only: true
     forbid:
