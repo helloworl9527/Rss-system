@@ -104,7 +104,10 @@ for (const src of due) {
   const t0 = Date.now();
 
   const subscription = db.prepare('SELECT * FROM allnet_subscriptions WHERE source_id=?').get(src.id) as Subscription | undefined;
-  const { attempts, success } = subscription ? await fetchAllnet(db, subscription) : await fetchWithFallback(
+  // 保留旧的全网热点 RSS 令牌作为兼容层，但允许将其底层采集切换为
+  // 官方 RSS；source_type=rss 时必须走普通端点和 RSS 解析器。
+  const allnetMode = !!subscription && cfgS.source_type !== 'rss';
+  const { attempts, success } = allnetMode ? await fetchAllnet(db, subscription!) : await fetchWithFallback(
     eps as Endpoint[], throttler,
     { userAgent: defaults.user_agent,
       maxBytes: cfgS.max_body_bytes ?? defaults.max_body_bytes },
@@ -177,7 +180,7 @@ for (const src of due) {
   let raws;
   try {
     const channel = /telegram\/channel\/([^/?]+)|t\.me\/s\/([^/?]+)/.exec(success.endpoint.url);
-    raws = subscription ? parseAllnet(JSON.parse(body), subscription) : parseBy(success.endpoint.parser, body, { channel: channel?.[1] ?? channel?.[2] });
+    raws = allnetMode ? parseAllnet(JSON.parse(body), subscription!) : parseBy(success.endpoint.parser, body, { channel: channel?.[1] ?? channel?.[2] });
   } catch (e: any) {
     q.srcFail.run(nowIso(), success.httpCode ?? null, `解析失败: ${e.message}`, nowIso(), src.id);
     lines.push(`  ❌ ${src.id.padEnd(16)} 解析失败: ${e.message}`);
