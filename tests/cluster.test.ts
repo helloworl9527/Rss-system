@@ -1,5 +1,5 @@
 // 聚类与排序（PRD 7.4 / 8.4 / 9.1）
-import { clusterCandidates, excludeCoveredToday, selectForBrief, scoreCluster, type ClusterInput }
+import { clusterCandidates, excludeCoveredToday, selectForBrief, scoreCluster, similarEventTitles, type ClusterInput }
   from '../packages/domain/src/cluster.ts';
 
 let fail = 0;
@@ -100,6 +100,13 @@ console.log('\n确定性分区校正：\n');
 
 console.log('\n同一自然日跨窗口去重：\n');
 {
+  ok('相似标题共享实体与事实时判定为同一事件', similarEventTitles(
+    '最高法发布 AI 纠纷司法解释，换脸与算法杀熟责任获明确',
+    '最高人民法院明确 AI 换脸和算法杀熟纠纷责任'));
+  ok('仅同主题但无共同事实不判重复', !similarEventTitles(
+    '最高法发布 AI 纠纷司法解释', '最高法公布民事诉讼法司法解释'));
+}
+{
   const current = clusterCandidates([
     it('phone', { title: '高通宣布全系列芯片涨价幅度',
       eventKey: 'qualcomm-chip-price-rise', section: 'ai_tech' }),
@@ -134,6 +141,15 @@ console.log('\n同一自然日跨窗口去重：\n');
     r.covered.some(x => x.cluster.primary.candidateId === 'same-url'));
   ok('event_key 与 URL 都漂移时完全相同标题仍会跨窗口去重',
     r.covered.some(x => x.cluster.primary.candidateId === 'same-title'));
+}
+{
+  const current = clusterCandidates([it('canonical-url', {
+    title: '另一种标题表达', eventKey: 'new-key', url: 'https://news.example/item/1?utm_source=x#top',
+  })]);
+  const r = excludeCoveredToday(current, [{
+    title: '原始标题', clusterKey: 'old:ai_tech:none', sourceUrl: 'https://news.example/item/1',
+  }]);
+  ok('URL 追踪参数与片段差异仍能跨窗口去重', r.covered.length === 1);
 }
 {
   const current = clusterCandidates([

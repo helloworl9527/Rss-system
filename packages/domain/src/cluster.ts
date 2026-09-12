@@ -1,4 +1,5 @@
 import { loadRules } from './rules.ts';
+import { canonicalizeUrl } from './normalize.ts';
 
 /**
  * 跨来源事件聚类与排序（PRD 7.4 / 8.4）。
@@ -81,6 +82,33 @@ function normalizedEventWording(title: string): string {
     .replace(/[\s，,。.!！?？:：;；“”"'‘’（）()【】\[\]·]/g, '');
 }
 
+/**
+ * 保守的标题事实指纹：抽取英文/数字实体与中文双字词，去掉报道套话。
+ * 只有至少两个共同 token 且重叠度达到阈值才视为同一事件，避免把同主题新闻合并。
+ */
+function titleTokens(title: string): Set<string> {
+  const t = title.normalize('NFKC').toLowerCase()
+    .replace(/发布|推出|宣布|报道|消息|表示|称|透露|最新|今日|今早|午报|早报|晚报/g, '');
+  const out = new Set<string>();
+  for (const m of t.matchAll(/[a-z0-9][a-z0-9._+-]{1,}/g)) out.add(m[0]);
+  const han = t.replace(/[^\u3400-\u9fff]/g, '');
+  for (let i = 0; i + 1 < han.length; i++) out.add(han.slice(i, i + 2));
+  return out;
+}
+
+export function similarEventTitles(a: string, b: string): boolean {
+  const price = (s: string) => /价格|售价|涨价|调价|成本|price|pricing|cost/i.test(s);
+  const release = (s: string) => /发布|推出|上线|release|launch|available/i.test(s);
+  if (price(a) !== price(b) && (price(a) || price(b)) && (release(a) || release(b))) return false;
+  const ai = (s: string) => /\bai\b|人工智能|算法/i.test(s);
+  if (ai(a) !== ai(b) && (ai(a) || ai(b))) return false;
+  const x = titleTokens(a), y = titleTokens(b);
+  if (x.size < 2 || y.size < 2) return false;
+  let common = 0;
+  for (const token of x) if (y.has(token)) common++;
+  return common >= 3 && common / Math.min(x.size, y.size) >= 0.35;
+}
+
 /** 过滤同一台北自然日较早窗口已经推送的事件。 */
 export function excludeCoveredToday(clusters: Cluster[], previous: PriorBriefEvent[]) {
   const priorKeys = new Map<string, PriorBriefEvent>();
@@ -89,7 +117,8 @@ export function excludeCoveredToday(clusters: Cluster[], previous: PriorBriefEve
   for (const p of previous) {
     const raw = eventPartOfClusterKey(p.clusterKey);
     priorKeys.set(dailyEventIdentity(canonicalEventIdentity(p.title, raw)), p);
-    if (p.sourceUrl) priorUrls.set(p.sourceUrl, p);
+    const url = p.sourceUrl ? canonicalizeUrl(p.sourceUrl) : null;
+    if (url) priorUrls.set(url, p);
     priorTitles.set(normalizedEventWording(p.title), p);
   }
   const fresh: Cluster[] = [];
@@ -99,9 +128,12 @@ export function excludeCoveredToday(clusters: Cluster[], previous: PriorBriefEve
     const key = dailyEventIdentity(canonicalEventIdentity(c.primary.title, raw));
     // 强信号优先：同一规范化原文 URL 或完全相同标题必定是重复；事件键
     // 只作为第三顺位。模型在不同层级可能为同一新闻生成不同 event_key。
-    const prior = (c.primary.url ? priorUrls.get(c.primary.url) : undefined)
+    const currentUrl = c.primary.url ? canonicalizeUrl(c.primary.url) : null;
+    const similar = previous.find(p => similarEventTitles(c.primary.title, p.title));
+    const prior = (currentUrl ? priorUrls.get(currentUrl) : undefined)
       ?? priorTitles.get(normalizedEventWording(c.primary.title))
-      ?? priorKeys.get(key);
+      ?? priorKeys.get(key)
+      ?? similar;
     if (prior) covered.push({ cluster: c, previous: prior });
     else fresh.push(c);
   }
@@ -123,6 +155,7 @@ export function clusterCandidates(items: ClusterInput[]): Cluster[] {
   // 同分区、同强制类别且标题仅有“发布/推出”等措辞差异时，复用首个
   // event_key。这样既能兜住模型键漂移，也不会跨越原有的分类隔离边界。
   const wordingEventKeys = new Map<string, string>();
+  const subjectGroups: Array<{ title: string; section: string; mandatoryClass: string; eventKey: string }> = [];
   for (const original of items) {
     const it = { ...original };
     const text = it.title.toLowerCase();
@@ -137,8 +170,11 @@ export function clusterCandidates(items: ClusterInput[]): Cluster[] {
       : alias?.force_section ?? it.section;
     const modelEventKey = canonicalEventIdentity(it.title, it.eventKey);
     const wordingScope = `${normalizedEventWording(it.title)}\u0001${it.section}\u0001${it.mandatoryClass}`;
-    const eventKey = wordingEventKeys.get(wordingScope) ?? modelEventKey;
+    const related = subjectGroups.find(g => g.section === it.section &&
+      g.mandatoryClass === it.mandatoryClass && similarEventTitles(it.title, g.title));
+    const eventKey = wordingEventKeys.get(wordingScope) ?? related?.eventKey ?? modelEventKey;
     wordingEventKeys.set(wordingScope, eventKey);
+    subjectGroups.push({ title: it.title, section: it.section, mandatoryClass: it.mandatoryClass, eventKey });
     const key = `${eventKey}\u0000${it.section}\u0000${it.mandatoryClass}`;
     (groups.get(key) ?? groups.set(key, []).get(key)!).push(it);
   }
