@@ -17,6 +17,7 @@ import { isHighRisk } from '../../../packages/domain/src/risk.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
 import { runReview, DEFAULT_REVIEW_CONCURRENCY, type ReviewInput, type ReviewDeps }
   from '../../../packages/ai/src/review.ts';
+import { traceFacts } from '../../../packages/ai/src/fact-trace.ts';
 
 const argv = process.argv.slice(2);
 const DRY = argv.includes('--dry');
@@ -145,6 +146,13 @@ const inputs: ReviewInput[] = rows.map(r => {
     siblings: siblingsOf(r.cid, m.event_key ?? null),
   };
 });
+
+// 对重大、争议、高风险或要求官方核验的候选实时联网取证。失败时保留错误信息，
+// 复核模型必须降置信度而不能把“查不到”直接当成虚构。
+await Promise.all(inputs.map(async input => {
+  if (!input.escalationRules.some(x => ['ESC-002', 'ESC-003', 'ESC-004', 'ESC-007'].includes(x))) return;
+  input.webEvidence = await traceFacts(input.title, input.url);
+}));
 
 // ---- 供应商：L2/L3 可指向不同厂商 ----
 const l2cfg = providerFromEnv('L2'), l3cfg = providerFromEnv('L3');

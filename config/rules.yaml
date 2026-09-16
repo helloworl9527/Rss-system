@@ -11,8 +11,8 @@
 # ============================================================
 
 meta:
-  rule_version: 17
-  updated_at: "2026-09-12"
+  rule_version: 18
+  updated_at: "2026-09-16"
   timezone: Asia/Taipei          # 全系统唯一时区基准（PRD 5.1）
   description: "初版：从 PRD V1.0 自然语言规则拆解而来，未经影子运行校准"
 

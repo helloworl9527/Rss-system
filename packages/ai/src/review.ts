@@ -2,6 +2,7 @@ import type { Provider, CompleteResult, JsonSchema } from './types.ts';
 import { ProviderError } from './types.ts';
 import { validate } from './schema.ts';
 import type { Candidate } from './triage.ts';
+import type { FactEvidence } from './fact-trace.ts';
 
 /**
  * L2/L3 复核编排器（PRD 15.1 / 15.4）。
@@ -66,6 +67,8 @@ export type ReviewInput = Candidate & {
   escalationRules: string[];
   /** 同事件的其他来源条目，供交叉核验（PRD 15.1 L2「多来源合并」） */
   siblings?: Array<{ sourceId: string; title: string; excerpt: string; url: string | null }>;
+  /** 联网取得的原始链接状态与公开搜索结果，仅作事实比对证据。 */
+  webEvidence?: FactEvidence;
   /** 已有合格 L2 结果但 L3 失败时，直接从 L3 续跑，避免重做并覆盖 L2。 */
   resumeTier?: 'L2' | 'L3';
 };
@@ -151,6 +154,7 @@ export function shouldPromoteToL3(
 
 function buildUserContent(c: ReviewInput, bodyChars: number): string {
   return JSON.stringify({
+    current_date: new Date().toISOString().slice(0, 10),
     candidate_id: c.candidateId,
     source: c.sourceId,
     title: c.title,
@@ -161,6 +165,7 @@ function buildUserContent(c: ReviewInput, bodyChars: number): string {
     l1_result: { decision: c.priorDecision, confidence: c.priorConfidence },
     escalation_rules: c.escalationRules,
     siblings: (c.siblings ?? []).slice(0, 4),
+    web_evidence: c.webEvidence ?? null,
     body: c.body.slice(0, bodyChars),
   });
 }
