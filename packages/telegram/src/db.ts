@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 export type TelegramDB = Database.Database;
@@ -21,18 +21,22 @@ export function migrateTelegram(db: TelegramDB, dir = join(process.cwd(), 'teleg
     name TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL) STRICT`);
   const applied = new Map((db.prepare('SELECT name,checksum FROM telegram_schema_migrations').all() as any[])
     .map(r => [r.name, r.checksum]));
-  const name = '001_initial.sql';
-  const sql = readFileSync(join(dir, name), 'utf8');
-  const checksum = createHash('sha256').update(sql).digest('hex').slice(0, 16);
-  const old = applied.get(name);
-  if (old && old !== checksum) throw new Error(`Telegram 迁移 ${name} 已被修改`);
-  if (old) return [];
-  db.transaction(() => {
-    db.exec(sql);
-    db.prepare('INSERT OR REPLACE INTO telegram_schema_migrations VALUES(?,?,?)')
-      .run(name, checksum, new Date().toISOString());
-  })();
-  return [name];
+  const names = readdirSync(dir).filter(name => /^\d+_.+\.sql$/.test(name)).sort();
+  const added: string[] = [];
+  for (const name of names) {
+    const sql = readFileSync(join(dir, name), 'utf8');
+    const checksum = createHash('sha256').update(sql).digest('hex').slice(0, 16);
+    const old = applied.get(name);
+    if (old && old !== checksum) throw new Error(`Telegram 迁移 ${name} 已被修改`);
+    if (old) continue;
+    db.transaction(() => {
+      db.exec(sql);
+      db.prepare('INSERT OR REPLACE INTO telegram_schema_migrations VALUES(?,?,?)')
+        .run(name, checksum, new Date().toISOString());
+    })();
+    added.push(name);
+  }
+  return added;
 }
 
 export function readyTelegramDb(path?: string): TelegramDB {

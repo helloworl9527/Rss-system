@@ -278,7 +278,7 @@ export async function executeResend(
 
 // ---------- 来源管理（FR-001 / FR-004） ----------
 
-export const PARSERS = ['rss', 'atom', 'telegram_web', 'deepseek_page', 'openai_release_notes_page'] as const;
+export const PARSERS = ['rss', 'atom', 'v2ex_json', 'telegram_web', 'deepseek_page', 'openai_release_notes_page'] as const;
 export const CATEGORIES = ['ai', 'developer', 'tech', 'article', 'society', 'forum'] as const;
 export const TIERS = ['ranking_feed', 'standard', 'official_changelog', 'slow'] as const;
 export const SOURCE_GROUPS = ['unclassified', 'openai', 'claude', 'google', 'deepseek', 'cloudflare', 'github', 'hermes', 'meituan', 'zhihu', 'weibo', 'baidu'] as const;

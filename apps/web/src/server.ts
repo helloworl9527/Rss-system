@@ -25,7 +25,8 @@ import { createProvider } from '../../../packages/ai/src/registry.ts';
 import { runSourceProfiler } from '../../../packages/ai/src/source-profiler.ts';
 import { readyTelegramDb } from '../../../packages/telegram/src/db.ts';
 import { addTelegramSource, retryTelegramSource, rotateAllToken, rotateSourceToken,
-         toggleTelegramSource, updateTelegramSettings, TelegramError } from '../../../packages/telegram/src/core.ts';
+         toggleTelegramSource, updateTelegramSettings, resumeVisionQueue, TelegramError } from '../../../packages/telegram/src/core.ts';
+import { visionStats } from '../../../packages/telegram/src/vision.ts';
 import { sourceRss, allRss } from '../../../packages/telegram/src/rss.ts';
 import { sendLoginCommand, type LoginCommand } from '../../../packages/telegram/src/login.ts';
 import { renderTelegram } from '../../../packages/telegram/src/views.ts';
@@ -211,6 +212,7 @@ const telegramPage = (s: Session, extra: Record<string,unknown> = {}) => renderT
   sources: telegramDb.prepare('SELECT * FROM telegram_sources ORDER BY id DESC').all() as any[],
   settings: telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any,
   worker: telegramDb.prepare('SELECT * FROM telegram_worker_state WHERE singleton=1').get() as any,
+  vision: visionStats(telegramDb),
   baseUrl: process.env.ADMIN_BASE_URL ?? '', ...extra,
 });
 
@@ -250,6 +252,10 @@ app.post('/telegram/settings',async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return; const b=(req.body??{}) as any;
   try{updateTelegramSettings(telegramDb,{timezone:b.timezone,schedule:b.schedule,provider:b.provider,model:b.model,baseUrl:b.base_url,credentialRef:b.credential_ref,promptRules:b.prompt_rules});return reply.type('text/html; charset=utf-8').send(telegramPage(s,{saved:'Telegram 设置已保存；已完成的历史总结不会重写。'}));}
   catch(e:any){return reply.code(e instanceof TelegramError?e.code:500).type('text/html; charset=utf-8').send(telegramPage(s,{error:e instanceof TelegramError?e.message:'设置保存失败'}));}
+});
+app.post('/telegram/vision/resume',async(req,reply)=>{
+  const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;
+  resumeVisionQueue(telegramDb);return reply.redirect('/telegram');
 });
 for(const command of ['start','code','password'] as LoginCommand[]) app.post(`/telegram/login/${command}`,async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;

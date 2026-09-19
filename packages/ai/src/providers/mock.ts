@@ -85,6 +85,11 @@ export class MockProvider implements Provider {
 
 /** 依据请求里的候选，合成一份形状正确的响应。 */
 function synth(req: CompleteRequest, fault: Fault): unknown {
+  if (req.schemaName === 'telegram_image_vision') return {
+    description: req.images?.length ? '测试图片内容。' : '',
+    key_text: '',
+    uncertainty: '',
+  };
   if (req.schemaName === 'telegram_window_summary') return synthTelegramSummary(req);
   if (req.schemaName === 'source_profiler') return synthSourceProfiler(req);
   if (req.schemaName === 'review') return synthReview(req, fault);
@@ -130,7 +135,7 @@ function synthSourceProfiler(req: CompleteRequest): unknown {
   let p: any = {};
   try { p = JSON.parse(req.userContent); } catch { /* keep conservative defaults */ }
   const parser = p.parser === 'atom' ? 'atom' : p.parser === 'telegram_web' ? 'telegram_web'
-    : p.parser === 'openai_release_notes_page' || p.parser === 'deepseek_page' ? 'fixed_web' : 'rss';
+    : p.parser === 'openai_release_notes_page' || p.parser === 'deepseek_page' || p.parser === 'v2ex_json' ? 'fixed_web' : 'rss';
   const samples = Array.isArray(p.samples) ? p.samples : [];
   return {
     source_type: parser, content_domain: 'technology', publisher_type: 'unknown', officiality: 'unknown',

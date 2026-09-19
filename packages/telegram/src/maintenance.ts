@@ -22,7 +22,9 @@ export function cleanupTelegram(db: TelegramDB, now = new Date()): {messages:num
   const rawCutoff=retentionCutoff(now,s.timezone,Number(s.raw_retention_days)).toISOString();
   const summaryCutoff=now.toISOString();
   const result=db.transaction(()=>{
-    const messages=db.prepare('DELETE FROM telegram_messages WHERE sent_at<?').run(rawCutoff).changes;
+    const messages=Boolean(s.keep_messages_forever) ? 0 : db.prepare(`DELETE FROM telegram_messages
+      WHERE sent_at<? AND source_id NOT IN
+        (SELECT id FROM telegram_sources WHERE retain_all_history=1)`).run(rawCutoff).changes;
     const urls=db.prepare('DELETE FROM telegram_urls WHERE expires_at<?').run(summaryCutoff).changes;
     const summaries=db.prepare('DELETE FROM telegram_summaries WHERE expires_at<?').run(summaryCutoff).changes;
     db.prepare(`DELETE FROM telegram_summary_jobs WHERE window_end<? AND id NOT IN (SELECT job_id FROM telegram_summaries)`).run(

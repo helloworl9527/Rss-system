@@ -157,6 +157,26 @@ export function parseFeed(body: string): RawItem[] {
   return out.filter(i => i.title || i.html);
 }
 
+/** V2EX 官方热门主题 JSON。避免依赖易失效的 RSSHub 转换路由。 */
+export function parseV2exHotJson(body: string): RawItem[] {
+  const rows = JSON.parse(body);
+  if (!Array.isArray(rows)) throw new Error('V2EX 热门接口返回值不是数组');
+  return rows.map((row: any): RawItem => {
+    const id = Number(row?.id);
+    const created = Number(row?.created);
+    return {
+      title: String(row?.title ?? '').trim(),
+      html: String(row?.content_rendered ?? row?.content ?? ''),
+      link: row?.url ? String(row.url).replace(/^http:\/\//i, 'https://') : null,
+      guid: Number.isFinite(id) ? `v2ex:t:${id}` : null,
+      publishedRaw: Number.isFinite(created) && created > 0
+        ? new Date(created * 1000).toISOString()
+        : null,
+      author: row?.member?.username ? String(row.member.username) : null,
+    };
+  }).filter((i: RawItem) => i.title || i.html);
+}
+
 /**
  * t.me/s/<channel> 网页版解析（实施方案 2.2 的 Telegram 二级兜底）。
  * 不依赖任何第三方 RSSHub 实例。data-post 形如 "durov/123"，
@@ -292,6 +312,7 @@ export function parseBy(parser: string, body: string, ctx: { channel?: string })
   let parsed: RawItem[];
   switch (parser) {
     case 'rss': case 'atom':   parsed = parseFeed(body); break;
+    case 'v2ex_json':          parsed = parseV2exHotJson(body); break;
     case 'telegram_web':       parsed = parseTelegramWeb(body, ctx.channel ?? ''); break;
     case 'deepseek_page':      parsed = parseDeepseekPage(body); break;
     case 'openai_release_notes_page': parsed = parseOpenAIReleaseNotesPage(body); break;

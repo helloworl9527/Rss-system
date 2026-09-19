@@ -11,8 +11,8 @@
 # ============================================================
 
 meta:
-  source_version: 8
-  updated_at: "2026-09-08"
+  source_version: 10
+  updated_at: "2026-09-18"
   probe_baseline_date: "2026-08-23"
   probe_from_ip: "52.141.58.148"
 
@@ -22,7 +22,7 @@ meta:
 # ------------------------------------------------------------
 host_groups:
   rsshub:
-    hosts: [hub.slarker.me, rsshub.rssforever.com]
+    hosts: [hub.slarker.me, rsshub.rssforever.com, rsshub.bestblogs.dev]
     concurrency: 1
     min_interval_ms: 8000
     timeout_ms: 40000
@@ -183,17 +183,19 @@ sources:
     category: forum
     enabled: true
     priority: 1
-    host_group: rsshub
+    host_group: direct
     mandatory_retention: true
     require_fulltext: true
     # ⚠️ 时间跨度仅 11.7h，对 10h 早报窗口只有 17% 余量 —— 采集器的主要理由
     shallow_feed_warning: true
     endpoints:
-      - { url: "https://rsshub.rssforever.com/v2ex/topics/hot", parser: rss, priority: 1 }
-      - { url: "https://hub.slarker.me/v2ex/topics/hot", parser: rss, priority: 2 }
+      # V2EX 官方热门 JSON 保留「最热」语义；官方 Atom 首页作为无需第三方的后备。
+      - { url: "https://www.v2ex.com/api/topics/hot.json", parser: v2ex_json, priority: 1 }
+      - { url: "https://www.v2ex.com/index.xml", parser: rss, priority: 2 }
     probe:
-      - { endpoint: 1, date: "2026-08-23", status: 200, items: 9, span_hours: 11.7, latency_s: 0.87 }
-      - { endpoint: 2, date: "2026-08-23", status: 200, items: 9, latency_s: 1.25 }
+      - { endpoint: 1, date: "2026-09-18", status: 200, content_type: "application/json" }
+      - { endpoint: 2, date: "2026-09-18", status: 200, content_type: "application/atom+xml" }
+    note: "修复：RSSHub 热门路由连续 503/超时；切换到 V2EX 官方热门 JSON，官方 Atom 首页作为后备，保持最热主题语义且不再依赖第三方转换。"
 
   - id: tg_tossiphonex
     name: Telegram @TossiPhoneX
@@ -326,12 +328,15 @@ sources:
     harvest_tier: official_changelog
     enabled: true
     priority: 1
-    host_group: jina_reader
+    host_group: rsshub
     official: true
     endpoints:
-      - { url: "https://r.jina.ai/https://openai.com/products/release-notes/", parser: openai_release_notes_page, priority: 1 }
-    probe: { date: "2026-09-06", status: 200, items: 5, bytes: 8637, content_type: "text/plain" }
-    note: "官方 RSS 在服务器出口触发 Cloudflare 403 challenge；改由 Jina Reader 读取同一官方产品更新页，覆盖 ChatGPT、Codex、API 等栏目。"
+      # OpenAI 官网在本机出口对 release-notes 页面和 RSS 触发 Cloudflare challenge。
+      # RSSHub 实例抓取同一官方 ChatGPT Release Notes 页面；Codex 使用 OpenAI 官方开发者 RSS。
+      - { url: "https://hub.slarker.me/openai/chatgpt/release-notes", parser: rss, priority: 1 }
+      - { url: "https://developers.openai.com/codex/changelog/rss.xml", parser: rss, priority: 2 }
+    probe: { date: "2026-09-18", status: 200, items: 213, content_type: "application/xml" }
+    note: "修复：Jina Reader 匿名请求因服务器出口信誉返回 401；改用可用的 RSSHub ChatGPT Release Notes，并保留 OpenAI 官方 Codex changelog RSS 作为第二端点。"
 
   - id: anthropic_news_rsshub
     name: Anthropic News（RSSHub）
@@ -345,10 +350,10 @@ sources:
     host_group: rsshub
     official: true
     endpoints:
-      - { url: "https://hub.slarker.me/anthropic/news", parser: rss, priority: 1 }
-      - { url: "https://rsshub.app/anthropic/news", parser: rss, priority: 2 }
-    probe: { date: "2026-09-06", status: 200, items: 10 }
-    note: "官方路由无必填参数；rsshub.app 限制服务器访问，现有 RSSHub 实例作为主端点，原地址作为备用。"
+      - { url: "https://rsshub.bestblogs.dev/anthropic/news", parser: rss, priority: 1 }
+      - { url: "https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml", parser: rss, priority: 2 }
+    probe: { date: "2026-09-18", status: 200, items: 10, content_type: "application/xml" }
+    note: "修复：原 RSSHub 实例出现 403/超时；改用 bestblogs RSSHub 镜像（当前含 Anthropic 官网最新新闻），GitHub Actions 生成的独立 RSS 作为后备。Anthropic 官方目前未提供 RSS。"
 
   - id: anthropic_engineering_rsshub
     name: Anthropic Engineering（RSSHub）
@@ -362,10 +367,10 @@ sources:
     host_group: rsshub
     official: true
     endpoints:
-      - { url: "https://hub.slarker.me/anthropic/engineering", parser: rss, priority: 1 }
-      - { url: "https://rsshub.app/anthropic/engineering", parser: rss, priority: 2 }
-    probe: { date: "2026-09-06", status: 200, items: 20 }
-    note: "官方路由无必填参数；rsshub.app 限制服务器访问，现有 RSSHub 实例作为主端点，原地址作为备用。"
+      - { url: "https://rsshub.bestblogs.dev/anthropic/engineering", parser: rss, priority: 1 }
+      - { url: "https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_engineering_rss.xml", parser: rss, priority: 2 }
+    probe: { date: "2026-09-18", status: 200, items: 20, content_type: "application/xml" }
+    note: "修复：原 RSSHub 实例出现 403/超时；改用 bestblogs RSSHub 镜像（当前含 Anthropic Engineering 最新文章），GitHub Actions 生成的独立 RSS 作为后备。Anthropic 官方目前未提供 RSS。"
 
   - id: anthropic_community_rss
     name: Anthropic RSS（社区维护）

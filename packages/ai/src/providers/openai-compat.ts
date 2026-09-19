@@ -90,6 +90,8 @@ export class OpenAICompatProvider implements Provider {
   }
 
   async complete(req: CompleteRequest): Promise<CompleteResult> {
+    if (req.images?.some(image => !/^image\/[a-z0-9.+-]+$/i.test(image.mimeType) || !/^[a-z0-9+/]*={0,2}$/i.test(image.data)))
+      throw new ProviderError('bad_request', '图片 MIME 或 Base64 数据格式无效');
     // strict 走 json_schema，其余降级到 json_object 并把 schema 写进提示词
     const responseFormat = this.strictness === 'strict'
       ? { type: 'json_schema', json_schema: { name: req.schemaName, strict: true, schema: req.schema } }
@@ -98,13 +100,22 @@ export class OpenAICompatProvider implements Provider {
       ? req.systemPrompt
       : `${req.systemPrompt}\n\n必须只输出符合以下 JSON Schema 的 JSON，不要任何解释文字：\n${JSON.stringify(req.schema)}`;
 
+    const userContent: string | Array<Record<string, unknown>> = req.images?.length
+      ? [
+          { type: 'text', text: req.userContent },
+          ...req.images.map(image => ({
+            type: 'image_url',
+            image_url: { url: `data:${image.mimeType};base64,${image.data}` },
+          })),
+        ]
+      : req.userContent;
     const body = {
       model: this.model,
       max_tokens: req.maxOutputTokens,
       response_format: responseFormat,
       messages: [
         { role: 'system', content: system },
-        { role: 'user', content: req.userContent },
+        { role: 'user', content: userContent },
       ],
     };
 

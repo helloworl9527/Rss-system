@@ -34,6 +34,12 @@ export type CompleteRequest = {
   maxOutputTokens: number;
   /** 是否请求缓存稳定前缀。 */
   cachePrefix?: boolean;
+  /** Optional trusted transport payload. The image itself remains untrusted model input. */
+  images?: Array<{
+    mimeType: string;
+    /** Base64 only (no data-URL prefix); adapters choose their native wire format. */
+    data: string;
+  }>;
 };
 
 export type CompleteResult = {

@@ -136,6 +136,12 @@ export function updateTelegramSettings(db: TelegramDB, input: Record<string, unk
     credentialRef: input.credentialRef, promptChanged: previous?.prompt_rules !== prompt });
 }
 
+export function resumeVisionQueue(db: TelegramDB): void {
+  db.prepare(`UPDATE telegram_settings SET vision_paused=0,vision_pause_reason=NULL,updated_at=? WHERE singleton=1`)
+    .run(nowIso());
+  audit(db, 'settings', 'vision', 'vision_queue_resumed');
+}
+
 export type SummaryShape = { topics: string[]; important: string[]; viewpoints: string[]; sources: Array<{messageId:number;time:string}>; uncertainty: string[] };
 const INLINE_MESSAGE_REFERENCES = /[（(]\s*消息(?:\s*ID)?\s*[:：]?\s*#?\d+(?:\s*[,，、;；]\s*#?\d+)*\s*[)）]/giu;
 /** 展示内容不暴露内部消息定位信息；结构化 sources 字段仍完整保留用于校验和审计。 */

@@ -10,10 +10,13 @@
     "test:telegram": "node tests/telegram.test.ts",
     "telegram:summarize": "node apps/worker/src/telegram-summarize.ts",
     "telegram:maintain": "node apps/worker/src/telegram-maintain.ts",
+    "telegram:vision": "node apps/worker/src/telegram-vision.ts",
+    "telegram:vision-status": "node scripts/telegram-vision-status.mjs",
     "telegram:migrate": "node scripts/migrate-telegram.mjs",
+    "telegram:migrate-schema": "node scripts/migrate-telegram-schema.mjs",
     "telegram:init-local": "node scripts/init-local-telegram.mjs",
     "telegram:collector": "node apps/worker/src/telegram-supervisor.ts",
-    "test": "node tests/telegram.test.ts && node tests/allnet.test.ts && node tests/allnet-controls.test.ts && node tests/allnet-integration.test.ts && node tests/openai-release-notes.test.ts && node tests/window.test.ts && node tests/filters.test.ts && node tests/prescreen.test.ts && node tests/risk.test.ts && node tests/ssrf.test.ts && node tests/host-circuit.test.ts && node tests/composite.test.ts && node tests/late-discovery.test.ts && node tests/cluster.test.ts && node tests/fact-trace.test.ts && node tests/highlights.test.ts && node tests/provider.test.ts && node tests/triage.test.ts && node tests/review.test.ts && node tests/compose.test.ts && node tests/email.test.ts && node tests/mime.test.ts && node tests/delivery.test.ts && node tests/golden.test.ts && node tests/auth.test.ts && node tests/actions.test.ts && node tests/secrets.test.ts && node tests/systemd.test.ts && node scripts/test-fingerprint.mjs && node scripts/validate-rules.mjs",
+    "test": "node tests/telegram.test.ts && node tests/allnet.test.ts && node tests/allnet-controls.test.ts && node tests/allnet-integration.test.ts && node tests/openai-release-notes.test.ts && node tests/v2ex-json.test.ts && node tests/window.test.ts && node tests/filters.test.ts && node tests/prescreen.test.ts && node tests/risk.test.ts && node tests/ssrf.test.ts && node tests/host-circuit.test.ts && node tests/composite.test.ts && node tests/late-discovery.test.ts && node tests/cluster.test.ts && node tests/fact-trace.test.ts && node tests/highlights.test.ts && node tests/provider.test.ts && node tests/triage.test.ts && node tests/review.test.ts && node tests/compose.test.ts && node tests/email.test.ts && node tests/mime.test.ts && node tests/delivery.test.ts && node tests/golden.test.ts && node tests/auth.test.ts && node tests/actions.test.ts && node tests/secrets.test.ts && node tests/systemd.test.ts && node scripts/test-fingerprint.mjs && node scripts/validate-rules.mjs",
     "migrate": "node apps/worker/src/migrate.ts",
     "sync": "node apps/worker/src/sync-sources.ts",
     "harvest": "node apps/worker/src/harvest.ts",
@@ -46,7 +49,7 @@
     "better-sqlite3": "^13.0.3",
     "fast-xml-parser": "^5.11.0",
     "fastify": "^5.12.1",
-    "nodemailer": "^9.0.5",
+    "nodemailer": "10.0.10",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

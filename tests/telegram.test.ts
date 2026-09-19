@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readyTelegramDb } from '../packages/telegram/src/db.ts';
@@ -7,7 +7,10 @@ import { addTelegramSource, extractUrls, normalizeTelegramReference, rotateAllTo
 import { allRss, sourceRss } from '../packages/telegram/src/rss.ts';
 import { renderSummary, summarizeJob, TELEGRAM_SUMMARY_SCHEMA } from '../packages/telegram/src/summarize.ts';
 import { cleanupTelegram, retentionCutoff } from '../packages/telegram/src/maintenance.ts';
+import { effectiveMessageText } from '../packages/telegram/src/summarize.ts';
+import { runOneVisionTask, TELEGRAM_VISION_SCHEMA, validateVision, visionStats } from '../packages/telegram/src/vision.ts';
 import { MockProvider } from '../packages/ai/src/providers/mock.ts';
+import { ProviderError } from '../packages/ai/src/types.ts';
 
 const dir=mkdtempSync(join(tmpdir(),'brief-tg-')); const db=readyTelegramDb(join(dir,'telegram.db'));
 let fail=0; const ok=(name:string,value:boolean)=>{if(!value)fail++;console.log(`  ${value?'✅':'❌'} ${name}`)};
@@ -40,6 +43,8 @@ updateTelegramSettings(db,{timezone:'Asia/Shanghai',schedule:'22:00, 08:00,12:00
 const settings=db.prepare('SELECT * FROM telegram_settings').get() as any;
 ok('时段排序去重',settings.schedule_json==='["08:00","12:00","22:00"]');
 ok('主要观点 Schema 最多允许一个段落',(TELEGRAM_SUMMARY_SCHEMA.properties.viewpoints as any).maxItems===1);
+ok('图片识别 Schema 拒绝额外字段',(TELEGRAM_VISION_SCHEMA as any).additionalProperties===false&&throws(()=>validateVision({description:'x',key_text:'',uncertainty:'',extra:1})));
+ok('图片派生文本与原正文分离拼接',effectiveMessageText({text:'原 caption',description:'画面',key_text:'金额',vision_uncertainty:''})==='原 caption\n\n[图片描述]\n画面\n\n[图片关键文字]\n金额');
 const token=rotateSourceToken(db,src.id)!; const allToken=rotateAllToken(db)!;
 db.prepare("UPDATE telegram_sources SET status='active',enabled=1 WHERE id=?").run(src.id);
 const now=new Date(), start=new Date(now.getTime()-3600000).toISOString(), end=now.toISOString();
@@ -75,6 +80,80 @@ db.prepare(`INSERT INTO telegram_messages(source_id,chat_id,message_id,sent_at,t
 const j2=db.prepare(`INSERT INTO telegram_summary_jobs(source_id,window_start,window_end,input_hash,provider,model,prompt_version,status,created_at,updated_at) VALUES(?,?,?,'','mock','m',1,'pending',?,?)`).run(src.id,start2,end2,start2,start2);
 ok('单窗口结构化总结成功',await summarizeJob(db,Number(j2.lastInsertRowid),{provider:'mock',model:'m',promptRules:'',promptVersion:1,summaryRetentionDays:30},new MockProvider({provider:'mock',model:'m'})));
 ok('完成任务不可被规则变化重写',!(await summarizeJob(db,Number(j2.lastInsertRowid),{provider:'mock',model:'m',promptRules:'变化',promptVersion:2,summaryRetentionDays:30},new MockProvider({provider:'mock',model:'m'}))));
+
+console.log('\n图片识别队列：\n');
+const mediaDir=join(dir,'telegram-media');
+const imagePath=join(mediaDir,'opaque-test-file');
+await import('node:fs').then(fs=>fs.mkdirSync(mediaDir,{recursive:true,mode:0o700}));
+writeFileSync(imagePath,Buffer.from([1,2,3]),{mode:0o600});
+db.prepare(`INSERT INTO telegram_media_tasks(source_id,chat_id,message_id,media_fingerprint,mime_type,original_caption,
+  telegram_size_bytes,temp_path,temp_state,actual_size_bytes,status,created_at,updated_at)
+  VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(src.id,-1001,7,'fp-vision','image/png','原 caption',3,imagePath,'ready',3,'pending',start2,start2);
+const visionProvider=new MockProvider({provider:'mock',model:'gemini-3.8-flash-high'});
+ok('视觉 worker 完成单张识别',await runOneVisionTask(db,{provider:visionProvider,mediaDir})==='done');
+const visionRow=db.prepare(`SELECT status,temp_path,temp_state,description,requested_model,response_model,response_id,input_tokens,output_tokens
+  FROM telegram_media_tasks WHERE media_fingerprint='fp-vision'`).get() as any;
+ok('成功后删除临时图片且保留审计字段',visionRow.status==='completed'&&!existsSync(imagePath)&&visionRow.temp_path===null&&visionRow.temp_state==='deleted'&&visionRow.description&&visionRow.response_id&&visionRow.input_tokens>0);
+ok('视觉监控统计今日调用',visionStats(db).today===1);
+const makeMedia=(messageId:number,fingerprint:string,path:string)=>{
+  const at=new Date(Date.now()+messageId*1000).toISOString();
+  db.prepare(`INSERT INTO telegram_messages(source_id,chat_id,message_id,sent_at,text,content_hash,collected_at)
+    VALUES(?,?,?,?,?,?,?)`).run(src.id,-1001,messageId,at,'',fingerprint,at);
+  writeFileSync(path,Buffer.from([1,2,3]),{mode:0o600});
+  db.prepare(`INSERT INTO telegram_media_tasks(source_id,chat_id,message_id,media_fingerprint,mime_type,original_caption,
+    temp_path,temp_state,actual_size_bytes,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(src.id,-1001,messageId,fingerprint,'image/png','',path,'ready',3,'pending',at,at);
+};
+const deferredPath=join(mediaDir,'deferred');makeMedia(70,'fp-deferred',deferredPath);
+db.prepare('UPDATE telegram_settings SET vision_daily_limit=1').run();
+ok('每日 300 配额机制只顺延新任务、不删除图片',await runOneVisionTask(db,{provider:visionProvider,mediaDir})==='deferred'&&existsSync(deferredPath));
+db.prepare("UPDATE telegram_settings SET vision_daily_limit=300").run();
+ok('顺延任务可在配额恢复后完成',await runOneVisionTask(db,{provider:visionProvider,mediaDir})==='done'&&!existsSync(deferredPath));
+const authPath=join(mediaDir,'auth');makeMedia(71,'fp-auth',authPath);
+const authProvider={name:'mock',model:'m',strictness:'strict',complete:async()=>{throw new ProviderError('auth','bad key',401)}} as any;
+ok('401/403 暂停整个队列并保留待恢复任务',await runOneVisionTask(db,{provider:authProvider,mediaDir})==='failed'&&
+  (db.prepare('SELECT vision_paused FROM telegram_settings').get() as any).vision_paused===1&&existsSync(authPath));
+db.prepare("UPDATE telegram_settings SET vision_paused=0,vision_pause_reason=NULL").run();
+ok('修复鉴权后原任务可继续',await runOneVisionTask(db,{provider:visionProvider,mediaDir})==='done'&&!existsSync(authPath));
+const ratePath=join(mediaDir,'rate');makeMedia(72,'fp-rate',ratePath);
+const rateProvider={name:'mock',model:'m',strictness:'strict',complete:async()=>{throw new ProviderError('rate_limited','slow',429)}} as any;
+ok('429 按退避重试且不提前删除临时图',await runOneVisionTask(db,{provider:rateProvider,mediaDir})==='failed'&&
+  (db.prepare("SELECT status,attempts,next_attempt_at FROM telegram_media_tasks WHERE media_fingerprint='fp-rate'").get() as any).status==='retry'&&existsSync(ratePath));
+const imageWindowStart=new Date(now.getTime()-4*3600_000).toISOString();
+const imageWindowEnd=new Date(now.getTime()-3*3600_000).toISOString();
+const imageSent=new Date(now.getTime()-3.5*3600_000).toISOString();
+db.prepare(`INSERT INTO telegram_messages(source_id,chat_id,message_id,sent_at,text,content_hash,collected_at)
+  VALUES(?,?,?,?,?,?,?)`).run(src.id,-1001,80,imageSent,'图片 caption','img-summary',imageSent);
+db.prepare(`INSERT INTO telegram_media_tasks(source_id,chat_id,message_id,media_fingerprint,mime_type,original_caption,temp_state,status,
+  description,key_text,uncertainty,created_at,updated_at,completed_at) VALUES(?,?,?,?,?,?,'deleted','completed',?,?,?,?,?,?)`)
+  .run(src.id,-1001,80,'fp-summary','image/png','图片 caption','账单截图','应付 88 元','金额边缘模糊',imageSent,imageSent,imageSent);
+const imageJob=db.prepare(`INSERT INTO telegram_summary_jobs(source_id,window_start,window_end,input_hash,provider,model,prompt_version,status,created_at,updated_at)
+  VALUES(?,?,?,'','mock','m',1,'pending',?,?)`).run(src.id,imageWindowStart,imageWindowEnd,imageSent,imageSent);
+let capturedPrompt='';
+const captureProvider={name:'mock',model:'m',strictness:'strict',complete:async(req:any)=>{
+  capturedPrompt=req.userContent;return {data:{topics:['图'],important:[],viewpoints:[],sources:[{messageId:80,time:imageSent}],uncertainty:[]},
+    usage:{inputTokens:1,outputTokens:1,cachedInputTokens:0,cacheWriteTokens:0},responseId:'capture',model:'m'};
+}} as any;
+ok('图片描述和关键文字进入总结并保留真实消息 ID',await summarizeJob(db,Number(imageJob.lastInsertRowid),
+  {provider:'mock',model:'m',promptRules:'',promptVersion:1,summaryRetentionDays:30},captureProvider)&&
+  capturedPrompt.includes('[图片描述]\n账单截图')&&capturedPrompt.includes('[图片关键文字]\n应付 88 元')&&capturedPrompt.includes('id="80"'));
+
+const waitStart=new Date(now.getTime()-30*60_000).toISOString();
+const waitEnd=new Date(now.getTime()-60_000).toISOString();
+const waitSent=new Date(now.getTime()-20*60_000).toISOString();
+db.prepare(`INSERT INTO telegram_messages(source_id,chat_id,message_id,sent_at,text,content_hash,collected_at)
+  VALUES(?,?,?,?,?,?,?)`).run(src.id,-1001,81,waitSent,'窗口内其他文字','wait-text',waitSent);
+db.prepare(`INSERT INTO telegram_media_tasks(source_id,chat_id,message_id,media_fingerprint,mime_type,original_caption,temp_state,status,
+  created_at,updated_at) VALUES(?,?,?,?,?,?,'ready','pending',?,?)`)
+  .run(src.id,-1001,81,'fp-wait','image/png','窗口内其他文字',waitSent,waitSent);
+const waitJob=db.prepare(`INSERT INTO telegram_summary_jobs(source_id,window_start,window_end,input_hash,provider,model,prompt_version,status,created_at,updated_at)
+  VALUES(?,?,?,'','mock','m',1,'pending',?,?)`).run(src.id,waitStart,waitEnd,waitEnd,waitEnd);
+ok('窗口关闭后有图片任务时暂缓且不改变任务状态',!(await summarizeJob(db,Number(waitJob.lastInsertRowid),
+  {provider:'mock',model:'m',promptRules:'',promptVersion:1,summaryRetentionDays:30},visionProvider))&&
+  (db.prepare('SELECT status FROM telegram_summary_jobs WHERE id=?').get(waitJob.lastInsertRowid) as any).status==='pending');
+db.prepare('UPDATE telegram_summary_jobs SET window_end=? WHERE id=?').run(new Date(now.getTime()-11*60_000).toISOString(),waitJob.lastInsertRowid);
+ok('等待满 10 分钟后失败图片不阻塞整份总结',await summarizeJob(db,Number(waitJob.lastInsertRowid),
+  {provider:'mock',model:'m',promptRules:'',promptVersion:1,summaryRetentionDays:30},visionProvider));
 const failedStart=new Date(now.getTime()+7201000).toISOString(),failedEnd=new Date(now.getTime()+10801000).toISOString();
 const jf=db.prepare(`INSERT INTO telegram_summary_jobs(source_id,window_start,window_end,input_hash,provider,model,prompt_version,status,created_at,updated_at) VALUES(?,?,?,'','mock','m',1,'pending',?,?)`).run(src.id,failedStart,failedEnd,start2,start2);
 db.prepare(`INSERT INTO telegram_messages(source_id,chat_id,message_id,sent_at,text,content_hash,collected_at) VALUES(?,?,?,?,?,?,?)`).run(src.id,-1001,8,failedStart,'失败隔离测试','h2',failedStart);
@@ -82,8 +161,19 @@ const bad={name:'mock',model:'m',strictness:'strict',complete:async()=>{throw ne
 ok('单群失败返回且不抛出阻塞其他群组',!(await summarizeJob(db,Number(jf.lastInsertRowid),{provider:'mock',model:'m',promptRules:'',promptVersion:1,summaryRetentionDays:30},bad)));
 ok('失败任务保留有限重试',(db.prepare('SELECT status,next_attempt_at FROM telegram_summary_jobs WHERE id=?').get(jf.lastInsertRowid) as any).status==='failed');
 db.prepare(`INSERT INTO telegram_urls(normalized_url,first_source_id,last_source_id,first_discovered_at,last_discovered_at,expires_at) VALUES('https://expired.test/',?,?,?,?,?)`).run(urlSrc.id,urlSrc.id,start,start,new Date(now.getTime()-1).toISOString());
+const oldMessageAt=new Date(now.getTime()-20*86400000).toISOString();
+db.prepare('UPDATE telegram_sources SET retain_all_history=1 WHERE id=?').run(src.id);
+db.prepare("UPDATE telegram_sources SET status='active',enabled=1,chat_id=-1003 WHERE id=?").run(dupe.id);
+db.prepare(`INSERT INTO telegram_messages(source_id,chat_id,message_id,sent_at,text,content_hash,collected_at) VALUES(?,?,?,?,?,?,?)`).run(src.id,-1001,9001,oldMessageAt,'永久保留测试','retain',oldMessageAt);
+db.prepare(`INSERT INTO telegram_messages(source_id,chat_id,message_id,sent_at,text,content_hash,collected_at) VALUES(?,?,?,?,?,?,?)`).run(dupe.id,-1003,9002,oldMessageAt,'普通清理测试','expire',oldMessageAt);
 const cleaned=cleanupTelegram(db,new Date(now.getTime()+86400000));
 ok('URL 按最后发现后的过期时间清理',cleaned.urls===1);
+ok('全历史频道不受原始消息保留期清理',Boolean(db.prepare('SELECT 1 FROM telegram_messages WHERE source_id=? AND message_id=9001').get(src.id)));
+ok('普通频道仍按原始消息保留期清理',!db.prepare('SELECT 1 FROM telegram_messages WHERE source_id=? AND message_id=9002').get(dupe.id));
+db.prepare(`INSERT INTO telegram_messages(source_id,chat_id,message_id,sent_at,text,content_hash,collected_at) VALUES(?,?,?,?,?,?,?)`).run(dupe.id,-1003,9003,oldMessageAt,'全局永久保留测试','keep-all',oldMessageAt);
+db.prepare('UPDATE telegram_settings SET keep_messages_forever=1 WHERE singleton=1').run();
+const kept=cleanupTelegram(db,new Date(now.getTime()+2*86400000));
+ok('全局永久保留配置禁止删除任何原始消息',kept.messages===0&&Boolean(db.prepare('SELECT 1 FROM telegram_messages WHERE source_id=? AND message_id=9003').get(dupe.id)));
 ok('integrity_check=ok',db.pragma('integrity_check',{simple:true})==='ok');
 db.close();rmSync(dir,{recursive:true,force:true});
 console.log(fail?`\n❌ ${fail} 项失败`:'\n✅ 全部通过');process.exit(fail?1:0);

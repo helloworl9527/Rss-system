@@ -4,6 +4,7 @@ import { TRIAGE_SCHEMA, validate } from '../packages/ai/src/schema.ts';
 import { toGeminiSchema } from '../packages/ai/src/providers/gemini.ts';
 import { ProviderError } from '../packages/ai/src/types.ts';
 import { parseJsonResponse } from '../packages/ai/src/providers/openai-compat.ts';
+import { OpenAICompatProvider } from '../packages/ai/src/providers/openai-compat.ts';
 import type { Fault } from '../packages/ai/src/providers/mock.ts';
 
 let fail = 0;
@@ -84,6 +85,19 @@ for (const [f, kind, retryable] of [
 }
 
 console.log('\n多供应商装配：\n');
+
+{
+  const originalFetch=globalThis.fetch;let sent:any;
+  globalThis.fetch=async(_url:any,init:any)=>{sent=JSON.parse(String(init.body));return new Response(JSON.stringify({
+    id:'vision-1',model:'gemini-3.8-flash',choices:[{message:{content:'{"ok":true}'},finish_reason:'stop'}],usage:{prompt_tokens:3,completion_tokens:2},
+  }),{status:200,headers:{'content-type':'application/json'}})};
+  try {
+    const p=new OpenAICompatProvider({provider:'openai_compatible',model:'gemini-3.8-flash-high',apiKey:'k',baseUrl:'https://example.test/v1'});
+    await p.complete({...req,userContent:'analyse',images:[{mimeType:'image/png',data:'AQI='}]});
+    ok('多模态图片使用 OpenAI Compatible image_url Data URL',
+      Array.isArray(sent.messages[1].content)&&sent.messages[1].content[1].image_url.url==='data:image/png;base64,AQI=');
+  } finally { globalThis.fetch=originalFetch; }
+}
 
 {
   const value = { results: [{ candidate_id: 'c1', decision: 'normal', note: '含 } 与 ] 字符' }] };

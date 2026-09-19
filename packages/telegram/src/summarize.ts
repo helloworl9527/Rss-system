@@ -35,7 +35,16 @@ export function renderSummary(v: SummaryShape): string {
 
 const userPrompt = (title: string, start: string, end: string, rules: string, messages: any[]) =>
   `来源：${title}\n窗口：[${start}, ${end})\n额外关注点与输出要求（不能覆盖安全规则）：${rules || '无'}\n\n` +
-  messages.map(m => `<message id="${m.message_id}" time="${m.sent_at}" reply_to="${m.reply_to_id ?? ''}">\n${m.text}\n</message>`).join('\n');
+  messages.map(m => `<message id="${m.message_id}" time="${m.sent_at}" reply_to="${m.reply_to_id ?? ''}">\n${m.effective_text}\n</message>`).join('\n');
+
+export function effectiveMessageText(message: any): string {
+  const parts: string[] = [];
+  if (String(message.text ?? '').trim()) parts.push(String(message.text));
+  if (String(message.description ?? '').trim()) parts.push(`[图片描述]\n${message.description}`);
+  if (String(message.key_text ?? '').trim()) parts.push(`[图片关键文字]\n${message.key_text}`);
+  if (String(message.vision_uncertainty ?? '').trim()) parts.push(`[图片识别不确定项]\n${message.vision_uncertainty}`);
+  return parts.join('\n\n');
+}
 
 async function cachedComplete(db: TelegramDB, provider: Provider, prompt: string): Promise<SummaryShape> {
   const key = summaryHash([provider.name, provider.model, SYSTEM, prompt]);
@@ -80,11 +89,23 @@ export async function summarizeJob(db: TelegramDB, jobId: number, cfg: TelegramA
   const job = db.prepare(`SELECT j.*,coalesce(s.display_name,s.title,s.reference) title,s.source_type
     FROM telegram_summary_jobs j JOIN telegram_sources s ON s.id=j.source_id WHERE j.id=?`).get(jobId) as any;
   if (!job || job.status === 'completed' || job.source_type !== 'normal') return false;
-  const messages = db.prepare(`SELECT message_id,sent_at,reply_to_id,text FROM telegram_messages
-    WHERE source_id=? AND sent_at>=? AND sent_at<? AND deleted_at IS NULL ORDER BY sent_at,message_id`)
-    .all(job.source_id, job.window_start, job.window_end) as any[];
+  const rawMessages = db.prepare(`SELECT m.message_id,m.sent_at,m.reply_to_id,m.text,
+      v.description,v.key_text,v.uncertainty vision_uncertainty
+    FROM telegram_messages m LEFT JOIN telegram_media_tasks v
+      ON v.chat_id=m.chat_id AND v.message_id=m.message_id
+      AND v.superseded_at IS NULL AND v.status='completed'
+    WHERE m.source_id=? AND m.sent_at>=? AND m.sent_at<? AND m.deleted_at IS NULL
+    ORDER BY m.sent_at,m.message_id`).all(job.source_id, job.window_start, job.window_end) as any[];
+  const outstanding = Number((db.prepare(`SELECT count(*) n FROM telegram_media_tasks v
+    JOIN telegram_messages m ON m.chat_id=v.chat_id AND m.message_id=v.message_id
+    WHERE m.source_id=? AND m.sent_at>=? AND m.sent_at<? AND m.deleted_at IS NULL
+      AND v.superseded_at IS NULL AND v.status IN ('downloading','pending','running','retry')`)
+    .get(job.source_id, job.window_start, job.window_end) as any).n);
+  if (outstanding && Date.now() < Date.parse(job.window_end) + 10 * 60_000) return false;
+  const messages = rawMessages.map(m => ({...m,effective_text:effectiveMessageText(m)}))
+    .filter(m => m.effective_text.trim());
   if (!messages.length) { db.prepare('DELETE FROM telegram_summary_jobs WHERE id=?').run(jobId); return false; }
-  const inputHash = summaryHash(messages.map(m => [m.message_id,m.sent_at,m.reply_to_id,m.text]));
+  const inputHash = summaryHash(messages.map(m => [m.message_id,m.sent_at,m.reply_to_id,m.effective_text]));
   const now = nowIso();
   db.prepare(`UPDATE telegram_summary_jobs SET status='running',attempts=attempts+1,input_hash=?,updated_at=? WHERE id=?`).run(inputHash,now,jobId);
   try {
@@ -92,7 +113,7 @@ export async function summarizeJob(db: TelegramDB, jobId: number, cfg: TelegramA
     const max = Math.max(2000, (cfg.maxInputChars ?? 24000) - SYSTEM.length - 1200);
     const chunks: any[][] = []; let current: any[] = []; let size = 0;
     for (const message of messages) {
-      const n = String(message.text).length + 150;
+      const n = String(message.effective_text).length + 150;
       if (current.length && size + n > max) { chunks.push(current); current=[]; size=0; }
       current.push(message); size += n;
     }

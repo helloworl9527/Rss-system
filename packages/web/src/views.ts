@@ -195,6 +195,7 @@ export function renderDashboard(o: {
 }
 
 const PARSERS = [['rss','RSS / Atom'],['telegram_web','Telegram 网页版 (t.me/s/…)'],
+                 ['v2ex_json','V2EX 官方热门 JSON'],
                  ['deepseek_page','DeepSeek 更新日志页'],
                  ['openai_release_notes_page','OpenAI 产品更新页（Jina）']];
 const CATS = [['ai','AI 与科技'],['developer','开发者与产品'],['tech','技术资讯'],
