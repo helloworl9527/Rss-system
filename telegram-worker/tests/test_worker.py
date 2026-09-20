@@ -70,6 +70,7 @@ def test_image_types_and_pure_image_message_are_queued(tmp_path: Path):
     store.save_normal(source, photo)
     pending = store.media_task(source, photo, meta)
     assert pending is not None
+    assert pending[1].suffix == ".jpeg"
     assert store.db.execute("SELECT text FROM telegram_messages WHERE message_id=1").fetchone()[0] == ""
     assert store.db.execute("SELECT status FROM telegram_media_tasks WHERE message_id=1").fetchone()[0] == "downloading"
 

@@ -245,7 +245,12 @@ class Store:
                 self.delete_media(old["temp_path"])
             self.delete_media(stale_path)
             return None
-        filename = secrets.token_urlsafe(24)
+        # Telethon appends an extension when the target filename has none.  That
+        # would make the subsequent size check look at a non-existent path
+        # (while leaving the real .jpg/.png file behind).  Include a sanitized
+        # MIME-derived suffix so Telethon writes exactly the path we track.
+        suffix = re.sub(r"[^a-z0-9]", "", mime.rsplit("/", 1)[-1].lower())[:12] or "img"
+        filename = f"{secrets.token_urlsafe(24)}.{suffix}"
         path = self.media_dir / filename
         with self.db:
             self.db.execute("""UPDATE telegram_media_tasks SET superseded_at=?,updated_at=?,temp_path=NULL,
