@@ -2,6 +2,8 @@
 
 这是按《十六源智能日报系统 PRD 与服务器端设计方案 V1.0》实现的模块化单体：Web 管理后台与独立 Worker 共用 SQLite/WAL，采集、固定窗口、去重、筛选、AI 分级判定、简报生成、投递和审计均可重跑。
 
+当前日报 Feed 链接和 Telegram 订阅名称见 [SUBSCRIPTIONS.md](SUBSCRIPTIONS.md)，生产环境每 5 分钟自动同步更新。
+
 ## 本地启动
 
 ```bash

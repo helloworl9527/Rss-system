@@ -68,10 +68,18 @@ console.log('\n沙箱与运行账户：\n');
 {
   for (const f of services) {
     const s = read(f);
-    ok(`${f.replace('.service', '')} 以 brief 账户运行`, /^User=brief$/m.test(s));
+    const publisher = f === 'brief-subscriptions-sync.service';
+    ok(`${f.replace('.service', '')} 使用预期账户`,
+       publisher ? /^User=root$/m.test(s) : /^User=brief$/m.test(s));
     ok(`${f.replace('.service', '')} 启用 ProtectSystem=strict`, /^ProtectSystem=strict$/m.test(s));
-    ok(`${f.replace('.service', '')} 可写路径仅限数据目录`,
-       /^ReadWritePaths=\/var\/lib\/briefing$/m.test(s));
+    ok(`${f.replace('.service', '')} 写路径符合最小权限`, publisher
+      ? !/^ReadWritePaths=/m.test(s)
+      : /^ReadWritePaths=\/var\/lib\/briefing$/m.test(s));
+    if (publisher) {
+      ok('订阅发布器仅更新固定 GitHub 路径',
+         /^Environment=PUBLIC_SUBSCRIPTIONS_GITHUB_PATH=SUBSCRIPTIONS\.md$/m.test(s));
+      ok('订阅发布器不允许写本地文件系统', !/^ReadWritePaths=/m.test(s));
+    }
   }
 }
 
