@@ -39,6 +39,7 @@ try {
   assert.match(result, /Safe Feed/);
   assert.match(result, /https:\/\/example\.com\/feed\.xml/);
   assert.match(result, /Public Channel Name/);
+  assert.match(result, /频道名称未解析/);
   assert.doesNotMatch(result, /do-not-publish|private-secret|t\.me\/c\/123|Disabled/);
   console.log('✓ 公开订阅清单生成与敏感字段隔离测试通过');
 } finally {

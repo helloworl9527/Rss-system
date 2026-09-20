@@ -72,10 +72,9 @@ function telegramRows() {
   const d = db(telegramDbPath);
   try {
     return d.prepare(`SELECT display_name,title,username,source_type,status,enabled
-      FROM telegram_sources ORDER BY id`).all().filter((source) =>
-        source.display_name || source.title || source.username).map((source) => ({
+      FROM telegram_sources ORDER BY id`).all().map((source) => ({
       // Never fall back to reference: it may be a private invite or t.me/c URL.
-      name: source.display_name || source.title || `@${source.username}`,
+      name: source.display_name || source.title || (source.username ? `@${source.username}` : '（频道名称未解析）'),
       type: source.source_type === 'url' ? 'URL 提取' : '普通总结',
       state: source.enabled ? '启用' : `未启用（${source.status}）`,
     }));
