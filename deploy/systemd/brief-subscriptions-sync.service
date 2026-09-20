@@ -10,7 +10,8 @@ Type=oneshot
 User=root
 Group=root
 WorkingDirectory=/opt/briefing-system
-EnvironmentFile=/etc/briefing/env
+Environment=DATABASE_PATH=/var/lib/briefing/brief.db
+Environment=TELEGRAM_DATABASE_PATH=/var/lib/briefing/telegram.sqlite3
 Environment=PUBLIC_SUBSCRIPTIONS_GITHUB_REPO=helloworl9527/Rss-system
 Environment=PUBLIC_SUBSCRIPTIONS_GITHUB_PATH=SUBSCRIPTIONS.md
 ExecStart=/usr/bin/node scripts/sync-public-subscriptions.mjs --publish
