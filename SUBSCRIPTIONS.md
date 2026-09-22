@@ -60,5 +60,6 @@
 | 🇬🇧 giffgaff 交流群 | 普通总结 | 启用 |
 | 卡尔菜爱玩Group | 普通总结 | 启用 |
 | 折腾频道VIP群 | 普通总结 | 启用 |
+| Digital Immigrants丨Want Want Group | 普通总结 | 启用 |
 
-共 16 个 Telegram 订阅。
+共 17 个 Telegram 订阅。
