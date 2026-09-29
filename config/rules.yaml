@@ -11,8 +11,8 @@
 # ============================================================
 
 meta:
-  rule_version: 18
-  updated_at: "2026-09-16"
+  rule_version: 19
+  updated_at: "2026-09-29"
   timezone: Asia/Taipei          # 全系统唯一时区基准（PRD 5.1）
   description: "初版：从 PRD V1.0 自然语言规则拆解而来，未经影子运行校准"
 
@@ -1040,6 +1040,15 @@ clustering:
     - key: codex-quota-reset-2026-08
       require_all: [Codex]
       require_any: [重置, 额度用完, 5 小时使用限制]
+    # Codex Pro $200 重新开放及用量计算调整会同时出现在官方 X 和
+    # 中文 Telegram 转述中；两者标题语言与模型 event_key 不同。
+    # 同时限定价格、重新开放和用量调整，避免误合并其它 Pro 权益新闻。
+    - key: codex-pro-200-subscription-reopen-2026-09
+      require_all: [Codex, Pro, 200, 重新开放, 用量计算]
+      force_section: ai_tech
+    - key: codex-pro-200-subscription-reopen-2026-09
+      require_all: [Pro, 200, subscriptions, re-opening, usage]
+      force_section: ai_tech
     - key: apple-ceo-succession-2026-09
       require_all: [库克]
       require_any: [卸任, CEO, 首席执行官, 特努斯, 接棒, 交接]
