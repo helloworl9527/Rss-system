@@ -19,6 +19,7 @@ import { clusterCandidates, excludeCoveredToday, selectForBrief, type ClusterInp
   from '../../../packages/domain/src/cluster.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
 import { runCompose, type ComposeInput } from '../../../packages/ai/src/compose.ts';
+import { resolveSemanticDuplicates } from '../../../packages/ai/src/semantic-dedup.ts';
 import { renderHtml, renderText, checkEmail, subjectOf, type BriefData, type BriefItem }
   from '../../../packages/templates/src/email.ts';
 import { deliver } from '../../../packages/templates/src/delivery.ts';
@@ -131,7 +132,23 @@ const inputs: ClusterInput[] = included.map(r => {
     sourcePriority: r.priority ?? 5, isOfficial: !!r.is_official,
   };
 });
-const clusters = clusterCandidates(inputs);
+const cfg = providerFromEnv('L1');
+const provider = await createProvider(cfg);
+const dedupProvider = await createProvider({ ...cfg, timeoutMs: 15000 });
+const semantic = await resolveSemanticDuplicates(inputs.map(i => ({
+  candidateId: i.candidateId, title: i.title, body: rows.find(r => `c${r.cid}` === i.candidateId)?.body ?? '',
+  eventKey: i.eventKey, section: i.section, mandatoryClass: i.mandatoryClass,
+})), dedupProvider, {
+  onDecision: d => {
+    console.log(`语义去重 ${d.candidateA}/${d.candidateB}: ${d.sameEvent ? '同一事件' : '不同事件'}${d.error ? `（${d.error}）` : ''}`);
+    db.prepare(`INSERT INTO audit_events
+      (run_id,entity_type,entity_id,action,payload_json,created_at) VALUES (?,?,?,?,?,?)`)
+      .run(run.id, 'semantic_dedup', `${d.candidateA}:${d.candidateB}`, 'semantic_duplicate_decision',
+        JSON.stringify({ ...d, provider: provider.name }), nowIso());
+  },
+});
+const semanticKeys = new Map(semantic.items.map(i => [i.candidateId, i.eventKey]));
+const clusters = clusterCandidates(inputs.map(i => ({ ...i, eventKey: semanticKeys.get(i.candidateId) ?? i.eventKey })));
 
 // 同一台北自然日跨窗口去重：早报出现后，午报/晚报的同义转述不再进入正文。
 // 只查已经实际发送的简报，发送失败或草稿不能占掉后续窗口的事件。
@@ -216,8 +233,6 @@ const composeInputs: ComposeInput[] = selected.map(c => {
   };
 });
 
-const cfg = providerFromEnv('L1');
-const provider = await createProvider(cfg);
 const composePromptText = readFileSync('./config/prompts/compose.md', 'utf8');
 const composePromptVersion = `compose-v${rules.meta.rule_version}-${sha256(composePromptText).slice(0, 8)}`;
 const composed = composeInputs.length

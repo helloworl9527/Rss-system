@@ -73,23 +73,6 @@ console.log('\n人工确认的同事件别名：\n');
 }
 {
   const cs = clusterCandidates([
-    it('codex-tg', {
-      title: 'Codex 将于明天重新开放 20x 订阅 Tibo 发出 预告 : 1. 明天重新向新用户开放 Pro &#036;200 订阅。 2. 同时调整用量计算方式',
-      eventKey: 'codex-pro-subscription-reopen-and-quota-change-2026-09',
-      sourceId: 'tg_zaihuapd',
-    }),
-    it('codex-x', {
-      title: 'Hi, Tomorrow we are re-opening the Pro $200 subscriptions to new subscribers, but together with it we are also changing how we calculate the usage for...',
-      eventKey: 'cursor-devday-pro-subscription-changes-2026',
-      sourceId: 'x_thsottiaux',
-    }),
-  ]);
-  ok('Codex Pro $200 订阅公告的中英文转述合并',
-    cs.length === 1 && cs[0]?.members.length === 1 &&
-    cs[0]?.clusterKey === 'codex-pro-200-subscription-reopen-2026-09:ai_tech:none');
-}
-{
-  const cs = clusterCandidates([
     it('codex-announcement', {
       title: 'Codex 重新开放 Pro $200 订阅，同时调整用量计算方式',
       eventKey: 'codex-subscription-reopen',
