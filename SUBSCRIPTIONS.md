@@ -11,6 +11,8 @@
 | Cloudflare 中文博客 | tech | cloudflare | <https://blog.cloudflare.com/zh-cn/> | <https://blog.cloudflare.com/zh-cn/rss> |
 | Google AI Blog | ai | google | <https://blog.google/innovation-and-ai/technology/ai/> | <https://blog.google/innovation-and-ai/technology/ai/rss/> |
 | Google Blog 全站 | tech | google | <https://blog.google/feed/> | <https://blog.google/rss/> |
+| Chrome Blog | tech | google | <https://blog.google/products/chrome/> | <https://blog.google/products/chrome/rss/> |
+| Chrome for Developers | developer | google | <https://developer.chrome.com/> | <https://developer.chrome.com/static/blog/feed.xml> |
 | Google DeepMind Blog | ai | google | <https://deepmind.google/blog/> | <https://deepmind.google/blog/rss.xml> |
 | Google Research Blog | ai | google | <https://research.google/blog/> | <https://research.google/blog/rss/> |
 | Google Search Central Blog | developer | google | <https://developers.google.com/search/blog/> | <https://feeds.feedburner.com/blogspot/amDG> |
@@ -38,7 +40,7 @@
 | @bbchinesd | society | unclassified | <https://x.com/bbchinesd> | <https://helloworl9527.github.io/x-rss-feed/feeds/bbchinesd.xml> |
 | @elonmusk | society | unclassified | <https://x.com/elonmusk> | <https://helloworl9527.github.io/x-rss-feed/feeds/elonmusk.xml> |
 
-共 30 个启用的日报来源。
+共 32 个启用的日报来源。
 
 ## Telegram 订阅频道
 
