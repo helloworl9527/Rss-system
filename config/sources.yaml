@@ -11,8 +11,8 @@
 # ============================================================
 
 meta:
-  source_version: 11
-  updated_at: "2026-09-20"
+  source_version: 12
+  updated_at: "2026-09-30"
   probe_baseline_date: "2026-08-23"
   probe_from_ip: "52.141.58.148"
 
@@ -470,6 +470,35 @@ sources:
     endpoints:
       - { url: "https://feeds.feedburner.com/blogspot/amDG", parser: rss, priority: 1 }
     probe: { date: "2026-09-20", status: 200, content_type: "text/xml; charset=utf-8" }
+
+  - id: google_chrome_blog
+    name: Chrome Blog
+    display_name: Chrome Blog
+    site_url: "https://blog.google/products/chrome/"
+    category: tech
+    source_group: google
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 1
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://blog.google/products/chrome/rss/", parser: rss, priority: 1 }
+
+  - id: google_chrome_developers
+    name: Chrome for Developers
+    display_name: Chrome for Developers
+    site_url: "https://developer.chrome.com/"
+    category: developer
+    source_group: google
+    harvest_tier: official_changelog
+    enabled: true
+    priority: 1
+    host_group: direct
+    official: true
+    endpoints:
+      - { url: "https://developer.chrome.com/static/blog/feed.xml", parser: rss, priority: 1 }
+    note: "官网 /feeds 页面链接的实际 RSS XML 端点。"
 
   - id: cloudflare_blog_zh
     name: Cloudflare 中文博客
