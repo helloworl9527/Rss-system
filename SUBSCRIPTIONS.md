@@ -38,9 +38,10 @@
 | @durov | tech | unclassified | <https://t.me/durov> | <https://hub.slarker.me/telegram/channel/durov><br><https://t.me/s/durov><br><https://rsshub.rssforever.com/telegram/channel/durov> |
 | @karlshareChannel | tech | unclassified | <https://t.me/karlshareChannel> | <https://hub.slarker.me/telegram/channel/karlshareChannel><br><https://t.me/s/karlshareChannel><br><https://rsshub.rssforever.com/telegram/channel/karlshareChannel> |
 | @bbchinesd | society | unclassified | <https://x.com/bbchinesd> | <https://helloworl9527.github.io/x-rss-feed/feeds/bbchinesd.xml> |
+| 一财 · RSSHub | article | unclassified | <https://www.yicai.com/> | <https://rsshub.app/yicai/latest><br><https://rsshub.rssforever.com/yicai/latest><br><https://rsshub.bestblogs.dev/yicai/latest> |
 | @elonmusk | society | unclassified | <https://x.com/elonmusk> | <https://helloworl9527.github.io/x-rss-feed/feeds/elonmusk.xml> |
 
-共 32 个启用的日报来源。
+共 33 个启用的日报来源。
 
 ## Telegram 订阅频道
 
