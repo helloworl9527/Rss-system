@@ -11,7 +11,7 @@
 # ============================================================
 
 meta:
-  source_version: 12
+  source_version: 13
   updated_at: "2026-09-30"
   probe_baseline_date: "2026-08-23"
   probe_from_ip: "52.141.58.148"
@@ -22,7 +22,7 @@ meta:
 # ------------------------------------------------------------
 host_groups:
   rsshub:
-    hosts: [hub.slarker.me, rsshub.rssforever.com, rsshub.bestblogs.dev]
+    hosts: [hub.slarker.me, rsshub.app, rsshub.rssforever.com, rsshub.bestblogs.dev]
     concurrency: 1
     min_interval_ms: 8000
     timeout_ms: 40000
@@ -499,6 +499,23 @@ sources:
     endpoints:
       - { url: "https://developer.chrome.com/static/blog/feed.xml", parser: rss, priority: 1 }
     note: "官网 /feeds 页面链接的实际 RSS XML 端点。"
+
+  - id: yicai_latest_rsshub
+    name: 一财
+    display_name: 一财 · RSSHub
+    site_url: "https://www.yicai.com/"
+    category: article
+    source_group: unclassified
+    harvest_tier: standard
+    enabled: true
+    priority: 5
+    host_group: rsshub
+    official: false
+    endpoints:
+      - { url: "https://rsshub.app/yicai/latest", parser: rss, priority: 1 }
+      - { url: "https://rsshub.rssforever.com/yicai/latest", parser: rss, priority: 2 }
+      - { url: "https://rsshub.bestblogs.dev/yicai/latest", parser: rss, priority: 3 }
+    note: "rsshub.app 当前可能限制 Feed Reader；保留为首选并使用 RSSHub 镜像回退。"
 
   - id: cloudflare_blog_zh
     name: Cloudflare 中文博客
