@@ -38,9 +38,9 @@ let calls = 0; let lastPrompt = '';
 const provider = { name: 'mock', model: 'digest-m', strictness: 'strict', complete: async (req: any) => {
   calls++; lastPrompt = req.userContent;
   return { data: { points: [
-    { text: '国行 iPhone 添加 eSIM 受限（消息 ID：123）', channels: ['eSIM群', '折腾搞机', '编造频道'], unverified: false },
-    { text: '凭空编造的要点', channels: ['不存在的频道'], unverified: false },
-    { text: '有人提出绕过方法仍然有效', channels: ['折腾搞机'], unverified: true },
+    { text: '国行 iPhone 添加 eSIM 受限（消息 ID：123）', detail: '设置中添加 eSIM 提示不支持；需先致电运营商开通 eSIM 功能后再扫码。', channels: ['eSIM群', '折腾搞机', '编造频道'], unverified: false },
+    { text: '凭空编造的要点', detail: '', channels: ['不存在的频道'], unverified: false },
+    { text: '有人提出绕过方法仍然有效', detail: '有人提出绕过方法仍然有效', channels: ['折腾搞机'], unverified: true },
   ] },
     rawText: '', responseId: 'r', model: 'digest-m', usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0 } };
 } } as any;
@@ -66,14 +66,16 @@ console.log('\nAI 合并与来源频道：\n');
   ok('提示词只列出本时段有总结的频道', lastPrompt.includes('["折腾搞机","eSIM群"]') && !lastPrompt.includes('giffgaff'));
   const row = db.prepare('SELECT * FROM telegram_digests WHERE window_end=?').get(W) as any;
   const html = String(row.rendered_html);
-  ok('编号清单，每条下方标注来源频道（按输入顺序）', html.startsWith('<ol><li><p>国行 iPhone 添加 eSIM 受限<br>— 折腾搞机、eSIM群</p></li>'), html.slice(0, 160));
+  ok('标题加粗、下方说明具体做法、再标注来源频道（按输入顺序）',
+    html.startsWith('<ol><li><p><b>国行 iPhone 添加 eSIM 受限</b><br>设置中添加 eSIM 提示不支持；需先致电运营商开通 eSIM 功能后再扫码。<br>— 折腾搞机、eSIM群</p></li>'), html.slice(0, 200));
+  ok('说明与标题重复时不重复显示', html.includes('<li><p><b>绕过方法仍然有效</b>（待核实）<br>— 折腾搞机</p></li>'), html);
   ok('丢弃编造的频道名', !html.includes('编造频道'));
   ok('没有有效频道的要点整条丢弃', !html.includes('凭空编造的要点') && (html.match(/<li>/g) ?? []).length === 2);
   ok('清理消息 ID', !html.includes('123'));
-  ok('未证实要点标注待核实并清理引导语', html.includes('<li><p>绕过方法仍然有效（待核实）<br>— 折腾搞机</p></li>'), html);
   ok('末尾列出涉及频道', html.endsWith('<p>涉及频道：折腾搞机、eSIM群</p>'));
   ok('记录来源与模型', row.source_ids === JSON.stringify([a, b]) && row.response_model === 'digest-m' && row.fallback === 0);
   ok('已完成的时刻不重复调用', await runDueDigests(db, cfg, provider, now) === 0 && calls === 1);
+  ok('Schema 要求每条带说明字段', (TELEGRAM_DIGEST_SCHEMA.properties.points as any).items.required.includes('detail'));
   ok('Schema 最多 10 条、每条至少一个频道', (TELEGRAM_DIGEST_SCHEMA.properties.points as any).maxItems === 10 &&
     (TELEGRAM_DIGEST_SCHEMA.properties.points as any).items.properties.channels.minItems === 1);
   ok('超过 10 条时截断', validateDigest({ points: Array.from({ length: 15 }, (_, i) => ({ text: `p${i}`, channels: ['折腾搞机'] })) }, ['折腾搞机']).points.length === 10);
@@ -95,7 +97,7 @@ console.log('\n单频道与 AI 失败兜底：\n');
   addSummary(c, W1, W2, S('giffgaff 激活'));
   calls = 0;
   ok('只有一个频道时不调用 AI，直接标注该频道', await runDueDigests(db, cfg, provider, now) === 1 && calls === 0 &&
-    String((db.prepare('SELECT rendered_html FROM telegram_digests WHERE window_end=?').get(W2) as any).rendered_html).includes('giffgaff 激活 的细节<br>— giffgaff 交流群'));
+    String((db.prepare('SELECT rendered_html FROM telegram_digests WHERE window_end=?').get(W2) as any).rendered_html).includes('<b>giffgaff 激活 的细节</b><br>— giffgaff 交流群'));
 
   const W3 = T('2026-10-08T12:00:00Z'), W4 = T('2026-10-08T00:00:00Z');
   addSummary(a, W4, W3, S('A 话题')); addSummary(b, W4, W3, S('B 话题'));
@@ -109,7 +111,7 @@ console.log('\n单频道与 AI 失败兜底：\n');
   t = new Date(t.getTime() + 3600_000); await runDueDigests(db, cfg, broken, t);
   const fb = db.prepare('SELECT * FROM telegram_digests WHERE window_end=?').get(W3) as any;
   ok('第 3 次失败后退回逐频道拼接，时段不缺席', fb.status === 'completed' && fb.fallback === 1 && fb.attempts === 3 && String(fb.error).includes('upstream down'));
-  ok('兜底取各频道重要信息并轮流排列、标注频道', String(fb.rendered_html).startsWith('<ol><li><p>A 话题 的细节<br>— 折腾搞机</p></li><li><p>B 话题 的细节<br>— eSIM群</p></li></ol>'), String(fb.rendered_html));
+  ok('兜底取各频道重要信息并轮流排列、标注频道', String(fb.rendered_html).startsWith('<ol><li><p><b>A 话题 的细节</b><br>— 折腾搞机</p></li><li><p><b>B 话题 的细节</b><br>— eSIM群</p></li></ol>'), String(fb.rendered_html));
 }
 
 console.log('\n补采未覆盖的窗口不推进：\n');
