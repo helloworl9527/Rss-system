@@ -14,13 +14,16 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from telethon import TelegramClient, events, functions, utils
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import FloodWaitError, ServerError, SessionPasswordNeededError
 from telethon.tl.types import Channel, Chat, ChatInviteAlready
 
 USERNAME = re.compile(r"[A-Za-z0-9_]{5,32}")
 URLISH = re.compile(r"https?://[^\s<>\"'，。；：！？、]+|(?<![@\w])(?:www\.)?[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})){1,}(?:/[^\s<>\"'，。；：！？、]*)?", re.IGNORECASE)
 BARE_HOST = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+(?:[A-Za-z]{2,63}|xn--[A-Za-z0-9-]{2,59})$", re.IGNORECASE)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+# 断线、超时、限流、Telegram 服务端错误都会自行恢复，不能据此停用来源。
+# 2026-09-29 一次断线让 reload() 把全部 17 个来源标成 error/enabled=0，采集静默停了 10 天。
+TRANSIENT_ERRORS = (ConnectionError, OSError, asyncio.TimeoutError, FloodWaitError, ServerError)
 
 
 def image_metadata(message) -> tuple[str, str, int | None] | None:
@@ -75,6 +78,24 @@ def extract_urls(text: str) -> tuple[str, ...]:
         if normalized not in result:
             result.append(normalized)
     return tuple(result)
+
+
+def is_transient(exc: BaseException) -> bool:
+    return isinstance(exc, TRANSIENT_ERRORS)
+
+
+def catchup_options(last_id: int, keep_forever: bool, cutoff: datetime) -> dict:
+    """增量补采的 iter_messages 参数。
+
+    有 last_id 时按时间正序从断点往后读。消息永久保留时从断点读全，补齐停采期间的全部消息；
+    否则直接从保留期起点开始，跳过反正会被清理的旧消息。
+    """
+    if not last_id:
+        return {}
+    options: dict = {"min_id": last_id, "reverse": True}
+    if not keep_forever:
+        options["offset_date"] = cutoff
+    return options
 
 
 def reference(raw: str) -> tuple[str, str | int]:
@@ -154,6 +175,11 @@ class Store:
         except sqlite3.IntegrityError:
             self.db.rollback()
             self.failed(row["id"], "该 Telegram chat_id 已存在，不能重复添加")
+
+    def transient_failure(self, source_id: int, message: str) -> None:
+        """只记录错误，保持来源启用，下一轮 reconcile 自动重试。"""
+        self.db.execute("UPDATE telegram_sources SET last_error=?,updated_at=? WHERE id=?", (message[:500], utc_now(), source_id))
+        self.db.commit()
 
     def failed(self, source_id: int, message: str) -> None:
         self.db.execute("UPDATE telegram_sources SET status='error',enabled=0,last_error=?,updated_at=? WHERE id=?", (message[:500], utc_now(), source_id))
@@ -444,7 +470,10 @@ class Worker:
                     raise TypeError("地址不是群组或频道")
                 self.store.resolved(row, entity)
             except Exception as exc:  # noqa: BLE001 - isolate source validation failures
-                self.store.failed(row["id"], str(exc) or type(exc).__name__)
+                if is_transient(exc):
+                    self.store.transient_failure(row["id"], f"校验暂时失败，下轮重试：{type(exc).__name__}")
+                else:
+                    self.store.failed(row["id"], str(exc) or type(exc).__name__)
 
     async def reload(self) -> None:
         self.entities = {}
@@ -452,21 +481,27 @@ class Worker:
             try:
                 self.entities[row["chat_id"]] = await self.client.get_entity(row["chat_id"])
             except Exception as exc:  # noqa: BLE001 - isolate source resolution failures
-                self.store.failed(row["id"], f"来源解析失败：{type(exc).__name__}")
+                if is_transient(exc):
+                    self.store.transient_failure(row["id"], f"来源解析暂时失败，下轮重试：{type(exc).__name__}")
+                else:
+                    self.store.failed(row["id"], f"来源解析失败：{type(exc).__name__}")
 
     async def backfill_source(self, row: sqlite3.Row, entity) -> None:
-        settings = self.store.db.execute("SELECT timezone,raw_retention_days FROM telegram_settings WHERE singleton=1").fetchone()
+        settings = self.store.db.execute("SELECT timezone,raw_retention_days,keep_messages_forever FROM telegram_settings WHERE singleton=1").fetchone()
         zone = ZoneInfo(settings["timezone"])
         local_now = datetime.now(UTC).astimezone(zone)
         cutoff_local = datetime.combine(local_now.date() - timedelta(days=int(settings["raw_retention_days"]) - 1), datetime.min.time(), zone)
         cutoff = cutoff_local.astimezone(UTC)
         state = self.store.db.execute("SELECT last_message_id FROM telegram_sync_state WHERE source_id=?", (row["id"],)).fetchone()
         last_id = int(state[0]) if state else 0
-        options = {"min_id": last_id, "reverse": True} if last_id else {}
-        async for message in self.client.iter_messages(entity, **options):
+        keep_forever = bool(settings["keep_messages_forever"])
+        async for message in self.client.iter_messages(entity, **catchup_options(last_id, keep_forever, cutoff)):
             date = message.date if message.date.tzinfo else message.date.replace(tzinfo=UTC)
-            if date < cutoff:
-                break
+            if date < cutoff and not (last_id and keep_forever):
+                # 正序补采时最早的消息先到，遇到旧消息只能跳过；原来的 break 会让断点超过保留期的来源一条都补不回来
+                if last_id:
+                    continue
+                break  # 首次同步按时间倒序，越过保留期即可停止
             if row["source_type"] == "url":
                 self.store.save_urls(row, message)
             else:
