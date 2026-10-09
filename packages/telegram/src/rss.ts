@@ -65,9 +65,12 @@ export function digestRss(db: TelegramDB, token: string, baseUrl: string): strin
   if (!setting?.all_rss_token || setting.all_rss_token !== token) return null;
   const rows = db.prepare(`SELECT * FROM telegram_digests WHERE status='completed' AND (expires_at IS NULL OR expires_at>?)
     ORDER BY window_end DESC LIMIT 100`).all(new Date().toISOString()) as any[];
-  const clock = (value: string) => new Intl.DateTimeFormat('en-GB', { timeZone: setting.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
-    .format(new Date(value));
-  const items = rows.map(r => `<item><title>${xml(`Telegram 汇总 ${monthDay(r.window_end, setting.timezone)} ${clock(r.window_end)}`)}</title>` +
+  // 早 / 午 / 晚 按关闭时刻的本地小时划分，与 08:00 / 12:00 / 22:00 三档对应
+  const slot = (value: string) => {
+    const h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: setting.timezone, hour: '2-digit', hourCycle: 'h23' }).format(new Date(value)));
+    return h < 11 ? '早' : h < 17 ? '午' : '晚';
+  };
+  const items = rows.map(r => `<item><title>${xml(`📌 Telegram 要点 · ${monthDay(r.window_end, setting.timezone)} ${slot(r.window_end)}`)}</title>` +
     `<link>${xml(baseUrl)}</link><guid isPermaLink="false">telegram-digest:${xml(r.window_end)}</guid>` +
     `<pubDate>${new Date(r.window_end).toUTCString()}</pubDate><description>${xml(withoutVagueLeadIns(String(r.rendered_html ?? '')))}</description></item>`).join('');
   return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Telegram 跨频道汇总</title>` +
