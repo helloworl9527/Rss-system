@@ -23,9 +23,9 @@ export const TELEGRAM_DIGEST_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['points'],
   properties: {
     points: { type: 'array', maxItems: MAX_POINTS, items: {
-      type: 'object', additionalProperties: false, required: ['text', 'detail', 'channels', 'unverified'],
+      type: 'object', additionalProperties: false, required: ['text', 'detail', 'channels'],
       properties: { text: { type: 'string' }, detail: { type: 'string' },
-        channels: { type: 'array', minItems: 1, items: { type: 'string' } }, unverified: { type: 'boolean' } } } },
+        channels: { type: 'array', minItems: 1, items: { type: 'string' } } } } },
   },
 };
 
@@ -36,11 +36,11 @@ const SYSTEM = `你是 Telegram 多频道要点编辑。输入是同一时段内
    禁止只写「调整了规则」「有绕过方法」「分享了教程」这类不含内容的说法；输入里确实没有具体内容时，在 detail 中写明「频道内未说明具体××」，或者干脆不写这条。
 2. 不同频道说的同一件事合并成一条，channels 列出所有涉及的频道；channels 只能使用输入中给出的频道名，逐字照抄，不得改写、缩写或编造。
 3. 按对读者的重要程度从高到低排序；内容不足 ${MAX_POINTS} 条时如实少写，不要凑数，琐碎闲聊不写。
-4. 信息存在冲突或未经证实时 unverified 为 true，否则为 false。
+4. 不要给要点加「待核实」「未证实」之类的标签；信息来自个别用户反馈、属于传闻或各方说法不一时，在 detail 里用自然的话交代清楚（如「多名群友反馈」「说法不一」「传闻称」）。
 5. 只可依据输入陈述，不得加入外部知识或新增事实；禁止出现消息 ID、消息编号或引用时间；禁止使用「有人提出」「群友提到」等无信息量引导语。
 输出必须符合指定 JSON Schema。`;
 
-type Point = { text: string; detail: string; channels: string[]; unverified: boolean };
+type Point = { text: string; detail: string; channels: string[] };
 export type DigestShape = { points: Point[] };
 type Part = { sourceId: number; channel: string; windowStart: string; summary: any };
 
@@ -54,21 +54,21 @@ export function validateDigest(value: any, channels: string[]): DigestShape {
     const valid = [...new Set<string>((Array.isArray(x?.channels) ? x.channels : []).map((c: unknown) => String(c).trim()))]
       .filter(c => order.has(c)).sort((a, b) => order.get(a)! - order.get(b)!);
     const detail = cleanViewpoint(stripMessageReferences(x?.detail));
-    return text && valid.length ? [{ text, detail: detail === text ? '' : detail, channels: valid, unverified: x?.unverified === true }] : [];
+    return text && valid.length ? [{ text, detail: detail === text ? '' : detail, channels: valid }] : [];
   });
   return { points: points.slice(0, MAX_POINTS) };
 }
 
 /**
  * AI 不可用（或只有一个频道）时的确定性要点：每个频道优先取「重要信息」，没有再取「主题」，
- * 末尾补「不确定信息」并标待核实；多个频道轮流取，保证每个频道都露面。
+ * 末尾补「不确定信息」；多个频道轮流取，保证每个频道都露面。
  */
 export function fallbackDigest(parts: Part[]): DigestShape {
   const clean = (xs: unknown) => (Array.isArray(xs) ? xs : []).map(cleanViewpoint).filter(Boolean) as string[];
   const queues = parts.map(p => {
     const facts = clean(p.summary?.important);
-    return [...(facts.length ? facts : clean(p.summary?.topics)).map(text => ({ text, detail: '', channels: [p.channel], unverified: false })),
-      ...clean(p.summary?.uncertainty).map(text => ({ text, detail: '', channels: [p.channel], unverified: true }))];
+    return [...(facts.length ? facts : clean(p.summary?.topics)), ...clean(p.summary?.uncertainty)]
+      .map(text => ({ text, detail: '', channels: [p.channel] }));
   });
   const points: Point[] = []; const seen = new Set<string>();
   for (let i = 0; points.length < MAX_POINTS && queues.some(q => i < q.length); i++)
@@ -81,7 +81,7 @@ export function fallbackDigest(parts: Part[]): DigestShape {
 
 export function renderDigest(d: DigestShape, channels: string[]): string {
   const items = d.points.map(p =>
-    `<li><p><b>${esc(p.text)}</b>${p.unverified ? '（待核实）' : ''}${p.detail ? `<br>${esc(p.detail)}` : ''}<br>— ${esc(p.channels.join('、'))}</p></li>`).join('');
+    `<li><p><b>${esc(p.text)}</b>${p.detail ? `<br>${esc(p.detail)}` : ''}<br>— ${esc(p.channels.join('、'))}</p></li>`).join('');
   return `${items ? `<ol>${items}</ol>` : '<p>本时段没有值得关注的要点。</p>'}<p>涉及频道：${esc(channels.join('、'))}</p>`;
 }
 

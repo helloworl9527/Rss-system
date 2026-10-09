@@ -38,9 +38,9 @@ let calls = 0; let lastPrompt = '';
 const provider = { name: 'mock', model: 'digest-m', strictness: 'strict', complete: async (req: any) => {
   calls++; lastPrompt = req.userContent;
   return { data: { points: [
-    { text: '国行 iPhone 添加 eSIM 受限（消息 ID：123）', detail: '设置中添加 eSIM 提示不支持；需先致电运营商开通 eSIM 功能后再扫码。', channels: ['eSIM群', '折腾搞机', '编造频道'], unverified: false },
-    { text: '凭空编造的要点', detail: '', channels: ['不存在的频道'], unverified: false },
-    { text: '有人提出绕过方法仍然有效', detail: '有人提出绕过方法仍然有效', channels: ['折腾搞机'], unverified: true },
+    { text: '国行 iPhone 添加 eSIM 受限（消息 ID：123）', detail: '设置中添加 eSIM 提示不支持；需先致电运营商开通 eSIM 功能后再扫码。', channels: ['eSIM群', '折腾搞机', '编造频道'] },
+    { text: '凭空编造的要点', detail: '', channels: ['不存在的频道'] },
+    { text: '有人提出绕过方法仍然有效', detail: '有人提出绕过方法仍然有效', channels: ['折腾搞机'] },
   ] },
     rawText: '', responseId: 'r', model: 'digest-m', usage: { inputTokens: 1, outputTokens: 1, cachedInputTokens: 0, cacheWriteTokens: 0 } };
 } } as any;
@@ -68,7 +68,8 @@ console.log('\nAI 合并与来源频道：\n');
   const html = String(row.rendered_html);
   ok('标题加粗、下方说明具体做法、再标注来源频道（按输入顺序）',
     html.startsWith('<ol><li><p><b>国行 iPhone 添加 eSIM 受限</b><br>设置中添加 eSIM 提示不支持；需先致电运营商开通 eSIM 功能后再扫码。<br>— 折腾搞机、eSIM群</p></li>'), html.slice(0, 200));
-  ok('说明与标题重复时不重复显示', html.includes('<li><p><b>绕过方法仍然有效</b>（待核实）<br>— 折腾搞机</p></li>'), html);
+  ok('说明与标题重复时不重复显示，且不加待核实标签', html.includes('<li><p><b>绕过方法仍然有效</b><br>— 折腾搞机</p></li>') && !html.includes('待核实'), html);
+  ok('Schema 不再要求 unverified 字段', !(TELEGRAM_DIGEST_SCHEMA.properties.points as any).items.properties.unverified);
   ok('丢弃编造的频道名', !html.includes('编造频道'));
   ok('没有有效频道的要点整条丢弃', !html.includes('凭空编造的要点') && (html.match(/<li>/g) ?? []).length === 2);
   ok('清理消息 ID', !html.includes('123'));
