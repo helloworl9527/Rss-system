@@ -9,7 +9,7 @@ User=brief
 Group=brief
 WorkingDirectory=/opt/briefing-system
 EnvironmentFile=/etc/briefing/env
-Environment=TELEGRAM_MEDIA_DIR=/var/lib/briefing/telegram-media
+Environment=TELEGRAM_MEDIA_DIR=/var/lib/briefing/telegram/media
 ExecStart=/usr/bin/node apps/worker/src/telegram-supervisor.ts
 Restart=on-failure
 RestartSec=10

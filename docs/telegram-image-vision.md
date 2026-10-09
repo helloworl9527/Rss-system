@@ -6,7 +6,7 @@
 
 1. 停止 Telegram collector、summary 与 web，避免迁移期间出现新写入。
 2. 运行 `npm run telegram:migrate-schema`。此命令先在线备份 Telegram SQLite，再应用迁移并执行 `integrity_check`。
-3. 确认 `/var/lib/briefing/telegram-media` 由 `brief:brief` 持有且权限为 `0700`。该目录不属于备份目标。
+3. 确认 `/var/lib/briefing/telegram/media` 由 `brief:brief` 持有且权限为 `0700`。该目录不属于备份目标。
 4. 安装 `brief-telegram-vision.service` 与 `.timer`，执行 `systemctl daemon-reload`。
 5. 先启动 collector，并从一个普通来源发送一张新测试图；手动运行一次 vision service，检查管理页结果与 `npm run telegram:vision-status`。
 6. 确认临时文件已删除、SQLite `integrity_check=ok` 后，再启用 vision timer 及其余 Telegram 服务。
