@@ -27,7 +27,7 @@ import { readyTelegramDb } from '../../../packages/telegram/src/db.ts';
 import { addTelegramSource, retryTelegramSource, rotateAllToken, rotateSourceToken,
          toggleTelegramSource, updateTelegramSettings, resumeVisionQueue, TelegramError } from '../../../packages/telegram/src/core.ts';
 import { visionStats } from '../../../packages/telegram/src/vision.ts';
-import { sourceRss, allRss } from '../../../packages/telegram/src/rss.ts';
+import { sourceRss, allRss, digestRss } from '../../../packages/telegram/src/rss.ts';
 import { sendLoginCommand, type LoginCommand } from '../../../packages/telegram/src/login.ts';
 import { renderTelegram } from '../../../packages/telegram/src/views.ts';
 
@@ -272,6 +272,12 @@ app.get<{Params:{token:string}}>('/rss/telegram/source/:token',async(req,reply)=
 app.get<{Params:{token:string}}>('/rss/telegram/all/:token',async(req,reply)=>{
   if(!/^[a-f0-9]{64}$/.test(req.params.token))return reply.code(404).send('订阅不存在');
   const body=allRss(telegramDb,req.params.token,process.env.ADMIN_BASE_URL??'');
+  if(body===null)return reply.code(404).send('订阅不存在');
+  return reply.header('Cache-Control','private, no-store, max-age=0').header('Referrer-Policy','no-referrer').type('application/rss+xml; charset=utf-8').send(body);
+});
+app.get<{Params:{token:string}}>('/rss/telegram/digest/:token',async(req,reply)=>{
+  if(!/^[a-f0-9]{64}$/.test(req.params.token))return reply.code(404).send('订阅不存在');
+  const body=digestRss(telegramDb,req.params.token,process.env.ADMIN_BASE_URL??'');
   if(body===null)return reply.code(404).send('订阅不存在');
   return reply.header('Cache-Control','private, no-store, max-age=0').header('Referrer-Policy','no-referrer').type('application/rss+xml; charset=utf-8').send(body);
 });

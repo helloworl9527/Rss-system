@@ -1,5 +1,6 @@
 import type { TelegramDB } from './db.ts';
 import { consolidateViewpoints, stripMessageReferences } from './core.ts';
+import { channelName } from './digest.ts';
 
 const xml = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
   .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
@@ -20,8 +21,7 @@ const withoutVagueLeadIns = (html: string) => html.replace(
 );
 const publicSummary = (html: unknown) => withoutVagueLeadIns(consolidatedRenderedViewpoints(stripMessageReferences(withoutMessageSources(html))));
 
-const RENTAL_COMMUNITY = '[合租社群]Netflix|YouTube|Spotify|office365|Hbo|Surge|美剧|等音乐影视聊天机场电影盒子软路由';
-const displayName = (name: unknown) => String(name ?? '') === RENTAL_COMMUNITY ? '合租社群' : String(name ?? '');
+const displayName = channelName;
 const monthDay = (value: string, timezone: string) => {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: timezone, month: '2-digit', day: '2-digit' })
     .formatToParts(new Date(value));
@@ -57,4 +57,19 @@ export function allRss(db: TelegramDB, token: string, baseUrl: string): string |
     .all(new Date().toISOString()) as any[];
   const timezone = (db.prepare('SELECT timezone FROM telegram_settings WHERE singleton=1').get() as any).timezone;
   return feed('Telegram 群组总结', baseUrl, rows, timezone);
+}
+
+/** 跨频道汇总：每个关闭时刻一条，复用全部频道 RSS 的令牌。 */
+export function digestRss(db: TelegramDB, token: string, baseUrl: string): string | null {
+  const setting = db.prepare('SELECT all_rss_token,timezone FROM telegram_settings WHERE singleton=1').get() as any;
+  if (!setting?.all_rss_token || setting.all_rss_token !== token) return null;
+  const rows = db.prepare(`SELECT * FROM telegram_digests WHERE status='completed' AND (expires_at IS NULL OR expires_at>?)
+    ORDER BY window_end DESC LIMIT 100`).all(new Date().toISOString()) as any[];
+  const clock = (value: string) => new Intl.DateTimeFormat('en-GB', { timeZone: setting.timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .format(new Date(value));
+  const items = rows.map(r => `<item><title>${xml(`Telegram 汇总 ${monthDay(r.window_end, setting.timezone)} ${clock(r.window_end)}`)}</title>` +
+    `<link>${xml(baseUrl)}</link><guid isPermaLink="false">telegram-digest:${xml(r.window_end)}</guid>` +
+    `<pubDate>${new Date(r.window_end).toUTCString()}</pubDate><description>${xml(withoutVagueLeadIns(String(r.rendered_html ?? '')))}</description></item>`).join('');
+  return `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Telegram 跨频道汇总</title>` +
+    `<link>${xml(baseUrl)}</link><description>每个时段一条，汇总所有频道并标注来源</description>${items}</channel></rss>`;
 }

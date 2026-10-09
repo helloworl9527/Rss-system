@@ -27,6 +27,7 @@ export function cleanupTelegram(db: TelegramDB, now = new Date()): {messages:num
         (SELECT id FROM telegram_sources WHERE retain_all_history=1)`).run(rawCutoff).changes;
     const urls=db.prepare('DELETE FROM telegram_urls WHERE expires_at<?').run(summaryCutoff).changes;
     const summaries=db.prepare('DELETE FROM telegram_summaries WHERE expires_at<?').run(summaryCutoff).changes;
+    db.prepare('DELETE FROM telegram_digests WHERE expires_at<?').run(summaryCutoff);
     db.prepare(`DELETE FROM telegram_summary_jobs WHERE window_end<? AND id NOT IN (SELECT job_id FROM telegram_summaries)`).run(
       new Date(now.getTime()-Number(s.summary_retention_days)*86400_000).toISOString());
     const cache=db.prepare("DELETE FROM telegram_summary_cache WHERE created_at<?").run(

@@ -2,6 +2,7 @@ import type { Provider, ProviderConfig } from '../../ai/src/types.ts';
 import { createProvider } from '../../ai/src/registry.ts';
 import type { TelegramDB } from './db.ts';
 import { cleanViewpoint, consolidateViewpoints, summaryHash, validateSummary, nowIso, type SummaryShape } from './core.ts';
+import { runDueDigests } from './digest.ts';
 
 export const TELEGRAM_SUMMARY_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -170,13 +171,17 @@ export function ensureDueJobs(db: TelegramDB, now = new Date()): number {
   }
   boundaries.sort((a,b)=>a.getTime()-b.getTime());
   let made=0;
-  const sources=db.prepare("SELECT id FROM telegram_sources WHERE enabled=1 AND status='active' AND source_type='normal'").all() as any[];
+  const sources=db.prepare("SELECT id,last_success_at FROM telegram_sources WHERE enabled=1 AND status='active' AND source_type='normal'").all() as any[];
   for (const source of sources) {
+    // 只处理采集已经覆盖到的窗口：补采还没跑到时窗口看起来是空的，若此时推进边界，
+    // 补回来的消息就永远进不了总结（2026-10-09 补采后 10/02–10/09 的时段因此全部缺失）。
+    if (!source.last_success_at) continue;
+    const synced = Date.parse(source.last_success_at);
     const old=db.prepare(`SELECT coalesce((SELECT last_window_end FROM telegram_sync_state WHERE source_id=?),
       (SELECT max(window_end) FROM telegram_summary_jobs WHERE source_id=?)) end`).get(source.id,source.id) as any;
     let start: Date | undefined = old?.end ? new Date(old.end) : boundaries.find(x=>x.getTime()>=now.getTime()-settings.raw_retention_days*86400_000);
     if (!start) continue;
-    for(const end of boundaries.filter(x=>x>start!)) {
+    for(const end of boundaries.filter(x=>x>start!&&x.getTime()<=synced)) {
       const has=db.prepare(`SELECT 1 FROM telegram_messages WHERE source_id=? AND sent_at>=? AND sent_at<? AND deleted_at IS NULL LIMIT 1`)
         .get(source.id,start.toISOString(),end.toISOString());
       if (has) {
@@ -200,5 +205,7 @@ export async function runDueSummaries(db: TelegramDB, secret: string | undefined
   let done=0;
   for(const j of jobs) if(await summarizeJob(db,j.id,{provider:s.provider,model:s.model,baseUrl:s.base_url??undefined,apiKey:secret,
     promptRules:s.prompt_rules,promptVersion:s.prompt_version,summaryRetentionDays:s.summary_retention_days})) done++;
+  await runDueDigests(db,{provider:s.provider,model:s.model,baseUrl:s.base_url??undefined,apiKey:secret,
+    summaryRetentionDays:s.summary_retention_days,lookbackDays:Number(s.raw_retention_days)+1});
   return done;
 }

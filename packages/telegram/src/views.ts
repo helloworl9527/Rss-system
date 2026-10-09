@@ -1,7 +1,7 @@
 import { esc, layout } from '../../web/src/views.ts';
 
 export function renderTelegram(o: { csrf:string; sources:any[]; settings:any; worker:any; vision:{pending:number;failed:number;today:number;oldestMinutes:number|null}; baseUrl:string; saved?:string; error?:string }): string {
-  const feed = (token: string | null, all=false) => token ? `${o.baseUrl}/rss/telegram/${all?'all':'source'}/${token}` : '';
+  const feed = (token: string | null, kind: boolean | 'digest' = false) => token ? `${o.baseUrl}/rss/telegram/${kind==='digest'?'digest':kind?'all':'source'}/${token}` : '';
   const rows=o.sources.map(s=>`<tr><td>${esc(s.display_name||s.title||s.reference)}<div class="muted">${esc(s.reference)}${s.chat_id?` · ${esc(s.chat_id)}`:''}</div></td>
     <td>${s.source_type==='url'?'仅 URL':'普通总结'}</td><td>${esc(s.status)}${s.last_error?`<div class="bad">${esc(s.last_error)}</div>`:''}<div class="muted">最近成功：${esc(s.last_success_at||'—')}</div></td>
     <td><form class="inline" method="post" action="/telegram/sources/${s.id}/${s.status==='error'?'retry':'toggle'}"><input type="hidden" name="csrf" value="${esc(o.csrf)}">${s.status==='error'?'<button>重试验证</button>':`<input type="hidden" name="enabled" value="${s.enabled?'false':'true'}"><button>${s.enabled?'停用':'启用'}</button>`}</form></td>
@@ -22,7 +22,8 @@ export function renderTelegram(o: { csrf:string; sources:any[]; settings:any; wo
     ${o.settings.vision_pause_reason?`<div class="err">${esc(o.settings.vision_pause_reason)}</div>`:''}
     ${o.settings.vision_paused?`<form method="post" action="/telegram/vision/resume"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><button>凭证修复后恢复队列</button></form>`:''}
     <p class="sub">仅处理功能上线后的照片与 image/* 文件；临时图片不在后台展示，识别完成或最终失败即删除。</p>
-    <h2>汇总 RSS</h2>${o.settings.all_rss_token?`<input readonly value="${esc(feed(o.settings.all_rss_token,true))}" style="width:100%">`:'令牌已撤销'}
+    <h2>汇总 RSS</h2>${o.settings.all_rss_token?`<p class="sub">跨频道汇总（每个时段一条，AI 合并所有频道并标注来源频道）</p><input readonly value="${esc(feed(o.settings.all_rss_token,'digest'))}" style="width:100%">
+    <p class="sub">全部频道（每个频道每个时段各一条）</p><input readonly value="${esc(feed(o.settings.all_rss_token,true))}" style="width:100%">`:'令牌已撤销'}
     <form class="inline" method="post" action="/telegram/rss/all/token"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><button name="action" value="reset">重置令牌</button><button name="action" value="revoke">撤销令牌</button></form>
     <h2>总结设置</h2><form method="post" action="/telegram/settings"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><table>
     <tr><td>业务时区</td><td><input name="timezone" value="${esc(o.settings.timezone)}"></td></tr><tr><td>关闭时刻</td><td><input name="schedule" value="${esc(JSON.parse(o.settings.schedule_json).join(', '))}"></td></tr>
