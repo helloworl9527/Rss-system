@@ -2,6 +2,7 @@
 // 2026-10-09 早报：上游短暂断网，复核调用立即失败两次、中间不等待，155 条落入待复核，门禁阻断发送。
 import { withTransientRetry, isTransient } from '../packages/ai/src/retry.ts';
 import { ProviderError } from '../packages/ai/src/types.ts';
+import { toError } from '../packages/ai/src/providers/openai-compat.ts';
 import type { CompleteResult, Provider } from '../packages/ai/src/types.ts';
 
 let fail = 0;
@@ -53,6 +54,13 @@ console.log('\n非瞬时错误不重试：\n');
   ok('isTransient 只认 network/timeout/server/rate_limited',
      isTransient(new ProviderError('timeout', 't')) && isTransient(new ProviderError('rate_limited', 'r')) &&
      !isTransient(new Error('x')) && !isTransient(new ProviderError('truncated', 't')));
+}
+
+console.log('\nHTTP 状态映射：\n');
+{
+  // 2026-10-09：上游返回 408「stream closed before response.completed」被当成请求错误，没有重试
+  ok('408 归为可重试的超时', toError(408, 'stream disconnected').kind === 'timeout' && isTransient(toError(408, '')));
+  ok('400 仍为不可重试的请求错误', toError(400, 'bad').kind === 'bad_request' && !isTransient(toError(400, '')));
 }
 
 console.log('\n429 按 Retry-After 等待（有上限）：\n');

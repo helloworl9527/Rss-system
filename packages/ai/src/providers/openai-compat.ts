@@ -167,6 +167,8 @@ export class OpenAICompatProvider implements Provider {
 export function toError(status: number, body: string): ProviderError {
   const msg = body.slice(0, 300);
   if (status === 429) return new ProviderError('rate_limited', `HTTP 429 ${msg}`, status);
+  // 408：上游流在完成前断开，属于瞬时故障，应走重试而不是当作请求错误
+  if (status === 408) return new ProviderError('timeout', `HTTP 408 ${msg}`, status);
   if (status === 401 || status === 403) return new ProviderError('auth', `HTTP ${status} ${msg}`, status);
   if (status >= 500) return new ProviderError('server', `HTTP ${status} ${msg}`, status);
   return new ProviderError('bad_request', `HTTP ${status} ${msg}`, status);
