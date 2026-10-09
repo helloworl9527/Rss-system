@@ -211,3 +211,26 @@ def test_catchup_past_retention_skips_old_when_not_keeping(tmp_path: Path):
     asyncio.run(worker.backfill_source(row, SimpleNamespace(id=-1007)))
     saved = [r[0] for r in store.db.execute("SELECT message_id FROM telegram_messages WHERE source_id=?", (source_id,))]
     assert saved == [102]
+
+
+def test_live_events_do_not_skip_restart_gap(tmp_path: Path):
+    # 2026-10-09：重启后实时事件先到，把游标推到最新，补采从最新开始，停机期间约 6500 条消息丢失
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    store.db.execute("UPDATE telegram_settings SET keep_messages_forever=1 WHERE singleton=1")
+    source_id = _active_source(store, -1008, "@busy")
+    store.db.execute("UPDATE telegram_sync_state SET last_message_id=100 WHERE source_id=?", (source_id,))
+    store.db.commit()
+    now = datetime.now(UTC)
+    gap = [_text(i, now - timedelta(days=2)) for i in range(101, 105)]
+    live = _text(105, now)
+    client = FakeClient([*gap, live])
+    worker = Worker(store, client, tmp_path / "s.sock")
+    asyncio.run(worker.on_message(SimpleNamespace(chat_id=-1008, message=live)))
+    assert store.db.execute("SELECT last_message_id FROM telegram_sync_state WHERE source_id=?", (source_id,)).fetchone()[0] == 100
+    row = store.db.execute("SELECT * FROM telegram_sources WHERE id=?", (source_id,)).fetchone()
+    asyncio.run(worker.backfill_source(row, SimpleNamespace(id=-1008)))
+    saved = [r[0] for r in store.db.execute("SELECT message_id FROM telegram_messages WHERE source_id=? ORDER BY message_id", (source_id,))]
+    assert saved == [101, 102, 103, 104, 105]
+    assert store.db.execute("SELECT count(*) FROM telegram_messages WHERE message_id=105").fetchone()[0] == 1
+    assert store.db.execute("SELECT last_message_id FROM telegram_sync_state WHERE source_id=?", (source_id,)).fetchone()[0] == 105

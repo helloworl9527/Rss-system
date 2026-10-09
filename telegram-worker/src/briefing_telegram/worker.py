@@ -185,7 +185,8 @@ class Store:
         self.db.execute("UPDATE telegram_sources SET status='error',enabled=0,last_error=?,updated_at=? WHERE id=?", (message[:500], utc_now(), source_id))
         self.db.commit()
 
-    def save_normal(self, source: sqlite3.Row, message) -> None:
+    def save_normal(self, source: sqlite3.Row, message, *, advance_cursor: bool = True) -> None:
+        """advance_cursor=False 用于实时事件：只落库，不推进补采游标（见 Worker.on_message）。"""
         text = str(getattr(message, "message", "") or "")
         if not text.strip() and image_metadata(message) is None:
             return
@@ -198,7 +199,8 @@ class Store:
               VALUES(?,?,?,?,?,?,?,?,?,?,NULL) ON CONFLICT(chat_id,message_id) DO UPDATE SET text=excluded.text,edited_at=excluded.edited_at,reply_to_id=excluded.reply_to_id,source_url=excluded.source_url,content_hash=excluded.content_hash,collected_at=excluded.collected_at,deleted_at=NULL""",
               (source["id"], source["chat_id"], message.id, sent, text, edited, getattr(message,"reply_to_msg_id",None), link, digest, now))
             self.db.execute("INSERT OR IGNORE INTO telegram_message_versions(chat_id,message_id,content_hash,text,edited_at,collected_at) VALUES(?,?,?,?,?,?)", (source["chat_id"],message.id,digest,text,edited,now))
-            self.db.execute("UPDATE telegram_sync_state SET last_message_id=max(last_message_id,?),last_synced_at=?,last_error=NULL WHERE source_id=?", (message.id,now,source["id"]))
+            if advance_cursor:
+                self.db.execute("UPDATE telegram_sync_state SET last_message_id=max(last_message_id,?),last_synced_at=?,last_error=NULL WHERE source_id=?", (message.id,now,source["id"]))
 
     def save_normal_batch(self, source: sqlite3.Row, messages: list) -> int:
         now = utc_now()
@@ -340,7 +342,7 @@ class Store:
         for row in rows:
             self.delete_media(row["temp_path"])
 
-    def save_urls(self, source: sqlite3.Row, message) -> None:
+    def save_urls(self, source: sqlite3.Row, message, *, advance_cursor: bool = True) -> None:
         # Deliberately do not persist message, sender, bio, link, or media metadata.
         urls = extract_urls(str(getattr(message, "message", "") or ""))
         found = utc_now()
@@ -351,7 +353,8 @@ class Store:
                 self.db.execute("""INSERT INTO telegram_urls(normalized_url,first_source_id,last_source_id,first_discovered_at,last_discovered_at,expires_at)
                   VALUES(?,?,?,?,?,?) ON CONFLICT(normalized_url) DO UPDATE SET last_source_id=excluded.last_source_id,last_discovered_at=excluded.last_discovered_at,expires_at=excluded.expires_at""",
                   (url,source["id"],source["id"],found,found,expires))
-            self.db.execute("UPDATE telegram_sync_state SET last_message_id=max(last_message_id,?),last_synced_at=?,last_error=NULL WHERE source_id=?", (message.id,found,source["id"]))
+            if advance_cursor:
+                self.db.execute("UPDATE telegram_sync_state SET last_message_id=max(last_message_id,?),last_synced_at=?,last_error=NULL WHERE source_id=?", (message.id,found,source["id"]))
 
     def delete_normal(self, chat_id: int, ids: list[int]) -> None:
         if not ids:
@@ -548,10 +551,13 @@ class Worker:
     async def on_message(self, event) -> None:
         source = self.store.db.execute("SELECT * FROM telegram_sources WHERE chat_id=? AND enabled=1 AND status='active'",(event.chat_id,)).fetchone()
         if source:
+            # 实时事件不推进补采游标：采集器重启后事件处理先于 reconcile 生效，活跃群的新消息
+            # 会把 last_message_id 推到最新，补采随后从最新处开始，停机期间的消息就永远补不回来
+            # （2026-10-09 @wantwantgroup 漏了约 6500 条）。游标只由 backfill_source 推进。
             if source["source_type"] == "url":
-                self.store.save_urls(source, event.message)
+                self.store.save_urls(source, event.message, advance_cursor=False)
             else:
-                self.store.save_normal(source, event.message)
+                self.store.save_normal(source, event.message, advance_cursor=False)
                 await self.capture_image(source, event.message)
 
     async def capture_image(self, source: sqlite3.Row, message) -> None:
