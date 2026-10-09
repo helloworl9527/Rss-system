@@ -604,7 +604,7 @@ app.post('/settings/source-profiler', async (req, reply) => {
     const credentialRef = String(b.credential_ref ?? 'SOURCE_PROFILER_API_KEY').trim();
     const probeProvider = await createProvider({ provider: providerName, model: String(b.model ?? '').trim() || 'mock-profiler',
       baseUrl: String(b.base_url ?? '').trim() || undefined, timeoutMs: Number(b.timeout_ms ?? 30000),
-      apiKey: providerName === 'mock' ? undefined : resolveSecret(credentialRef as any) });
+      apiKey: providerName === 'mock' ? undefined : resolveSecret(credentialRef as any) }, { retry: false });
     await runSourceProfiler(probeProvider, { url: 'https://example.com/feed.xml', parser: 'rss', name: 'structured-output-test',
       metadata: { test: true }, samples: [{ sampleId: 'test-1', title: 'structured output test', link: 'https://example.com/1', publishedRaw: null }] });
     setSettings({ sourceProfilerProvider: String(b.provider ?? '').trim(), sourceProfilerModel: String(b.model ?? '').trim(),

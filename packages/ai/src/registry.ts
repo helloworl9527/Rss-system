@@ -1,13 +1,21 @@
 import type { Provider, ProviderConfig, ProviderName } from './types.ts';
 import { ProviderError } from './types.ts';
+import { withTransientRetry } from './retry.ts';
 
 /**
  * 按配置构建供应商。适配器全部动态 import —— 只有实际用到的那家
  * 才会被加载进内存（896 MB 机器上这点很重要）。
  *
  * 新增厂商只需在这里加一个分支 + 一个适配器文件，上层零改动。
+ * 真实供应商统一套上瞬时故障退避重试（见 retry.ts）；mock 不套，测试里模拟的故障不应真的等待。
+ * 后台页面里的交互式调用传 { retry: false }：用户在等页面返回，失败应立即显示而不是转圈一分多钟。
  */
-export async function createProvider(cfg: ProviderConfig): Promise<Provider> {
+export async function createProvider(cfg: ProviderConfig, opts: { retry?: boolean } = {}): Promise<Provider> {
+  const p = await createAdapter(cfg);
+  return cfg.provider === 'mock' || opts.retry === false ? p : withTransientRetry(p);
+}
+
+async function createAdapter(cfg: ProviderConfig): Promise<Provider> {
   switch (cfg.provider) {
     case 'mock': {
       const { MockProvider } = await import('./providers/mock.ts');

@@ -403,7 +403,7 @@ export async function createSourceProposal(db: DB, o: SourceInput & { skipTest?:
   let error: string | null = null;
   try {
     if (!profile.enabled) throw new Error('Source Profiler 模型配置未启用');
-    const provider = await createProvider(sourceProfilerConfig());
+    const provider = await createProvider(sourceProfilerConfig(), { retry: false });
     const input = { url: safe.url, parser: o.parser, name,
       metadata: { http_status: t.httpCode, content_type: t.contentType, parsed_count: t.parsedCount,
         latest_item_at: t.latestItemAt, bytes: t.bytes }, samples: t.sample };
