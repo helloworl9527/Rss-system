@@ -47,22 +47,22 @@
 
 | 频道名称 | 类型 | 状态 |
 | --- | --- | --- |
-| @TossiPhoneX | 普通总结 | 未启用（error） |
-| @zaihuapd | 普通总结 | 未启用（error） |
-| @durov | 普通总结 | 未启用（error） |
-| @karlshareChannel | 普通总结 | 未启用（error） |
-| @TossiPhone | 普通总结 | 未启用（error） |
-| 尼日利亚🇳🇬交流群 | 普通总结 | 未启用（error） |
-| 谷歌内购讨论群， | 普通总结 | 未启用（error） |
-| damm的eSIM群🌍 | 普通总结 | 未启用（error） |
-| 🇳🇬尼日利亚交流部 | 普通总结 | 未启用（error） |
-| 额尔古纳河 | 普通总结 | 未启用（error） |
-| 土耳其外交部 | 普通总结 | 未启用（error） |
+| @TossiPhoneX | 普通总结 | 启用 |
+| @zaihuapd | 普通总结 | 启用 |
+| @durov | 普通总结 | 启用 |
+| @karlshareChannel | 普通总结 | 启用 |
+| @TossiPhone | 普通总结 | 启用 |
+| 尼日利亚🇳🇬交流群 | 普通总结 | 启用 |
+| 谷歌内购讨论群， | 普通总结 | 启用 |
+| damm的eSIM群🌍 | 普通总结 | 启用 |
+| 🇳🇬尼日利亚交流部 | 普通总结 | 启用 |
+| 额尔古纳河 | 普通总结 | 启用 |
+| 土耳其外交部 | 普通总结 | 启用 |
 | （频道名称未解析） | 普通总结 | 未启用（error） |
-| 互联网精英（禁广告） | 普通总结 | 未启用（error） |
-| 🇬🇧 giffgaff 交流群 | 普通总结 | 未启用（error） |
-| 卡尔菜爱玩Group | 普通总结 | 未启用（error） |
-| 折腾频道VIP群 | 普通总结 | 未启用（error） |
-| Digital Immigrants丨Want Want Group | 普通总结 | 未启用（error） |
+| 互联网精英（禁广告） | 普通总结 | 启用 |
+| 🇬🇧 giffgaff 交流群 | 普通总结 | 启用 |
+| 卡尔菜爱玩Group | 普通总结 | 启用 |
+| 折腾频道VIP群 | 普通总结 | 启用 |
+| Digital Immigrants丨Want Want Group | 普通总结 | 启用 |
 
 共 17 个 Telegram 订阅。
