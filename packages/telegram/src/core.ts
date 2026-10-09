@@ -148,7 +148,24 @@ const INLINE_MESSAGE_REFERENCES = /[（(]\s*消息(?:\s*ID)?\s*[:：]?\s*#?\d+(?
 export function stripMessageReferences(value: unknown): string {
   return String(value ?? '').replace(INLINE_MESSAGE_REFERENCES, '').trim();
 }
-const VIEWPOINT_LEAD_INS = /(?:(?:有人|群友)(?:提出|认为|表示|提到|指出|建议|质疑)|消息中提到)[：:，,]?\s*/gu;
+/**
+ * 群管理机器人的模板消息（入群验证、欢迎、封禁通知、机器人自我介绍或命令回复）不是群内讨论，
+ * 送去总结只会产生「入群验证过期可能导致永久封禁」这类无用要点。只匹配机器人模板的固定措辞，
+ * 群友讨论「验证码」「身份验证」「账号被封」不受影响；被封禁通知只认机器人打码的用户名（H***e）。
+ */
+const GROUP_ADMIN_NOTICE = [
+  /未能完成入群验证|请完成入群验证|入群验证(?:已)?(?:超时|过期|失败)|由于验证已过期/u,
+  /^\s*欢迎\s*\S{0,40}\s*加入(?:本)?群(?:组|聊)?\s*[!！。]/u,
+  /^\s*(?:你好[，,]?\s*)?欢迎使用\s*[\w\s-]{0,30}bot/iu,
+  /找不到要封禁的(?:频道|用户)|无法通过用户名封禁用户/u,
+  /^\s*\S*\*{2,}\S*\s.*已被(?:永久)?(?:封禁|禁言|踢出|移出)/u,
+];
+export function isGroupAdminNotice(text: unknown): boolean {
+  const value = String(text ?? '');
+  return GROUP_ADMIN_NOTICE.some(re => re.test(value));
+}
+
+const VIEWPOINT_LEAD_INS =/(?:(?:有人|群友)(?:提出|认为|表示|提到|指出|建议|质疑)|消息中提到)[：:，,]?\s*/gu;
 export function cleanViewpoint(value: unknown): string {
   return stripMessageReferences(value).replace(VIEWPOINT_LEAD_INS, '').trim();
 }

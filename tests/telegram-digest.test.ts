@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readyTelegramDb } from '../packages/telegram/src/db.ts';
-import { rotateAllToken, updateTelegramSettings } from '../packages/telegram/src/core.ts';
+import { isGroupAdminNotice, rotateAllToken, updateTelegramSettings } from '../packages/telegram/src/core.ts';
 import { digestRss } from '../packages/telegram/src/rss.ts';
 import { ensureDueJobs } from '../packages/telegram/src/summarize.ts';
 import { runDueDigests, validateDigest, TELEGRAM_DIGEST_SCHEMA } from '../packages/telegram/src/digest.ts';
@@ -132,6 +132,19 @@ console.log('\n补采未覆盖的窗口不推进：\n');
   db.prepare('UPDATE telegram_sources SET last_success_at=? WHERE id=?').run(T('2026-10-09T12:30:00Z'), d);
   ensureDueJobs(db, now);
   ok('采集覆盖后为补回的消息建总结任务', jobs().length === 1 && jobs()[0].window_end === W && cursor() === W);
+}
+
+console.log('\n过滤群管理机器人消息：\n');
+{
+  // 2026-10-09 汇总出现「入群验证过期可能导致永久封禁」：来自验证机器人的模板通知
+  for (const t of ['H***e 由于验证已过期，未能完成入群验证，已被封禁 2 分钟。\u200c', '怎***🥰 由于验证已过期，未能完成入群验证，已被永久封禁。\u200c',
+    '欢迎 M***l 加入群组！请完成入群验证。\u200c', '欢迎使用 DeerBot。', '你好，欢迎使用 nmBot Preview！\n\nnmBot Preview 兼具群组管理功能',
+    '找不到要封禁的频道。\n请注意无法通过用户名封禁用户。', 'A***b 已被禁言 10 分钟'])
+    ok(`过滤：${t.slice(0, 18)}`, isGroupAdminNotice(t));
+  for (const t of ['新注册外区apple id又被风控了，注册完手机号就再收不到验证码', 'codex那个验证好过吗 我卡这步好久了',
+    '现在开 monzo flex 也要验证收入了', '我的 giffgaff 卡已被封禁，充值的钱怎么退', 'Lava开美户要二次身份验证，需要填税号怎么办',
+    '苹果官宣10月13日举办主题为“Welcome home（欢迎回家）”的媒体体验活动', '欢迎大家讨论一下 eSIM 的问题'])
+    ok(`保留：${t.slice(0, 18)}`, !isGroupAdminNotice(t));
 }
 
 console.log('\n保留期清理：\n');
