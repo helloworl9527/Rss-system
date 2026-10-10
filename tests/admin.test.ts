@@ -163,6 +163,22 @@ const dir = mkdtempSync(join(tmpdir(), 'brief-admin-'));
   ok('发布时间取投递时间', feed.includes('<pubDate>Sat, 10 Oct 2026 00:09:48 GMT</pubDate>'));
   ok('文章链接指向后台运行记录', feed.includes(`<link>https://rss.example/runs/${r2}</link>`));
   ok('NetNewsWire 所需的命名空间与自引用', feed.includes('xmlns:content=') && feed.includes(`<atom:link href="https://rss.example/rss/briefs/${token}" rel="self"`));
+  {
+    let asked = '';
+    const tg = (since: string) => { asked = since; return new Map([
+      ['2026-10-10T00:00:00.000Z', { html: '<ol><li><p><strong>TG 早间要点</strong></p></li></ol>', texts: ['TG 早间要点'] }],
+      ['2026-10-10T04:00:00.000Z', { html: '<ol><li><p><strong>TG 午间要点</strong></p></li></ol>', texts: ['TG 午间要点', '第二条'] }],
+    ]); };
+    const merged = briefsRss(db, token!, 'https://rss.example', 20, sections, tg)!;
+    const bodies = [...merged.matchAll(/<content:encoded>(.*?)<\/content:encoded>/gs)].map(m => m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+    const morning = bodies.find(b => b.includes('社会条目'))!;
+    ok('只向 Telegram 取本订阅覆盖的时段', asked === '2026-10-09T14:00:00.000Z');
+    ok('日报正文在前，同时段 Telegram 要点拼接在后', morning.indexOf('社会条目') < morning.indexOf('<h2>Telegram 频道要点</h2>') && morning.includes('TG 早间要点') && !morning.includes('TG 午间要点'));
+    ok('没有对应要点的日报不加空分区', !bodies.find(b => b.includes('晚报条目'))!.includes('Telegram 频道要点'));
+    ok('日报缺失的时段单独给出要点，排在最前', (merged.match(/<item>/g) ?? []).length === 3 && merged.indexOf('10月10日 午报 · 仅 Telegram 要点') < merged.indexOf('10月10日 早报 · 3 条')
+      && merged.includes('<guid isPermaLink="false">telegram-digest:2026-10-10T04:00:00.000Z</guid>') && merged.includes('<description>TG 午间要点；第二条</description>'));
+    ok('日报条目 guid 不变，阅读器原地更新', merged.includes(`brief:2026-10-10:morning:${b2}`));
+  }
   ok('错误令牌返回 null', briefsRss(db, 'f'.repeat(64), '') === null);
   const fresh = rotateBriefFeedToken(db);
   ok('重置后旧令牌立即失效', briefsRss(db, token!, '') === null && briefsRss(db, fresh!, '') !== null);

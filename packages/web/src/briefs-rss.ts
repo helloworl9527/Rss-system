@@ -4,7 +4,8 @@
  * 正文不复用邮件 HTML：邮件为兼容各家客户端用了表格布局、固定宽度和全量内联样式，
  * 在 NetNewsWire 里会渲染成带边框的窄盒子并重复标题。这里从 brief_items 重建一份
  * 语义化 HTML（分区 h2、条目 h3、段落），分区顺序与标题取自 rules.yaml，与邮件一致；
- * 排版完全交给阅读器主题。令牌存于 feed_tokens（name='briefs'）。
+ * 排版完全交给阅读器主题。正文之后拼接同一时段的 Telegram 跨频道要点。
+ * 令牌存于 feed_tokens（name='briefs'）。
  */
 import { randomBytes } from 'node:crypto';
 import type { DB } from '../../db/src/index.ts';
@@ -76,7 +77,16 @@ function defaultSections(): Section[] {
   } catch { return []; }
 }
 
-export function briefsRss(db: DB, token: string, baseUrl: string, limit = 20, sections?: Section[]): string | null {
+/** 同一时段的 Telegram 跨频道要点，按关闭时刻（ISO）索引；由调用方从 Telegram 库读取 */
+export type TelegramDigests = (since: string) => Map<string, { html: string; texts: string[] }>;
+const tgSection = (html: string) => `<hr><h2>Telegram 频道要点</h2>${html}`;
+const slotLabel = (iso: string) => {
+  const h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: TZ, hour: '2-digit', hourCycle: 'h23' }).format(new Date(iso)));
+  return h < 11 ? '早报' : h < 17 ? '午报' : '晚报';
+};
+
+/** 每期一条：先日报正文，再拼接同一时段的 Telegram 要点。日报缺失的时段单独出一条要点。 */
+export function briefsRss(db: DB, token: string, baseUrl: string, limit = 20, sections?: Section[], telegram?: TelegramDigests): string | null {
   const current = briefFeedToken(db);
   if (!current || current !== token) return null;
   const rows = db.prepare(`SELECT b.id, b.created_at, r.id run_id, r.window_key, r.window_label, r.window_end_at,
@@ -84,12 +94,22 @@ export function briefsRss(db: DB, token: string, baseUrl: string, limit = 20, se
     FROM briefs b JOIN runs r ON r.id=b.run_id
     WHERE b.status='final' AND b.version=(SELECT max(version) FROM briefs x WHERE x.run_id=b.run_id AND x.status='final')
     ORDER BY r.window_start_at DESC LIMIT ?`).all(limit) as any[];
+  const since = rows.length ? new Date(rows[rows.length - 1].window_end_at).toISOString() : new Date(Date.now() - 7 * 864e5).toISOString();
+  const digests = telegram?.(since) ?? new Map();
   const items: FeedItem[] = rows.map(r => {
     const f = briefFeedHtml(db, r.id, sections);
+    const end = new Date(r.window_end_at).toISOString();
+    const tg = digests.get(end); digests.delete(end);
     return { title: `${mdLabel(r.window_end_at)} ${r.window_label} · ${f.count} 条`, link: `${baseUrl}/runs/${r.run_id}`,
-      guid: `brief:${r.window_key}:${r.id}`, pubDate: r.sent_at ?? r.created_at, html: f.html,
+      guid: `brief:${r.window_key}:${r.id}`, pubDate: r.sent_at ?? r.created_at, html: f.html + (tg ? tgSection(tg.html) : ''),
       summary: f.titles.slice(0, 3).join('；') + (f.count > 3 ? ' 等' : ''), author: '十六源日报' };
   });
+  // 日报没生成（失败或未运行）的时段，Telegram 要点照常给出，不丢信息
+  for (const [end, tg] of digests) items.push({ title: `${mdLabel(end)} ${slotLabel(end)} · 仅 Telegram 要点`,
+    link: `${baseUrl}/telegram?tab=digests`, guid: `telegram-digest:${end}`, pubDate: end,
+    html: `<p>本时段日报未生成，以下只有 Telegram 频道要点。</p>${tgSection(tg.html)}`,
+    summary: tg.texts.slice(0, 3).join('；') || undefined, author: '十六源日报' });
+  items.sort((a, b) => new Date(b.pubDate).getTime() - new Date(a.pubDate).getTime());
   return rssDocument({ title: '十六源日报', link: baseUrl, selfUrl: `${baseUrl}/rss/briefs/${token}`,
-    description: '每天早、午、晚三期，内容与邮件相同', items, ttlMinutes: 60 });
+    description: '每天早、午、晚三期，日报正文后附同一时段的 Telegram 频道要点', items, ttlMinutes: 60 });
 }

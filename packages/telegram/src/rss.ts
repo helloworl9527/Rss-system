@@ -84,3 +84,15 @@ export function digestRss(db: TelegramDB, token: string, baseUrl: string): strin
   return rssDocument({ title: 'Telegram 跨频道要点', link: baseUrl, selfUrl: `${baseUrl}/rss/telegram/digest/${token}`,
     description: '每个时段一条，汇总所有频道并标注来源', items });
 }
+
+/** 供日报 RSS 拼接：返回指定区间内已完成的跨频道要点，按关闭时刻索引。 */
+export function digestsForBriefFeed(db: TelegramDB, since: string): Map<string, { html: string; texts: string[] }> {
+  const rows = db.prepare(`SELECT * FROM telegram_digests WHERE status='completed' AND window_end>=?
+    AND (expires_at IS NULL OR expires_at>?)`).all(since, new Date().toISOString()) as any[];
+  return new Map(rows.map(r => {
+    let points: any[] = [];
+    try { points = JSON.parse(r.summary_json ?? '{}').points ?? []; } catch { /* 无结构化要点 */ }
+    return [new Date(r.window_end).toISOString(), { html: withoutVagueLeadIns(digestHtml(db, r)),
+      texts: points.map(p => String(p.text ?? '')).filter(Boolean) }];
+  }));
+}

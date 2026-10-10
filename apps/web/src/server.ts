@@ -31,7 +31,7 @@ import { readyTelegramDb } from '../../../packages/telegram/src/db.ts';
 import { addTelegramSource, retryTelegramSource, rotateAllToken, rotateSourceToken, renameTelegramSource,
          toggleTelegramSource, updateTelegramSettings, resumeVisionQueue, setVisionDailyLimit, updateTelegramRetention, TelegramError } from '../../../packages/telegram/src/core.ts';
 import { visionStats } from '../../../packages/telegram/src/vision.ts';
-import { sourceRss, allRss, digestRss } from '../../../packages/telegram/src/rss.ts';
+import { sourceRss, allRss, digestRss, digestsForBriefFeed } from '../../../packages/telegram/src/rss.ts';
 import { digestHtml } from '../../../packages/telegram/src/digest.ts';
 import { sendLoginCommand, type LoginCommand } from '../../../packages/telegram/src/login.ts';
 import { renderTelegram, renderTelegramSettings, TELEGRAM_TABS, type TelegramTab } from '../../../packages/telegram/src/views.ts';
@@ -365,7 +365,7 @@ app.get('/feeds', async (req, reply) => {
   const briefToken = briefFeedToken(db);
   const tg = telegramDb.prepare('SELECT all_rss_token FROM telegram_settings WHERE singleton=1').get() as any;
   const feeds: FeedRow[] = [
-    { group: '日报', name: '日报', note: '每期一条，内容与邮件相同；每天早、午、晚三期', url: briefToken ? `${base}/rss/briefs/${briefToken}` : null,
+    { group: '日报', name: '日报', note: '每期一条：日报正文在前，后接同一时段的 Telegram 频道要点；每天早、午、晚三期', url: briefToken ? `${base}/rss/briefs/${briefToken}` : null,
       lastAt: (db.prepare(`SELECT max(created_at) t FROM briefs WHERE status='final'`).get() as any).t, action: '/rss/briefs/token' },
     { group: 'Telegram', name: '跨频道要点', note: '每个时段一条，AI 合并所有频道并标注来源；与“全部频道”共用令牌',
       url: tg?.all_rss_token ? `${base}/rss/telegram/digest/${tg.all_rss_token}` : null,
@@ -392,7 +392,7 @@ app.post('/rss/briefs/token', async (req, reply) => {
 });
 app.get<{Params:{token:string}}>('/rss/briefs/:token', async (req, reply) => {
   if (!/^[a-f0-9]{64}$/.test(req.params.token)) return reply.code(404).send('订阅不存在');
-  const body = briefsRss(db, req.params.token, process.env.ADMIN_BASE_URL ?? '');
+  const body = briefsRss(db, req.params.token, process.env.ADMIN_BASE_URL ?? '', 20, undefined, since => digestsForBriefFeed(telegramDb, since));
   if (body === null) return reply.code(404).send('订阅不存在');
   return reply.header('Cache-Control', 'private, no-store, max-age=0').header('Referrer-Policy', 'no-referrer').type('application/rss+xml; charset=utf-8').send(body);
 });
