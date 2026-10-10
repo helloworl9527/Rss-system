@@ -109,22 +109,60 @@ const dir = mkdtempSync(join(tmpdir(), 'brief-admin-'));
   migrate(db, join(process.cwd(), 'migrations'));
   const token = briefFeedToken(db);
   ok('迁移自动生成 256 位令牌', /^[a-f0-9]{64}$/.test(token ?? ''));
-  const addRun = (key: string, label: string, start: string) => Number(db.prepare(`INSERT INTO runs(window_key,window_label,window_start_at,window_end_at,scheduled_at,status,trigger)
-    VALUES(?,?,?,?,?,'succeeded','timer')`).run(key, label, start, start, start).lastInsertRowid);
+  const addRun = (key: string, label: string, start: string, end: string) => Number(db.prepare(`INSERT INTO runs(window_key,window_label,window_start_at,window_end_at,scheduled_at,status,trigger)
+    VALUES(?,?,?,?,?,'succeeded','timer')`).run(key, label, start, end, end).lastInsertRowid);
   const addBrief = (run: number, version: number, subject: string, status = 'final') => Number(db.prepare(`INSERT INTO briefs(run_id,version,subject,text_body,html_body,html_bytes,status,rule_version,created_at)
-    VALUES(?,?,?,?,?,?,?,1,?)`).run(run, version, subject, 't', `<h1>${subject}</h1><p>A & B</p>`, 10, status, '2026-10-10T00:09:00.000Z').lastInsertRowid);
-  const r1 = addRun('2026-10-09:evening', '晚报', '2026-10-09T04:00:00.000Z');
-  const r2 = addRun('2026-10-10:morning', '早报', '2026-10-09T14:00:00.000Z');
-  addBrief(r1, 1, '十六源日报 · 10-09 晚报');
+    VALUES(?,?,?,?,?,?,?,1,?)`).run(run, version, subject, 't', '<table style="border:1px">邮件</table>', 10, status, '2026-10-10T00:09:00.000Z').lastInsertRowid);
+  const T0 = '2026-10-09T00:00:00.000Z';
+  const cluster = (key: string) => Number(db.prepare(`INSERT INTO story_clusters(cluster_key,canonical_title,current_version_hash,created_at,updated_at) VALUES(?,?,?,?,?)`)
+    .run(key, key, 'h', T0, T0).lastInsertRowid);
+  const version = (source: string, key: string) => {
+    const item = Number(db.prepare(`INSERT INTO feed_items(source_id,source_item_key,key_kind,first_seen_at,last_seen_at,created_at) VALUES(?,?,'guid',?,?,?)`)
+      .run(source, key, T0, T0, T0).lastInsertRowid);
+    return Number(db.prepare(`INSERT INTO item_versions(item_id,content_hash,raw_hash,title,clean_text,discovered_at,version_no) VALUES(?,?,?,?,?,?,1)`)
+      .run(item, key, key, key, key, T0).lastInsertRowid);
+  };
+  const member = (clusterId: number, source: string, key: string, at: string) => db.prepare(`INSERT INTO cluster_members(cluster_id,item_version_id,contribution,added_by,created_at)
+    VALUES(?,?,'补充来源','model',?)`).run(clusterId, version(source, key), at);
+  const addItem = (brief: number, order: number, section: string, title: string, source: string, url: string | null, clusterId = cluster(`c-${brief}-${order}`)) =>
+    db.prepare(`INSERT INTO brief_items(brief_id,story_cluster_id,version_hash,section,order_no,status,title,conclusion,summary_json,source_name,source_url)
+      VALUES(?,?,?,?,?,'included',?,?,?,?,?)`).run(brief, clusterId, 'h' + order, section, order, title, `${title}的结论 & 要点`, JSON.stringify(['第一句。', '第二句。']), source, url);
+  db.prepare(`INSERT OR IGNORE INTO sources(id,name,display_name,category,host_group,harvest_tier,config_json,source_version,site_url,created_at,updated_at)
+    VALUES('v2ex','v2ex','V2EX','forum','v2ex','standard','{}',1,'https://www.v2ex.com/',?,?)`).run('2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z');
+  for (const [id, name] of [['linuxdo', 'LINUX DO'], ['jike', '即刻']])
+    db.prepare(`INSERT OR IGNORE INTO sources(id,name,display_name,category,host_group,harvest_tier,config_json,source_version,created_at,updated_at)
+      VALUES(?,?,?,'forum',?,'standard','{}',1,?,?)`).run(id, id, name, id, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z');
+  const r1 = addRun('2026-10-09:evening', '晚报', '2026-10-09T04:00:00.000Z', '2026-10-09T14:00:00.000Z');
+  const r2 = addRun('2026-10-10:morning', '早报', '2026-10-09T14:00:00.000Z', '2026-10-10T00:00:00.000Z');
+  const b1 = addBrief(r1, 1, '十六源日报 · 10-09 晚报');
   addBrief(r2, 1, '早报 v1（被替换）', 'superseded'); const b2 = addBrief(r2, 2, '十六源日报 · 10-10 早报');
   addBrief(r2, 3, '草稿不发布', 'draft');
+  addItem(b1, 1, 'ai_tech', '晚报条目', 'v2ex', 'https://e.com/0');
+  addItem(b2, 1, 'society_life', '社会条目', 'yicai', 'https://e.com/1');
+  const shared = cluster('shared');
+  addItem(b2, 2, 'ai_tech', '<AI> 条目', 'v2ex', 'https://e.com/2', shared);
+  member(shared, 'linuxdo', 'k1', '2026-10-10T00:05:00.000Z');
+  member(shared, 'v2ex', 'k2', '2026-10-10T00:05:00.000Z');
+  member(shared, 'jike', 'k3', '2026-10-10T08:00:00.000Z');
+  addItem(b2, 3, 'ai_tech', '不安全链接条目', 'v2ex', 'javascript:alert(1)');
   db.prepare(`INSERT INTO deliveries(brief_id,recipient,delivery_type,status,created_at,sent_at) VALUES(?,'me@example.com','primary','sent',?,?)`)
     .run(b2, '2026-10-10T00:09:48.000Z', '2026-10-10T00:09:48.000Z');
-  const feed = briefsRss(db, token!, 'https://rss.example')!;
-  ok('每期一条，最新的在前', (feed.match(/<item>/g) ?? []).length === 2 && feed.indexOf('10-10 早报') < feed.indexOf('10-09 晚报'));
+  const sections = [{ id: 'ai_tech', title: 'AI 与科技趋势' }, { id: 'society_life', title: '社会与生活速览' }];
+  const feed = briefsRss(db, token!, 'https://rss.example', 20, sections)!;
+  const content = (feed.match(/<content:encoded>(.*?)<\/content:encoded>/s)?.[1] ?? '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  ok('每期一条，最新的在前，标题简洁', (feed.match(/<item>/g) ?? []).length === 2 && feed.indexOf('10月10日 早报 · 3 条') < feed.indexOf('10月9日 晚报 · 1 条'));
   ok('只取定稿的最新版本', !feed.includes('被替换') && !feed.includes('草稿不发布'));
-  ok('正文是转义后的邮件 HTML', feed.includes('&lt;h1&gt;十六源日报 · 10-10 早报&lt;/h1&gt;&lt;p&gt;A &amp; B'));
+  ok('正文不用邮件 HTML，没有任何内联样式', !content.includes('<table') && !content.includes('style='));
+  ok('分区按规则顺序，条目用 h3', content.indexOf('<h2>AI 与科技趋势</h2>') < content.indexOf('<h2>社会与生活速览</h2>') && content.includes('<h3><a href="https://e.com/2"><AI> 条目</a></h3>'.replace('<AI>', '&lt;AI&gt;')));
+  ok('结论加粗、摘要成段', content.includes('<p><strong>&lt;AI&gt; 条目的结论 &amp; 要点</strong></p><p>第一句。第二句。</p>'));
+  ok('来源显示名称并链接站点', content.includes('来源：<a href="https://www.v2ex.com/">V2EX</a>') && content.includes('来源：yicai'));
+  ok('另见列出同一故事的其他来源，排除主来源和日报之后才加入的', content.includes('另见：LINUX DO') && !content.includes('即刻') && !/另见：[^<]*V2EX/.test(content));
+  ok('非 https 链接不进正文', !content.includes('javascript:') && content.includes('<h3>不安全链接条目</h3>'));
+  ok('开头说明时间窗口', content.startsWith('<p>22:00–08:00 的新内容，共 3 条。</p>'));
+  ok('列表预览按正文顺序列出前几条标题', feed.includes('<description>&lt;AI&gt; 条目；不安全链接条目；社会条目</description>'));
   ok('发布时间取投递时间', feed.includes('<pubDate>Sat, 10 Oct 2026 00:09:48 GMT</pubDate>'));
+  ok('文章链接指向后台运行记录', feed.includes(`<link>https://rss.example/runs/${r2}</link>`));
+  ok('NetNewsWire 所需的命名空间与自引用', feed.includes('xmlns:content=') && feed.includes(`<atom:link href="https://rss.example/rss/briefs/${token}" rel="self"`));
   ok('错误令牌返回 null', briefsRss(db, 'f'.repeat(64), '') === null);
   const fresh = rotateBriefFeedToken(db);
   ok('重置后旧令牌立即失效', briefsRss(db, token!, '') === null && briefsRss(db, fresh!, '') !== null);

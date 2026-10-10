@@ -80,10 +80,30 @@ export function fallbackDigest(parts: Part[]): DigestShape {
   return { points };
 }
 
+/**
+ * 语义化 HTML，不带样式：每条要点标题加粗、说明单独成段、来源用 small。
+ * 用 <br> 拼在一个段落里时，NetNewsWire 等阅读器无法按段落间距排版，三行挤成一团。
+ */
 export function renderDigest(d: DigestShape, channels: string[]): string {
-  const items = d.points.map(p =>
-    `<li><p><b>${esc(p.text)}</b>${p.detail ? `<br>${esc(p.detail)}` : ''}<br>— ${esc(p.channels.join('、'))}</p></li>`).join('');
-  return `${items ? `<ol>${items}</ol>` : '<p>本时段没有值得关注的要点。</p>'}<p>涉及频道：${esc(channels.join('、'))}</p>`;
+  const items = d.points.map(p => `<li><p><strong>${esc(p.text)}</strong></p>` +
+    `${p.detail ? `<p>${esc(p.detail)}</p>` : ''}<p><small>来源：${esc(p.channels.join('、'))}</small></p></li>`).join('');
+  return `${items ? `<ol>${items}</ol>` : '<p>本时段没有值得关注的要点。</p>'}<p><small>本时段涉及频道：${esc(channels.join('、'))}</small></p>`;
+}
+
+/** 从存储的结构化要点重新渲染（RSS 与后台预览都用它，历史汇总也随新版式更新）。 */
+export function digestHtml(db: TelegramDB, row: { summary_json: string | null; source_ids: string; rendered_html: string | null }): string {
+  if (!row.summary_json) return row.rendered_html ?? '';
+  try {
+    const ids = JSON.parse(row.source_ids) as number[];
+    const names = new Map((db.prepare(`SELECT id, coalesce(display_name,title,reference) name FROM telegram_sources`).all() as any[])
+      .map(r => [r.id, channelName(r.name)]));
+    const channels = [...new Set(ids.map(id => names.get(id)).filter((n): n is string => !!n))];
+    const raw = JSON.parse(row.summary_json);
+    // 存储时频道名已校验；这里直接按存储值渲染，不再二次过滤（频道改名后旧汇总仍保留当时的名字）
+    const points = (Array.isArray(raw?.points) ? raw.points : []).map((p: any) => ({
+      text: String(p.text ?? ''), detail: String(p.detail ?? ''), channels: Array.isArray(p.channels) ? p.channels.map(String) : [] }));
+    return renderDigest({ points }, channels);
+  } catch { return row.rendered_html ?? ''; }
 }
 
 function partsFor(db: TelegramDB, windowEnd: string): Part[] {

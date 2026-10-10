@@ -67,13 +67,13 @@ console.log('\nAI 合并与来源频道：\n');
   const row = db.prepare('SELECT * FROM telegram_digests WHERE window_end=?').get(W) as any;
   const html = String(row.rendered_html);
   ok('标题加粗、下方说明具体做法、再标注来源频道（按输入顺序）',
-    html.startsWith('<ol><li><p><b>国行 iPhone 添加 eSIM 受限</b><br>设置中添加 eSIM 提示不支持；需先致电运营商开通 eSIM 功能后再扫码。<br>— 折腾搞机、eSIM群</p></li>'), html.slice(0, 200));
-  ok('说明与标题重复时不重复显示，且不加待核实标签', html.includes('<li><p><b>绕过方法仍然有效</b><br>— 折腾搞机</p></li>') && !html.includes('待核实'), html);
+    html.startsWith('<ol><li><p><strong>国行 iPhone 添加 eSIM 受限</strong></p><p>设置中添加 eSIM 提示不支持；需先致电运营商开通 eSIM 功能后再扫码。</p><p><small>来源：折腾搞机、eSIM群</small></p></li>'), html.slice(0, 200));
+  ok('说明与标题重复时不重复显示，且不加待核实标签', html.includes('<li><p><strong>绕过方法仍然有效</strong></p><p><small>来源：折腾搞机</small></p></li>') && !html.includes('待核实'), html);
   ok('Schema 不再要求 unverified 字段', !(TELEGRAM_DIGEST_SCHEMA.properties.points as any).items.properties.unverified);
   ok('丢弃编造的频道名', !html.includes('编造频道'));
   ok('没有有效频道的要点整条丢弃', !html.includes('凭空编造的要点') && (html.match(/<li>/g) ?? []).length === 2);
   ok('清理消息 ID', !html.includes('123'));
-  ok('末尾列出涉及频道', html.endsWith('<p>涉及频道：折腾搞机、eSIM群</p>'));
+  ok('末尾列出涉及频道', html.endsWith('<p><small>本时段涉及频道：折腾搞机、eSIM群</small></p>'));
   ok('记录来源与模型', row.source_ids === JSON.stringify([a, b]) && row.response_model === 'digest-m' && row.fallback === 0);
   ok('已完成的时刻不重复调用', await runDueDigests(db, cfg, provider, now) === 0 && calls === 1);
   ok('Schema 要求每条带说明字段', (TELEGRAM_DIGEST_SCHEMA.properties.points as any).items.required.includes('detail'));
@@ -88,7 +88,9 @@ console.log('\n汇总 RSS：\n');
   ok('每个时刻一条 item', (feed.match(/<item>/g) ?? []).length === 1);
   ok('标题含月日与早/午/晚', feed.includes('<title>📌 Telegram 要点 · 10-09 午</title>'));
   ok('guid 稳定', feed.includes('telegram-digest:2026-10-09T12:00:00.000Z'));
-  ok('正文含来源频道标注', feed.includes('— 折腾搞机、eSIM群'));
+  ok('正文含来源频道标注', feed.includes('来源：折腾搞机、eSIM群'));
+  ok('完整正文放在 content:encoded，列表预览是纯文本', feed.includes('<content:encoded>&lt;ol&gt;') && feed.includes('<description>国行 iPhone 添加 eSIM 受限；绕过方法仍然有效</description>'));
+  ok('带自引用链接与 dc:creator', feed.includes('rel="self"') && feed.includes('<dc:creator>Telegram 跨频道要点</dc:creator>'));
   ok('错误令牌返回 null', digestRss(db, 'f'.repeat(64), '') === null);
 }
 
@@ -98,7 +100,7 @@ console.log('\n单频道与 AI 失败兜底：\n');
   addSummary(c, W1, W2, S('giffgaff 激活'));
   calls = 0;
   ok('只有一个频道时不调用 AI，直接标注该频道', await runDueDigests(db, cfg, provider, now) === 1 && calls === 0 &&
-    String((db.prepare('SELECT rendered_html FROM telegram_digests WHERE window_end=?').get(W2) as any).rendered_html).includes('<b>giffgaff 激活 的细节</b><br>— giffgaff 交流群'));
+    String((db.prepare('SELECT rendered_html FROM telegram_digests WHERE window_end=?').get(W2) as any).rendered_html).includes('<strong>giffgaff 激活 的细节</strong></p><p><small>来源：giffgaff 交流群'));
 
   const W3 = T('2026-10-08T12:00:00Z'), W4 = T('2026-10-08T00:00:00Z');
   addSummary(a, W4, W3, S('A 话题')); addSummary(b, W4, W3, S('B 话题'));
@@ -112,7 +114,7 @@ console.log('\n单频道与 AI 失败兜底：\n');
   t = new Date(t.getTime() + 3600_000); await runDueDigests(db, cfg, broken, t);
   const fb = db.prepare('SELECT * FROM telegram_digests WHERE window_end=?').get(W3) as any;
   ok('第 3 次失败后退回逐频道拼接，时段不缺席', fb.status === 'completed' && fb.fallback === 1 && fb.attempts === 3 && String(fb.error).includes('upstream down'));
-  ok('兜底取各频道重要信息并轮流排列、标注频道', String(fb.rendered_html).startsWith('<ol><li><p><b>A 话题 的细节</b><br>— 折腾搞机</p></li><li><p><b>B 话题 的细节</b><br>— eSIM群</p></li></ol>'), String(fb.rendered_html));
+  ok('兜底取各频道重要信息并轮流排列、标注频道', String(fb.rendered_html).startsWith('<ol><li><p><strong>A 话题 的细节</strong></p><p><small>来源：折腾搞机</small></p></li><li><p><strong>B 话题 的细节</strong></p><p><small>来源：eSIM群</small></p></li></ol>'), String(fb.rendered_html));
 }
 
 console.log('\n补采未覆盖的窗口不推进：\n');

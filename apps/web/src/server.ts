@@ -32,6 +32,7 @@ import { addTelegramSource, retryTelegramSource, rotateAllToken, rotateSourceTok
          toggleTelegramSource, updateTelegramSettings, resumeVisionQueue, setVisionDailyLimit, updateTelegramRetention, TelegramError } from '../../../packages/telegram/src/core.ts';
 import { visionStats } from '../../../packages/telegram/src/vision.ts';
 import { sourceRss, allRss, digestRss } from '../../../packages/telegram/src/rss.ts';
+import { digestHtml } from '../../../packages/telegram/src/digest.ts';
 import { sendLoginCommand, type LoginCommand } from '../../../packages/telegram/src/login.ts';
 import { renderTelegram, renderTelegramSettings, TELEGRAM_TABS, type TelegramTab } from '../../../packages/telegram/src/views.ts';
 
@@ -403,7 +404,8 @@ const telegramPage = (s: Session, extra: { tab?: TelegramTab; saved?: string; er
     sources: telegramSources(), settings,
     worker: telegramDb.prepare('SELECT * FROM telegram_worker_state WHERE singleton=1').get() as any,
     vision: visionStats(telegramDb),
-    digests: telegramDb.prepare('SELECT * FROM telegram_digests ORDER BY window_end DESC LIMIT 30').all() as any[],
+    digests: (telegramDb.prepare('SELECT * FROM telegram_digests ORDER BY window_end DESC LIMIT 30').all() as any[])
+      .map(d => ({ ...d, rendered_html: digestHtml(telegramDb, d) })),
     // 与 runDueDigests 的回溯范围一致：更早的时段删掉后不会再自动生成
     digestLookbackFrom: new Date(Date.now() - (Number(settings.raw_retention_days) + 1) * 864e5).toISOString(),
   });
