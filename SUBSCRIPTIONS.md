@@ -48,7 +48,7 @@
 | 频道名称 | 类型 | 状态 |
 | --- | --- | --- |
 | @TossiPhoneX | 普通总结 | 启用 |
-| @zaihuapd | 普通总结 | 启用 |
+| @zaihuapd | 普通总结 | 未启用（disabled） |
 | @durov | 普通总结 | 启用 |
 | @karlshareChannel | 普通总结 | 启用 |
 | @TossiPhone | 普通总结 | 启用 |
