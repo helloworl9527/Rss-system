@@ -90,6 +90,15 @@ export function retryTelegramSource(db: TelegramDB, id: number) {
   audit(db, 'source', String(id), 'validation_retried');
 }
 
+/** 显示名用于 RSS 标题和汇总里的来源频道；留空则回退为 Telegram 上的频道标题。 */
+export function renameTelegramSource(db: TelegramDB, id: number, displayName: string) {
+  const name = displayName.trim();
+  if (name.length > 80) throw new TelegramError(400, '显示名不能超过 80 个字符');
+  const r = db.prepare('UPDATE telegram_sources SET display_name=?,updated_at=? WHERE id=?').run(name || null, nowIso(), id);
+  if (!r.changes) throw new TelegramError(404, 'Telegram 来源不存在');
+  audit(db, 'source', String(id), 'source_renamed', { displayName: name || null });
+}
+
 export function toggleTelegramSource(db: TelegramDB, id: number, enabled: boolean) {
   const row = db.prepare('SELECT status FROM telegram_sources WHERE id=?').get(id) as any;
   if (!row) throw new TelegramError(404, 'Telegram 来源不存在');

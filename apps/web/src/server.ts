@@ -16,7 +16,9 @@ import { openDb, migrate, nowIso, type DB } from '../../../packages/db/src/index
 import { join } from 'node:path';
 import { verifyPassword, verifyTotp, SessionStore, csrfOk, LoginLimiter, type Session }
   from '../../../packages/web/src/auth.ts';
-import { renderAllnet, renderLogin, renderDashboard, renderSources, renderSettings } from '../../../packages/web/src/views.ts';
+import { renderAllnet, renderLogin, renderSources, renderSettings, renderToday, renderSystem, setNavBadges, type TodaySlot, type NavBadges } from '../../../packages/web/src/views.ts';
+import { computeAlerts, readBackups, readDisk, readUnits, type Alert } from '../../../packages/web/src/ops.ts';
+import { briefFeedToken, briefsRss, rotateBriefFeedToken } from '../../../packages/web/src/briefs-rss.ts';
 import { maskedSecrets, setSecret, setSettings, resolveSettings, vaultHealthy,
          resolveSecret, SECRET_NAMES, type SecretName } from '../../../packages/web/src/secrets.ts';
 import { overrideCandidate, toggleSource, updateSourceGroup, updateSourceUrl, planResend, addSource, deleteSource,
@@ -24,7 +26,7 @@ import { overrideCandidate, toggleSource, updateSourceGroup, updateSourceUrl, pl
 import { createProvider } from '../../../packages/ai/src/registry.ts';
 import { runSourceProfiler } from '../../../packages/ai/src/source-profiler.ts';
 import { readyTelegramDb } from '../../../packages/telegram/src/db.ts';
-import { addTelegramSource, retryTelegramSource, rotateAllToken, rotateSourceToken,
+import { addTelegramSource, retryTelegramSource, rotateAllToken, rotateSourceToken, renameTelegramSource,
          toggleTelegramSource, updateTelegramSettings, resumeVisionQueue, TelegramError } from '../../../packages/telegram/src/core.ts';
 import { visionStats } from '../../../packages/telegram/src/vision.ts';
 import { sourceRss, allRss, digestRss } from '../../../packages/telegram/src/rss.ts';
@@ -199,17 +201,111 @@ const q = {
   }),
 };
 
+// ---- 运行状况：今日页、系统运行页和侧栏计数共用 ----
+const BACKUP_DIR = process.env.BACKUP_DIR ?? '/var/lib/briefing/backups';
+const taipeiDate = (ms: number) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+const SLOTS: Array<[string, string, string]> = [['morning', '早报', '08:00'], ['noon', '午报', '12:00'], ['evening', '晚报', '22:00']];
+
+/** 每个 Telegram 来源的最近消息时间和 24 小时消息量；子查询都走 (source_id, sent_at) 索引。 */
+const telegramSources = (now = Date.now()) => telegramDb.prepare(`SELECT s.*,
+    (SELECT max(m.sent_at) FROM telegram_messages m WHERE m.source_id=s.id AND m.deleted_at IS NULL) last_message_at,
+    (SELECT count(*) FROM telegram_messages m WHERE m.source_id=s.id AND m.sent_at>=? AND m.deleted_at IS NULL) messages_24h
+  FROM telegram_sources s ORDER BY s.enabled DESC, CASE s.status WHEN 'error' THEN 0 ELSE 1 END, s.id`).all(new Date(now - 864e5).toISOString()) as any[];
+
+let sysCache: { at: number; units: ReturnType<typeof readUnits>; disk: ReturnType<typeof readDisk>; backups: ReturnType<typeof readBackups> } | null = null;
+const systemState = () => {
+  if (!sysCache || Date.now() - sysCache.at > 20_000)
+    sysCache = { at: Date.now(), units: readUnits(), disk: readDisk('/'), backups: readBackups(BACKUP_DIR) };
+  return sysCache;
+};
+
+function opsSnapshot() {
+  const now = Date.now();
+  const sys = systemState();
+  const tgSources = telegramSources(now);
+  const settings = telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any;
+  const worker = telegramDb.prepare('SELECT * FROM telegram_worker_state WHERE singleton=1').get() as any;
+  const sources = q.sources() as any[];
+  const alerts: Alert[] = computeAlerts({
+    now, units: sys.units, disk: sys.disk, backups: sys.backups,
+    runs: db.prepare(`SELECT window_key,window_label,scheduled_at,status,error,finished_at FROM runs WHERE scheduled_at>=? ORDER BY scheduled_at`)
+      .all(new Date(now - 864e5).toISOString()) as any[],
+    sources,
+    telegram: {
+      authorized: !!worker?.authorized, heartbeatAt: worker?.heartbeat_at ?? null,
+      sources: tgSources.map(t => ({ name: t.display_name || t.title || t.reference, status: t.status, enabled: t.enabled,
+        last_error: t.last_error, last_success_at: t.last_success_at })),
+      visionPaused: !!settings?.vision_paused, visionPauseReason: settings?.vision_pause_reason ?? null,
+      visionBacklog: visionStats(telegramDb).pending, visionDailyLimit: Number(settings?.vision_daily_limit ?? 0) || 1,
+      failedSummaries: (telegramDb.prepare(`SELECT count(*) n FROM telegram_summary_jobs WHERE status='failed' AND next_attempt_at IS NULL AND window_end>=?`)
+        .get(new Date(now - 2 * 864e5).toISOString()) as any).n,
+    },
+  });
+  return { now, sys, alerts, sources, tgSources, worker };
+}
+
+setNavBadges((): NavBadges => {
+  const { alerts } = opsSnapshot();
+  const badge = (xs: Alert[]) => xs.length ? { count: xs.length, level: xs.some(a => a.level === 'bad') ? 'bad' as const : 'warn' as const } : undefined;
+  return { today: badge(alerts), telegram: badge(alerts.filter(a => a.area === 'telegram')),
+    system: badge(alerts.filter(a => a.area === 'system')), sources: badge(alerts.filter(a => a.area === 'sources')) };
+});
+
 app.get('/', async (req, reply) => {
   const s = requireAuth(req, reply); if (!s) return;
-  return reply.type('text/html; charset=utf-8').send(renderDashboard({
-    csrf: s.csrf, sources: q.sources() as any, harvests: q.harvests() as any,
-    stats: q.stats() as any,
+  const { now, sys, alerts, sources, tgSources, worker } = opsSnapshot();
+  const date = taipeiDate(now);
+  const slots: TodaySlot[] = SLOTS.map(([key, label, clock]) => {
+    const run = db.prepare('SELECT * FROM runs WHERE window_key=?').get(`${date}:${key}`) as any;
+    const brief = run ? db.prepare(`SELECT b.id, (SELECT count(*) FROM brief_items i WHERE i.brief_id=b.id) items FROM briefs b
+      WHERE b.run_id=? AND b.status='final' ORDER BY b.version DESC LIMIT 1`).get(run.id) as any : null;
+    const delivery = brief ? db.prepare(`SELECT status,sent_at,error FROM deliveries WHERE brief_id=? AND delivery_type='primary' ORDER BY id DESC LIMIT 1`).get(brief.id) as any : null;
+    return { key, label, clock, scheduledAt: Date.parse(`${date}T${clock}:00+08:00`), run: run ?? null, items: brief?.items ?? null, delivery: delivery ?? null };
+  });
+  const dayStart = new Date(Date.parse(`${date}T00:00:00+08:00`)).toISOString();
+  // usage_ledger 从未被写入；AI 判定的真实记录在 evaluations（每次 L1/L2/L3 判定或组装一行；token 字段未填）
+  const ai = db.prepare(`SELECT count(*) calls FROM evaluations WHERE created_at>=?`).get(dayStart) as any;
+  const lastH = (q.harvests() as any[])[0];
+  const enabled = sources.filter(x => x.enabled && !x.allnet_json);
+  const tgEnabled = tgSources.filter(t => t.enabled);
+  const token = briefFeedToken(db);
+  const weekday = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Taipei', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date(now));
+  return reply.type('text/html; charset=utf-8').send(renderToday({
+    csrf: s.csrf, now, dateLabel: weekday, alerts, slots,
+    rss: { healthy: enabled.filter(x => x.health === 'healthy').length, enabled: enabled.length,
+      lastHarvestAt: lastH?.started_at ?? null, lastHarvestNew: lastH?.new_items ?? null },
+    telegram: { active: tgEnabled.filter(t => t.status === 'active').length, enabled: tgEnabled.length,
+      messages24h: tgEnabled.reduce((n, t) => n + Number(t.messages_24h ?? 0), 0), authorized: !!worker?.authorized },
+    ai: { calls: ai.calls },
+    disk: sys.disk, briefFeedUrl: token ? `${process.env.ADMIN_BASE_URL ?? ''}/rss/briefs/${token}` : null,
   }));
+});
+
+app.get('/system', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  const now = Date.now(); const sys = systemState();
+  const since = new Date(now - 864e5).toISOString();
+  const byStage = (db.prepare(`SELECT stage, model, count(*) calls FROM evaluations WHERE created_at>=? GROUP BY stage, model
+    ORDER BY CASE stage WHEN 'luna' THEN 0 WHEN 'terra' THEN 1 WHEN 'sol' THEN 2 ELSE 3 END, calls DESC`).all(since) as any[])
+    .map(r => ({ stage: String(r.stage), model: String(r.model), calls: r.calls }));
+  return reply.type('text/html; charset=utf-8').send(renderSystem({ csrf: s.csrf, now, units: sys.units, backups: sys.backups, disk: sys.disk,
+    ai24h: { calls: byStage.reduce((n, r) => n + r.calls, 0), byStage } }));
+});
+
+app.post('/rss/briefs/token', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s || !requireWrite(req, reply, s)) return;
+  rotateBriefFeedToken(db, (req.body as any)?.action === 'revoke'); return reply.redirect('/');
+});
+app.get<{Params:{token:string}}>('/rss/briefs/:token', async (req, reply) => {
+  if (!/^[a-f0-9]{64}$/.test(req.params.token)) return reply.code(404).send('订阅不存在');
+  const body = briefsRss(db, req.params.token, process.env.ADMIN_BASE_URL ?? '');
+  if (body === null) return reply.code(404).send('订阅不存在');
+  return reply.header('Cache-Control', 'private, no-store, max-age=0').header('Referrer-Policy', 'no-referrer').type('application/rss+xml; charset=utf-8').send(body);
 });
 
 const telegramPage = (s: Session, extra: Record<string,unknown> = {}) => renderTelegram({
   csrf: s.csrf,
-  sources: telegramDb.prepare('SELECT * FROM telegram_sources ORDER BY id DESC').all() as any[],
+  sources: telegramSources(),
   settings: telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any,
   worker: telegramDb.prepare('SELECT * FROM telegram_worker_state WHERE singleton=1').get() as any,
   vision: visionStats(telegramDb),
@@ -238,6 +334,11 @@ app.post<{Params:{id:string}}>('/telegram/sources/:id/toggle',async(req,reply)=>
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;
   try{toggleTelegramSource(telegramDb,Number(req.params.id),String((req.body as any)?.enabled)==='true');return reply.redirect('/telegram');}
   catch(e:any){return reply.code(e instanceof TelegramError?e.code:500).send({error:e instanceof TelegramError?e.message:'启停失败'});}
+});
+app.post<{Params:{id:string}}>('/telegram/sources/:id/name',async(req,reply)=>{
+  const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;
+  try{renameTelegramSource(telegramDb,Number(req.params.id),String((req.body as any)?.display_name??''));return reply.redirect('/telegram');}
+  catch(e:any){return reply.code(e instanceof TelegramError?e.code:500).send({error:e instanceof TelegramError?e.message:'保存显示名失败'});}
 });
 app.post<{Params:{id:string}}>('/telegram/sources/:id/token',async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;

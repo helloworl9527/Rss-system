@@ -6,6 +6,8 @@
  * 所有动态值一律转义：数据库里存的是来源方提供的不可信文本。
  */
 
+import type { Alert, BackupStatus, DiskStatus, UnitStatus } from './ops.ts';
+
 export const esc = (s: unknown): string => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -20,109 +22,166 @@ const ago = (t: unknown): string => {
 };
 
 const CSS = `
+/* 侧栏 + 主内容。系统字体：后台 CSP 为 default-src 'none'，不加载任何外部字体。 */
 :root{
-  color-scheme:light dark;
-  --page:#f2f5f8; --card:#fff; --line:#e2e7ee; --line-soft:#eef1f5;
-  --ink:#161b22; --body:#39424e; --muted:#6b7684; --faint:#8b95a3;
-  --accent:#1c5fa8; --accent-soft:#e7eef7;
-  --ok:#12764a; --warn:#96590a; --bad:#b3261e;
-  --nav:#1a1f27;
+  color-scheme:light;
+  --page:#f4f6f9; --card:#fff; --line:#dde3eb; --line-soft:#edf1f5;
+  --ink:#141a23; --body:#3a4452; --muted:#687384; --faint:#8a95a5;
+  --accent:#1f5aa6; --accent-soft:#e6eef9;
+  --ok:#137a4b; --ok-soft:#e3f3ea; --warn:#9a5b06; --warn-soft:#fbf0de; --bad:#b4271f; --bad-soft:#fbe7e5;
+  --side:#eef2f7; --side-ink:#2b3442; --side-on:#fff;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
 }
 @media(prefers-color-scheme:dark){:root{
-  --page:#12161b; --card:#1a2027; --line:#2b333d; --line-soft:#232a32;
-  --ink:#e8edf3; --body:#c3cbd5; --muted:#8b95a3; --faint:#6b7684;
-  --accent:#7fb0e8; --accent-soft:#1d2a3a;
-  --ok:#4cc38a; --warn:#e0a33e; --bad:#f3796e; --nav:#0f1318;
+  color-scheme:dark;
+  --page:#11151b; --card:#181d25; --line:#2a323d; --line-soft:#212832;
+  --ink:#e9eef5; --body:#c3ccd7; --muted:#8a95a5; --faint:#6b7684;
+  --accent:#86b3ee; --accent-soft:#1b2a40;
+  --ok:#55c995; --ok-soft:#15302a; --warn:#e3a849; --warn-soft:#352812; --bad:#f2827a; --bad-soft:#3a1d1c;
+  --side:#141920; --side-ink:#c3ccd7; --side-on:#202733;
 }}
 *{box-sizing:border-box}
 body{margin:0;background:var(--page);color:var(--body);
-  font:15px/1.65 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;
+  font:14.5px/1.65 -apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Segoe UI',sans-serif;
   -webkit-font-smoothing:antialiased}
+.shell{display:grid;grid-template-columns:200px minmax(0,1fr);min-height:100vh}
+.side{background:var(--side);border-right:1px solid var(--line);padding:18px 12px;display:flex;flex-direction:column;gap:2px;
+  position:sticky;top:0;height:100vh;overflow-y:auto}
+.side .brand{font-weight:700;color:var(--ink);font-size:15px;padding:2px 10px 16px}
+.side a{display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--side-ink);text-decoration:none;
+  padding:7px 10px;border-radius:7px;font-size:14px}
+.side a:hover{background:var(--side-on)}
+.side a.on{background:var(--side-on);color:var(--ink);font-weight:600;box-shadow:0 0 0 1px var(--line)}
+.side .grp{font-size:11px;letter-spacing:.1em;color:var(--muted);padding:16px 10px 4px}
+.side form{margin-top:auto;padding:12px 10px 0}
+.side form button{width:100%}
+.cnt{font-size:11px;font-variant-numeric:tabular-nums;border-radius:9px;padding:0 7px;font-weight:600;line-height:18px}
+.cnt.bad{background:var(--bad-soft);color:var(--bad)} .cnt.warn{background:var(--warn-soft);color:var(--warn)}
 
-header{background:var(--nav);padding:0 22px;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
-header .brand{font-weight:700;color:#fff;font-size:15px;letter-spacing:-.01em;margin-right:18px;padding:14px 0}
-header a{color:#9aa7b5;text-decoration:none;font-size:14px;padding:15px 12px;display:block;
-  border-bottom:2px solid transparent;transition:color .12s}
-header a:hover{color:#fff}
-header form{margin-left:auto}
-header form button{background:transparent;border:1px solid #39424e;color:#9aa7b5;font-size:13px;padding:5px 13px}
-header form button:hover{color:#fff;border-color:#5b6875}
-
-main{max-width:1120px;margin:0 auto;padding:26px 22px 60px}
-h2{font-size:12px;letter-spacing:.11em;text-transform:uppercase;color:var(--muted);
-  font-weight:700;margin:34px 0 12px}
+main{max-width:1180px;width:100%;padding:24px 28px 64px;display:block}
+.page-h{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 0 18px}
+.page-h h1{font-size:20px;color:var(--ink);margin:0;text-wrap:balance}
+.page-h span{font-size:12.5px;color:var(--muted)}
+h2{font-size:15px;color:var(--ink);font-weight:650;margin:30px 0 10px}
 h2:first-child{margin-top:0}
-.sub{font-size:13px;color:var(--muted);margin:-6px 0 14px}
+.sub{font-size:13px;color:var(--muted);margin:-4px 0 12px}
+.stack{display:grid;gap:10px}
 
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px;margin:0 0 6px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:15px 17px}
-.card .n{font-size:26px;font-weight:700;color:var(--ink);letter-spacing:-.02em;
-  font-variant-numeric:tabular-nums;line-height:1.2}
-.card .l{font-size:12px;color:var(--muted);margin-top:3px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:0 0 6px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:13px 15px;display:grid;gap:3px;align-content:start}
+.card .n{font-size:21px;font-weight:700;color:var(--ink);font-variant-numeric:tabular-nums;line-height:1.3}
+.card .l{font-size:12px;color:var(--muted)}
+.card .d{font-size:12px;color:var(--muted);line-height:1.5}
+.bar{height:5px;border-radius:3px;background:var(--line-soft);overflow:hidden;margin:2px 0}
+.bar i{display:block;height:100%;background:var(--accent)} .bar i.warn{background:var(--warn)} .bar i.bad{background:var(--bad)}
 
-table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);
-  border:1px solid var(--line);border-radius:10px;overflow:hidden}
-th{background:transparent;font-weight:600;font-size:11px;letter-spacing:.07em;text-transform:uppercase;
-  color:var(--faint);padding:11px 14px;text-align:left;border-bottom:1px solid var(--line)}
-td{padding:11px 14px;font-size:14px;border-bottom:1px solid var(--line-soft);vertical-align:top;color:var(--body)}
+.alerts{display:grid;gap:8px}
+.alert{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center;padding:10px 14px;border-radius:8px;
+  border:1px solid var(--line);background:var(--card)}
+.alert.bad{border-color:color-mix(in srgb,var(--bad) 35%,var(--line));background:var(--bad-soft)}
+.alert.warn{border-color:color-mix(in srgb,var(--warn) 35%,var(--line));background:var(--warn-soft)}
+.alert .sev{font-size:11px;font-weight:700;letter-spacing:.06em}
+.alert.bad .sev{color:var(--bad)} .alert.warn .sev{color:var(--warn)} .alert.ok .sev{color:var(--ok)}
+.alert .t{color:var(--ink);font-size:13.5px} .alert .t small{display:block;color:var(--muted);font-size:12.5px}
+.alert a.act{font-size:12.5px;white-space:nowrap}
+
+.day{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.slot{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:12px 14px;display:grid;gap:6px;align-content:start}
+.slot .h{display:flex;justify-content:space-between;align-items:baseline}
+.slot .h b{font-size:15px;color:var(--ink)} .slot .h span{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.slot .s{font-size:12.5px;color:var(--muted);line-height:1.55}
+
+table{width:100%;border-collapse:separate;border-spacing:0;background:var(--card);border:1px solid var(--line);border-radius:9px;overflow:hidden}
+th{font-weight:600;font-size:11.5px;color:var(--muted);padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:9px 12px;font-size:13.5px;border-bottom:1px solid var(--line-soft);vertical-align:top;color:var(--body)}
 tr:last-child td{border-bottom:none}
-tbody tr:hover td,table tr:hover td{background:var(--line-soft)}
-td a{color:var(--accent);text-decoration:none}
-td a:hover{text-decoration:underline}
+td b{color:var(--ink);font-weight:600}
+td small{display:block;color:var(--muted);font-size:12px}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+td a{color:var(--accent);text-decoration:none} td a:hover{text-decoration:underline}
+.tw{overflow-x:auto}
 
 .ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}
 .muted{color:var(--muted);font-size:12.5px;line-height:1.55}
-.pill{display:inline-block;padding:2px 8px;border-radius:11px;font-size:11px;
-  background:var(--line-soft);color:var(--muted)}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border-radius:10px;font-size:11.5px;font-weight:600;
+  background:var(--line-soft);color:var(--muted);white-space:nowrap}
 .pill.accent{background:var(--accent-soft);color:var(--accent)}
-.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:1px}
+.pill.ok,.pill.warn,.pill.bad,.pill.idle{gap:5px}
+.pill.ok::before,.pill.warn::before,.pill.bad::before,.pill.idle::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pill.ok{background:var(--ok-soft);color:var(--ok)} .pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.bad{background:var(--bad-soft);color:var(--bad)}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px}
+code,.mono{font-family:var(--mono);font-size:12.5px}
+.feed{font-family:var(--mono);font-size:12px;width:100%}
 
-button{font:inherit;font-size:13px;padding:6px 14px;border:1px solid var(--line);
-  background:var(--card);color:var(--body);border-radius:7px;cursor:pointer;transition:border-color .12s}
+button{font:inherit;font-size:13px;padding:5px 13px;border:1px solid var(--line);
+  background:var(--card);color:var(--ink);border-radius:7px;cursor:pointer;transition:border-color .12s}
 button:hover{border-color:var(--muted)}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 button:disabled{opacity:.45;cursor:not-allowed}
-button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:500}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--card);font-weight:600}
 button.primary:hover{opacity:.9}
-
-input,select{font:inherit;font-size:13px;padding:6px 9px;border:1px solid var(--line);
+input,select,textarea{font:inherit;font-size:13px;padding:5px 9px;border:1px solid var(--line);
   border-radius:7px;background:var(--card);color:var(--ink)}
-input:focus,select:focus{outline:2px solid var(--accent-soft);outline-offset:0;border-color:var(--accent)}
 input::placeholder{color:var(--faint)}
 form.inline{display:flex;gap:6px;align-items:center;margin:0;flex-wrap:wrap}
 form.inline input[name=reason]{width:158px}
-details{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:10px 0;overflow:hidden}
-summary{cursor:pointer;padding:11px 14px;font-weight:650;color:var(--ink)}
+details{background:var(--card);border:1px solid var(--line);border-radius:9px;margin:10px 0;overflow:hidden}
+summary{cursor:pointer;padding:10px 14px;font-weight:600;color:var(--ink)}
 details>table{border-width:1px 0 0;border-radius:0}
 details.vendor{margin:8px 12px 12px}
 
 form.login{max-width:352px;margin:11vh auto;background:var(--card);border:1px solid var(--line);
-  border-radius:14px;padding:30px 28px}
-form.login h2{font-size:19px;text-transform:none;letter-spacing:-.01em;color:var(--ink);margin:0 0 4px}
+  border-radius:12px;padding:30px 28px}
+form.login h2{font-size:19px;color:var(--ink);margin:0 0 4px}
 form.login .hint{font-size:13px;color:var(--muted);margin:0 0 20px}
 form.login label{display:block;font-size:12px;color:var(--muted);margin:14px 0 5px;font-weight:500}
 form.login input{width:100%;padding:10px 12px;font-size:14px}
-form.login button{width:100%;padding:11px;margin-top:22px;font-size:14px}
+form.login button{width:100%;padding:10px;margin-top:22px;font-size:14px}
 
-.err,.note{padding:11px 14px;border-radius:9px;font-size:13.5px;line-height:1.6;margin:0 0 16px}
-.err{background:color-mix(in srgb,var(--bad) 10%,transparent);border:1px solid color-mix(in srgb,var(--bad) 32%,transparent);color:var(--bad)}
-.note{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 24%,transparent);color:var(--body)}
+.err,.note{padding:10px 14px;border-radius:8px;font-size:13.5px;line-height:1.6;margin:0 0 16px}
+.err{background:var(--bad-soft);border:1px solid color-mix(in srgb,var(--bad) 32%,var(--line));color:var(--bad)}
+.note{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 24%,var(--line));color:var(--body)}
 a{color:var(--accent)}
-@media(max-width:640px){
-  main{padding:18px 14px 40px}
-  header{padding:0 14px}
-  th,td{padding:9px 10px;font-size:13px}
-  form.inline input[name=reason]{width:110px}
+@media(max-width:860px){
+  .shell{grid-template-columns:1fr}
+  .side{position:static;height:auto;flex-direction:row;flex-wrap:wrap;gap:4px;padding:10px 12px;border-right:none;border-bottom:1px solid var(--line)}
+  .side .brand{width:100%;padding:2px 6px 6px}
+  .side .grp{display:none}
+  .side form{margin:0 0 0 auto;padding:0}
+  main{padding:18px 16px 40px}
+  .day{grid-template-columns:1fr}
+  .alert{grid-template-columns:1fr}
+  th,td{padding:8px 9px;font-size:13px}
 }`;
 
-export function layout(title: string, body: string, csrf: string): string {
+export type NavKey = 'today' | 'sources' | 'allnet' | 'telegram' | 'system' | 'settings';
+export type NavBadges = Partial<Record<NavKey, { count: number; level: 'bad' | 'warn' }>>;
+let navBadges: () => NavBadges = () => ({});
+/** 服务端启动时注册：侧栏每个页面旁显示待处理数量。计算失败不影响页面渲染。 */
+export function setNavBadges(fn: () => NavBadges): void { navBadges = fn; }
+
+const NAV: Array<[NavKey, string, string] | string> = [
+  ['today', '/', '今日'], ['sources', '/sources', '来源'], ['allnet', '/allnet', '全网热点'], ['telegram', '/telegram', 'Telegram'],
+  '系统', ['system', '/system', '系统运行'], ['settings', '/settings', '设置'],
+];
+const NAV_BY_TITLE: Record<string, NavKey> = { '今日': 'today', '仪表盘': 'today', '来源': 'sources', '全网热点': 'allnet',
+  'Telegram 订阅': 'telegram', '系统运行': 'system', '设置': 'settings' };
+
+export function layout(title: string, body: string, csrf: string, active: NavKey | undefined = NAV_BY_TITLE[title]): string {
+  let badges: NavBadges = {};
+  try { badges = navBadges(); } catch { /* 侧栏计数失败不影响页面 */ }
+  const links = NAV.map(item => {
+    if (typeof item === 'string') return `<div class="grp">${esc(item)}</div>`;
+    const [key, href, label] = item; const b = badges[key];
+    return `<a href="${href}"${key === active ? ' class="on" aria-current="page"' : ''}>${esc(label)}${b && b.count ? `<span class="cnt ${b.level}">${b.count}</span>` : ''}</a>`;
+  }).join('');
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${esc(title)} · 十六源简报后台</title><style>${CSS}</style></head><body>
-<header>
-  <span class="brand">十六源简报</span>
-  <a href="/">仪表盘</a><a href="/sources">来源</a><a href="/allnet">全网热点</a><a href="/telegram">Telegram 订阅</a><a href="/settings">设置</a>
+<title>${esc(title)} · 十六源日报后台</title><style>${CSS}</style></head><body>
+<div class="shell"><nav class="side" aria-label="主导航"><span class="brand">十六源日报</span>${links}
   <form method="post" action="/logout"><input type="hidden" name="csrf" value="${esc(csrf)}"><button>登出</button></form>
-</header><main>${body}</main></body></html>`;
+</nav><main>${body}</main></div></body></html>`;
 }
 
 export function renderLogin(o: { configured: boolean; needTotp: boolean; error?: string }): string {
@@ -154,45 +213,6 @@ type Src = { id: string; display_name: string; category: string; health: string;
   last_http_code: number | null; last_error: string | null; latest_item_at: string | null; enabled: number;
   onboarding_status?: string; observation_until?: string | null;
   endpoint_url?: string | null; endpoint_parser?: string | null };
-
-function sourceTable(sources: Src[]): string {
-  return `<table><tr><th>来源</th><th>分类</th><th>采集档</th><th>健康</th>
-    <th>最近成功</th><th>最新内容</th><th>连败</th><th>最近错误</th></tr>` +
-    sources.map(s => `<tr>
-      <td>${esc(s.display_name)}<div class="muted">${esc(s.id)}</div></td>
-      <td>${esc(s.category)}</td><td>${esc(s.harvest_tier)}</td>
-      <td>${healthDot(s.health)} <span class="pill">${esc(s.onboarding_status ?? (s.enabled ? 'ACTIVE' : 'DISABLED'))}</span>${s.enabled ? '' : `<span class="pill">${s.allnet_json?'未参与日报':'已停用'}</span>`}</td>
-      <td>${esc(ago(s.last_success_at))}</td><td>${esc(ago(s.latest_item_at))}</td>
-      <td>${s.consecutive_failures || ''}</td>
-      <td class="muted">${esc(String(s.last_error ?? '').slice(0, 60))}</td>
-    </tr>`).join('') + '</table>';
-}
-
-export function renderDashboard(o: {
-  csrf: string; sources: Src[]; harvests: any[]; stats: any;
-}): string {
-  const s = o.stats;
-  const bad = o.sources.filter(x => x.health === 'failing' || x.health === 'degraded');
-  const lastH = o.harvests[0];
-  const deliv = (s.deliveries ?? []).map((d: any) => `${d.status} ${d.c}`).join(' · ') || '尚无投递';
-
-  const body = `
-  <div class="cards">
-    <div class="card"><div class="n">${o.sources.filter(x => x.health === 'healthy').length}/${o.sources.length}</div><div class="l">来源健康</div></div>
-    <div class="card"><div class="n">${esc(s.items)}</div><div class="l">条目</div></div>
-    <div class="card"><div class="n">${esc(s.versions)}</div><div class="l">版本</div></div>
-    <div class="card"><div class="n">${esc(s.candidates)}</div><div class="l">候选</div></div>
-    <div class="card"><div class="n">${esc(s.onboardingPending ?? 0)}</div><div class="l">待审批来源</div></div>
-    <div class="card"><div class="n">${esc(s.profilerCalls ?? 0)}</div><div class="l">Profiler 调用</div></div>
-  </div>
-  ${bad.length ? `<div class="note">${bad.length} 个来源处于降级或失败状态：${bad.map(b => esc(b.id)).join('、')}</div>` : ''}
-  ${s.pendingFulltext ? `<div class="note">待抓原帖全文 ${esc(s.pendingFulltext)} 条</div>` : ''}
-  <p class="muted">最近采集：${lastH ? `#${esc(lastH.id)} ${esc(lastH.status)} ${esc(ago(lastH.started_at))}，
-    来源 ${esc(lastH.sources_ok)}/${esc(lastH.sources_attempted)}，新条目 ${esc(lastH.new_items)}` : '尚无记录'}
-    ｜ 投递：${esc(deliv)} ｜ AI token：${esc(s.aiTokens ?? 0)} ｜ 成本：$${Number(s.aiCostUsd ?? 0).toFixed(4)}</p>
-  <h2>来源健康</h2>${sourceTable(o.sources)}`;
-  return layout('仪表盘', body, o.csrf);
-}
 
 const PARSERS = [['rss','RSS / Atom'],['telegram_web','Telegram 网页版 (t.me/s/…)'],
                  ['v2ex_json','V2EX 官方热门 JSON'],
@@ -459,4 +479,119 @@ export function renderAllnet(o: {
   ${(o.allnetCandidates??[]).map(c=>`<form method="post" action="/allnet/add"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><input type="hidden" name="name" value="${esc(o.allnetQuery??'')}"><input type="hidden" name="upstream_id" value="${c.id}"><span>${esc(c.title)}</span><input name="origin" type="url" placeholder="原站地址（如需要）"> ${c.existing?`<span>已订阅：${esc(c.existing)}</span>`:'<button>测试并订阅</button>'}</form>`).join('')}
 
   `,o.csrf);
+}
+
+// ---------------- 今日 / 系统运行（后台改版第一期） ----------------
+
+const fmtTime = (ms: number | null | undefined, withDate = false): string => ms == null || !Number.isFinite(ms) ? '—'
+  : new Date(ms).toLocaleString('zh-CN', { timeZone: 'Asia/Taipei', hour12: false, hour: '2-digit', minute: '2-digit',
+      ...(withDate ? { month: '2-digit', day: '2-digit' } : {}) });
+const fmtDur = (ms: number): string => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s >= 3600 ? `${Math.floor(s / 3600)} 小时 ${Math.round((s % 3600) / 60)} 分` : s >= 60 ? `${Math.floor(s / 60)} 分 ${s % 60} 秒` : `${s} 秒`;
+};
+const until = (ms: number, now: number): string => {
+  const m = Math.round((ms - now) / 60000);
+  return m < 60 ? `${m} 分钟后` : m < 1440 ? `${Math.round(m / 60)} 小时后` : `${Math.round(m / 1440)} 天后`;
+};
+const gb = (b: number) => `${(b / 2 ** 30).toFixed(1)} GB`;
+const mb = (b: number) => b >= 2 ** 30 ? gb(b) : `${Math.round(b / 2 ** 20)} MB`;
+const num = (n: number) => Number(n ?? 0).toLocaleString('en-US');
+
+
+export type TodaySlot = { key: string; label: string; clock: string; scheduledAt: number;
+  run?: { status: string; error: string | null; started_at: string | null; finished_at: string | null } | null;
+  items?: number | null; delivery?: { status: string; sent_at: string | null; error: string | null } | null };
+
+function slotCard(s: TodaySlot, now: number): string {
+  const r = s.run;
+  let pill: string, detail: string;
+  if (!r) {
+    if (s.scheduledAt > now) { pill = '<span class="pill idle">未开始</span>'; detail = `${until(s.scheduledAt, now)}开始`; }
+    else if (now - s.scheduledAt < 15 * 60_000) { pill = '<span class="pill idle">等待启动</span>'; detail = '定时任务即将开始'; }
+    else { pill = '<span class="pill bad">没有运行</span>'; detail = '到点后没有找到运行记录，请检查系统运行页'; }
+  } else if (r.status === 'succeeded') {
+    const sent = s.delivery?.status === 'sent';
+    pill = sent ? '<span class="pill ok">已投递</span>' : `<span class="pill warn">${esc(s.delivery?.status ?? '未投递')}</span>`;
+    const took = r.started_at && r.finished_at ? `用时 ${fmtDur(Date.parse(r.finished_at) - Date.parse(r.started_at))}` : '';
+    detail = [took, s.items != null ? `${s.items} 条` : '', sent ? `${fmtTime(Date.parse(s.delivery!.sent_at!))} 送达` : esc(s.delivery?.error ?? '')]
+      .filter(Boolean).join(' · ');
+  } else if (r.status === 'partial' || r.status === 'failed') {
+    pill = '<span class="pill bad">未发送</span>'; detail = esc((r.error ?? '运行未成功').slice(0, 120));
+  } else {
+    pill = '<span class="pill warn">进行中</span>';
+    detail = r.started_at ? `已运行 ${fmtDur(now - Date.parse(r.started_at))}` : esc(r.status);
+  }
+  return `<div class="slot"><div class="h"><b>${esc(s.label)}</b><span>${esc(s.clock)}</span></div>${pill}<div class="s">${detail}</div></div>`;
+}
+
+export function renderToday(o: {
+  csrf: string; now: number; dateLabel: string; alerts: Alert[]; slots: TodaySlot[];
+  rss: { healthy: number; enabled: number; lastHarvestAt: string | null; lastHarvestNew: number | null };
+  telegram: { active: number; enabled: number; messages24h: number; authorized: boolean };
+  ai: { calls: number };
+  disk: DiskStatus; briefFeedUrl: string | null;
+}): string {
+  const alerts = o.alerts.length
+    ? `<div class="alerts">${o.alerts.map(a => `<div class="alert ${a.level}"><span class="sev">${a.level === 'bad' ? '故障' : '留意'}</span>
+        <div class="t">${esc(a.title)}<small>${esc(a.detail)}</small></div><a class="act" href="${esc(a.href)}">查看</a></div>`).join('')}</div>`
+    : '<div class="alerts"><div class="alert ok"><span class="sev">正常</span><div class="t">没有需要处理的事项</div><span></span></div></div>';
+  const pct = o.disk ? o.disk.usedBytes / o.disk.totalBytes : 0;
+  const body = `
+  <div class="page-h"><h1>今日 · ${esc(o.dateLabel)}</h1><span>台北时间 ${fmtTime(o.now)} 更新</span></div>
+  <h2>待处理</h2>${alerts}
+  <h2>今天的日报</h2><div class="day">${o.slots.map(s => slotCard(s, o.now)).join('')}</div>
+  <h2>运行概况</h2>
+  <div class="cards">
+    <div class="card"><span class="l">RSS 来源</span><span class="n">${o.rss.healthy} / ${o.rss.enabled}</span>
+      <span class="d">${o.rss.enabled - o.rss.healthy ? `${o.rss.enabled - o.rss.healthy} 个降级或失败` : '全部正常'} · 最近采集 ${esc(ago(o.rss.lastHarvestAt))}${o.rss.lastHarvestNew != null ? `，新增 ${o.rss.lastHarvestNew} 条` : ''}</span></div>
+    <div class="card"><span class="l">Telegram</span><span class="n">${o.telegram.active} / ${o.telegram.enabled}</span>
+      <span class="d">${o.telegram.authorized ? '账号已登录' : '<span class="bad">账号未登录</span>'} · 24 小时消息 ${num(o.telegram.messages24h)}</span></div>
+    <div class="card"><span class="l">AI 判定（今天）</span><span class="n">${num(o.ai.calls)} 次</span>
+      <span class="d">日报候选的初筛、复核与组装</span></div>
+    <div class="card"><span class="l">磁盘</span><span class="n">${o.disk ? `${Math.round(pct * 100)}%` : '—'}</span>
+      ${o.disk ? `<div class="bar"><i class="${pct >= .95 ? 'bad' : pct >= .85 ? 'warn' : ''}" style="width:${Math.round(pct * 100)}%"></i></div><span class="d">剩余 ${gb(o.disk.freeBytes)}</span>` : '<span class="d">无法读取</span>'}</div>
+  </div>
+  <h2>日报 RSS</h2>
+  <p class="sub">在 RSS 阅读器里订阅这个地址，每期日报发出后会作为一条新内容出现。地址含访问令牌，请勿公开。</p>
+  ${o.briefFeedUrl ? `<input class="feed" readonly value="${esc(o.briefFeedUrl)}" aria-label="日报 RSS 地址">` : '<p class="muted">令牌已撤销。</p>'}
+  <form class="inline" method="post" action="/rss/briefs/token" style="margin-top:8px"><input type="hidden" name="csrf" value="${esc(o.csrf)}">
+    <button name="action" value="reset">重置令牌</button><button name="action" value="revoke">撤销令牌</button></form>`;
+  return layout('今日', body, o.csrf, 'today');
+}
+
+const STAGE_LABEL: Record<string, string> = { luna: 'L1 初筛', terra: 'L2 复核', sol: 'L3 复核', compose: '简报组装' };
+
+export function renderSystem(o: { csrf: string; now: number; units: UnitStatus[]; backups: BackupStatus[]; disk: DiskStatus;
+  ai24h: { calls: number; byStage: Array<{ stage: string; model: string; calls: number }> } }): string {
+  const unitRow = (u: UnitStatus) => {
+    const running = u.active === 'activating' || (u.kind === 'daemon' && u.active === 'active');
+    const pill = u.kind === 'daemon'
+      ? (u.active === 'active' ? '<span class="pill ok">运行中</span>' : `<span class="pill bad">${esc(u.active)}</span>`)
+      : running ? '<span class="pill warn">正在运行</span>'
+      : u.result === 'success' ? '<span class="pill ok">成功</span>'
+      : u.result === 'unknown' ? '<span class="pill idle">未知</span>' : `<span class="pill bad">${esc(u.result)}</span>`;
+    const last = u.kind === 'daemon' ? (u.startedAt ? `${fmtTime(u.startedAt, true)} 启动` : '—')
+      : u.startedAt ? `${fmtTime(u.startedAt, true)}${u.exitedAt && u.exitedAt >= u.startedAt ? ` · ${fmtDur(u.exitedAt - u.startedAt)}` : ''}` : '—';
+    const next = u.kind === 'daemon' ? '常驻' : u.nextAt ? `${fmtTime(u.nextAt, u.nextAt - o.now > 20 * 3600_000)}（${until(u.nextAt, o.now)}）` : esc(u.every ?? '—');
+    return `<tr><td><b>${esc(u.label)}</b><small>${esc(u.id)}</small></td><td>${pill}</td><td>${last}</td><td>${next}</td></tr>`;
+  };
+  const pct = o.disk ? o.disk.usedBytes / o.disk.totalBytes : 0;
+  const body = `
+  <div class="page-h"><h1>系统运行</h1><span>定时任务状态读取自 systemd · ${fmtTime(o.now)} 更新</span></div>
+  <h2>定时任务</h2>
+  ${o.units.length ? `<div class="tw"><table><tr><th>任务</th><th>上次结果</th><th>上次运行</th><th>下次运行</th></tr>${o.units.map(unitRow).join('')}</table></div>`
+    : '<div class="err">无法读取 systemd 状态，请在服务器上执行 systemctl status brief-* 查看。</div>'}
+  <h2>备份与存储</h2>
+  <div class="cards">
+    ${o.backups.map(b => `<div class="card"><span class="l">${esc(b.label)}备份</span><span class="n">${b.file ? mb(b.bytes) : '—'}</span>
+      <span class="d">${b.mtime ? `${fmtTime(b.mtime, true)} · 只保留最新 1 份` : '<span class="bad">没有找到备份</span>'}</span></div>`).join('')}
+    <div class="card"><span class="l">磁盘</span><span class="n">${o.disk ? `${gb(o.disk.usedBytes)} / ${gb(o.disk.totalBytes)}` : '—'}</span>
+      ${o.disk ? `<div class="bar"><i class="${pct >= .95 ? 'bad' : pct >= .85 ? 'warn' : ''}" style="width:${Math.round(pct * 100)}%"></i></div><span class="d">剩余 ${gb(o.disk.freeBytes)}</span>` : ''}</div>
+  </div>
+  <h2>AI 判定（最近 24 小时）</h2>
+  <p class="sub">日报候选共调用 ${num(o.ai24h.calls)} 次。Telegram 总结与图片识别的调用不在此表内。</p>
+  ${o.ai24h.byStage.length ? `<div class="tw"><table><tr><th>环节</th><th>模型</th><th class="n">次数</th></tr>${o.ai24h.byStage.map(t =>
+    `<tr><td>${esc(STAGE_LABEL[t.stage] ?? t.stage)}</td><td><code>${esc(t.model)}</code></td><td class="n">${num(t.calls)}</td></tr>`).join('')}</table></div>` : '<p class="muted">最近 24 小时没有调用。</p>'}`;
+  return layout('系统运行', body, o.csrf, 'system');
 }
