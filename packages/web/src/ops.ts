@@ -25,6 +25,7 @@ const UNITS: Array<[string, string, UnitStatus['kind'], string?]> = [
   ['brief-telegram-vision', 'Telegram 图片识别', 'oneshot'],
   ['brief-maintain', '维护与备份', 'oneshot'],
   ['brief-subscriptions-sync', '订阅清单同步', 'oneshot', '每 5 分钟'],
+  ['brief-requests', '后台操作（重新运行 / 重新发送）', 'oneshot', '有请求时执行'],
 ];
 
 /** systemd 249 不支持 --timestamp=unix，用 --timestamp=utc：「Sat 2026-10-10 00:00:10 UTC」。 */
@@ -104,7 +105,7 @@ export function computeAlerts(i: AlertInput): Alert[] {
     if (i.now - at > 24 * H) continue;
     if (r.status === 'partial' || r.status === 'failed')
       out.push({ level: 'bad', area: 'today', title: `${r.window_label}未完成（${r.window_key.slice(5, 10)}）`,
-        detail: (r.error ?? '运行未成功').slice(0, 160), href: '/' });
+        detail: (r.error ?? '运行未成功').slice(0, 160), href: '/runs?status=failed' });
   }
   const run = i.units.find(u => u.id === 'brief-run');
   for (const u of i.units) {
@@ -117,14 +118,16 @@ export function computeAlerts(i: AlertInput): Alert[] {
   }
   if (run && run.result !== 'success' && run.result !== 'unknown' && run.active !== 'activating' &&
       !out.some(a => a.area === 'today'))
-    out.push({ level: 'bad', area: 'today', title: '日报运行失败', detail: `结果：${run.result}`, href: '/system' });
+    out.push({ level: 'bad', area: 'today', title: '日报运行失败', detail: `结果：${run.result}`, href: '/runs?status=failed' });
 
   // Telegram
   const t = i.telegram;
   if (!t.authorized) out.push({ level: 'bad', area: 'telegram', title: 'Telegram 账号未登录', detail: '采集已停止，请在 Telegram 页重新登录', href: '/telegram' });
-  else if (!t.heartbeatAt || i.now - Date.parse(t.heartbeatAt) > 15 * 60_000)
-    out.push({ level: 'bad', area: 'telegram', title: 'Telegram 采集器没有心跳',
-      detail: t.heartbeatAt ? `最后心跳 ${hm(Date.parse(t.heartbeatAt))}` : '从未上报', href: '/system' });
+  // 采集器每轮同步完所有来源才写一次心跳，一轮约 15 分钟、轮间隔 5 分钟；
+  // 所以活跃度取「心跳或任一来源同步」中最新的一个，30 分钟没有任何进展才算停摆。
+  else if (!t.heartbeatAt || i.now - Date.parse(t.heartbeatAt) > 30 * 60_000)
+    out.push({ level: 'bad', area: 'telegram', title: 'Telegram 采集器 30 分钟没有进展',
+      detail: t.heartbeatAt ? `最后活动 ${hm(Date.parse(t.heartbeatAt))}` : '从未上报', href: '/system' });
   const broken = t.sources.filter(s => s.status === 'error');
   if (broken.length)
     out.push({ level: broken.length > 2 ? 'bad' : 'warn', area: 'telegram', title: `${broken.length} 个 Telegram 来源出错`,

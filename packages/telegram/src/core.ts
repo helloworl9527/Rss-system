@@ -145,6 +145,28 @@ export function updateTelegramSettings(db: TelegramDB, input: Record<string, unk
     credentialRef: input.credentialRef, promptChanged: previous?.prompt_rules !== prompt });
 }
 
+const intIn = (v: unknown, min: number, max: number, label: string): number => {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < min || n > max) throw new TelegramError(400, `${label}必须是 ${min}–${max} 之间的整数`);
+  return n;
+};
+
+/** 识别器每分钟处理 1 张（brief-telegram-vision.timer），上限超过 1440 没有意义。 */
+export function setVisionDailyLimit(db: TelegramDB, limit: unknown): void {
+  const n = intIn(limit, 1, 1440, '每日上限');
+  const before = (db.prepare('SELECT vision_daily_limit v FROM telegram_settings WHERE singleton=1').get() as any)?.v;
+  db.prepare('UPDATE telegram_settings SET vision_daily_limit=?,updated_at=? WHERE singleton=1').run(n, nowIso());
+  audit(db, 'settings', 'vision', 'vision_daily_limit_updated', { from: before, to: n });
+}
+
+export function updateTelegramRetention(db: TelegramDB, input: { keepForever: boolean; rawDays: unknown; summaryDays: unknown }): void {
+  const raw = intIn(input.rawDays, 1, 365, '消息保留天数');
+  const summary = intIn(input.summaryDays, 1, 365, '总结保留天数');
+  db.prepare(`UPDATE telegram_settings SET keep_messages_forever=?,raw_retention_days=?,summary_retention_days=?,updated_at=? WHERE singleton=1`)
+    .run(input.keepForever ? 1 : 0, raw, summary, nowIso());
+  audit(db, 'settings', 'retention', 'retention_updated', { keepForever: input.keepForever, rawDays: raw, summaryDays: summary });
+}
+
 export function resumeVisionQueue(db: TelegramDB): void {
   db.prepare(`UPDATE telegram_settings SET vision_paused=0,vision_pause_reason=NULL,updated_at=? WHERE singleton=1`)
     .run(nowIso());

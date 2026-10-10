@@ -16,7 +16,9 @@ import { openDb, migrate, nowIso, type DB } from '../../../packages/db/src/index
 import { join } from 'node:path';
 import { verifyPassword, verifyTotp, SessionStore, csrfOk, LoginLimiter, type Session }
   from '../../../packages/web/src/auth.ts';
-import { renderAllnet, renderLogin, renderSources, renderSettings, renderToday, renderSystem, setNavBadges, type TodaySlot, type NavBadges } from '../../../packages/web/src/views.ts';
+import { renderAllnet, renderLogin, renderSources, renderSettings, renderToday, renderSystem, renderRuns, renderRunDetail, renderFeeds, setNavBadges,
+         type TodaySlot, type NavBadges, type RunRow, type FeedRow } from '../../../packages/web/src/views.ts';
+import { pendingRequests, queueRequest } from '../../../packages/web/src/requests.ts';
 import { computeAlerts, readBackups, readDisk, readUnits, type Alert } from '../../../packages/web/src/ops.ts';
 import { briefFeedToken, briefsRss, rotateBriefFeedToken } from '../../../packages/web/src/briefs-rss.ts';
 import { maskedSecrets, setSecret, setSettings, resolveSettings, vaultHealthy,
@@ -27,11 +29,11 @@ import { createProvider } from '../../../packages/ai/src/registry.ts';
 import { runSourceProfiler } from '../../../packages/ai/src/source-profiler.ts';
 import { readyTelegramDb } from '../../../packages/telegram/src/db.ts';
 import { addTelegramSource, retryTelegramSource, rotateAllToken, rotateSourceToken, renameTelegramSource,
-         toggleTelegramSource, updateTelegramSettings, resumeVisionQueue, TelegramError } from '../../../packages/telegram/src/core.ts';
+         toggleTelegramSource, updateTelegramSettings, resumeVisionQueue, setVisionDailyLimit, updateTelegramRetention, TelegramError } from '../../../packages/telegram/src/core.ts';
 import { visionStats } from '../../../packages/telegram/src/vision.ts';
 import { sourceRss, allRss, digestRss } from '../../../packages/telegram/src/rss.ts';
 import { sendLoginCommand, type LoginCommand } from '../../../packages/telegram/src/login.ts';
-import { renderTelegram } from '../../../packages/telegram/src/views.ts';
+import { renderTelegram, renderTelegramSettings, TELEGRAM_TABS, type TelegramTab } from '../../../packages/telegram/src/views.ts';
 
 const PORT = Number(process.env.ADMIN_PORT ?? 3000);
 const HOST = process.env.ADMIN_HOST ?? '127.0.0.1';
@@ -169,6 +171,11 @@ app.get('/health/ready', async (_req, reply) => {
 });
 
 // ---------- 页面 ----------
+/** 表单可带 redirect 指定操作后返回的页面；只接受站内路径，防止被利用做外部跳转。 */
+const back = (req: any, fallback: string): string => {
+  const r = String((req.body as any)?.redirect ?? '');
+  return /^\/(?!\/)[\w\-/?=&.%]*$/.test(r) ? r : fallback;
+};
 const q = {
   sources: () => db.prepare(`SELECT id,display_name,category,source_group,health,harvest_tier,
     consecutive_failures,last_success_at,last_http_code,last_error,latest_item_at,enabled,managed_by,onboarding_status,observation_until,
@@ -232,7 +239,8 @@ function opsSnapshot() {
       .all(new Date(now - 864e5).toISOString()) as any[],
     sources,
     telegram: {
-      authorized: !!worker?.authorized, heartbeatAt: worker?.heartbeat_at ?? null,
+      authorized: !!worker?.authorized,
+      heartbeatAt: [worker?.heartbeat_at, ...tgSources.filter(t => t.enabled).map(t => t.last_success_at)].filter(Boolean).sort().pop() ?? null,
       sources: tgSources.map(t => ({ name: t.display_name || t.title || t.reference, status: t.status, enabled: t.enabled,
         last_error: t.last_error, last_success_at: t.last_success_at })),
       visionPaused: !!settings?.vision_paused, visionPauseReason: settings?.vision_pause_reason ?? null,
@@ -268,7 +276,6 @@ app.get('/', async (req, reply) => {
   const lastH = (q.harvests() as any[])[0];
   const enabled = sources.filter(x => x.enabled && !x.allnet_json);
   const tgEnabled = tgSources.filter(t => t.enabled);
-  const token = briefFeedToken(db);
   const weekday = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Taipei', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date(now));
   return reply.type('text/html; charset=utf-8').send(renderToday({
     csrf: s.csrf, now, dateLabel: weekday, alerts, slots,
@@ -277,7 +284,7 @@ app.get('/', async (req, reply) => {
     telegram: { active: tgEnabled.filter(t => t.status === 'active').length, enabled: tgEnabled.length,
       messages24h: tgEnabled.reduce((n, t) => n + Number(t.messages_24h ?? 0), 0), authorized: !!worker?.authorized },
     ai: { calls: ai.calls },
-    disk: sys.disk, briefFeedUrl: token ? `${process.env.ADMIN_BASE_URL ?? ''}/rss/briefs/${token}` : null,
+    disk: sys.disk,
   }));
 });
 
@@ -292,9 +299,95 @@ app.get('/system', async (req, reply) => {
     ai24h: { calls: byStage.reduce((n, r) => n + r.calls, 0), byStage } }));
 });
 
+// ---- 日报记录 ----
+const REQUEST_DIR = process.env.REQUEST_DIR ?? '/var/lib/briefing/requests';
+const RUN_ROWS = `SELECT r.id, r.window_key, r.window_label, r.scheduled_at, r.started_at, r.finished_at, r.status, r.stage, r.trigger, r.error,
+    (SELECT count(*) FROM candidates c WHERE c.run_id=r.id) cands,
+    b.id brief_id, (SELECT count(*) FROM brief_items i WHERE i.brief_id=b.id) items,
+    d.status delivery_status, d.sent_at,
+    (SELECT count(*) FROM deliveries x WHERE x.brief_id=b.id AND x.delivery_type='resend' AND x.status='sent') resends
+  FROM runs r
+  LEFT JOIN briefs b ON b.id=(SELECT id FROM briefs WHERE run_id=r.id AND status='final' ORDER BY version DESC LIMIT 1)
+  LEFT JOIN deliveries d ON d.id=(SELECT id FROM deliveries WHERE brief_id=b.id AND delivery_type='primary' ORDER BY id DESC LIMIT 1)`;
+const NOTICES: Record<string, string> = {
+  rerun: '已加入队列，后台会在几秒内开始重新运行，完整流程约需 10 分钟。刷新本页查看进度。',
+  resend: '已加入队列，邮件会在几秒内重新发送，刷新本页可在投递记录里看到结果。',
+};
+const queuedWindows = () => pendingRequests(REQUEST_DIR).flatMap(r => r.type === 'rerun' ? [r.window] : []);
+
+app.get<{ Querystring: { status?: string } }>('/runs', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  const filter = req.query.status === 'failed' ? 'failed' : 'all';
+  const runs = db.prepare(`${RUN_ROWS} ${filter === 'failed' ? "WHERE r.status<>'succeeded'" : ''} ORDER BY r.scheduled_at DESC LIMIT 60`).all() as RunRow[];
+  return reply.type('text/html; charset=utf-8').send(renderRuns({ csrf: s.csrf, runs, filter, queued: queuedWindows() }));
+});
+
+app.get<{ Params: { id: string }; Querystring: { notice?: string } }>('/runs/:id', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  const run = db.prepare(`${RUN_ROWS} WHERE r.id=?`).get(Number(req.params.id)) as RunRow | undefined;
+  if (!run) return reply.code(404).type('text/html; charset=utf-8').send(renderRuns({ csrf: s.csrf, runs: [], filter: 'all', queued: [], notice: '找不到这次运行记录' }));
+  const deliveries = run.brief_id ? db.prepare(`SELECT delivery_type,resend_sequence,status,sent_at,created_at,error FROM deliveries WHERE brief_id=? ORDER BY id`).all(run.brief_id) as any[] : [];
+  const candidates = (db.prepare(`SELECT c.id, v.title, f.source_id, f.canonical_url, c.decision, c.mandatory_class, c.section, c.filter_reason,
+      e.stage, json_extract(e.result_json,'$.confidence') confidence,
+      coalesce(json_extract(e.result_json,'$.filter_reason'), e.escalation_reasons) ai_reason,
+      EXISTS(SELECT 1 FROM manual_overrides m WHERE m.target_type='candidate' AND m.target_id=CAST(c.id AS TEXT)) overridden
+    FROM candidates c JOIN item_versions v ON v.id=c.item_version_id JOIN feed_items f ON f.id=v.item_id
+    LEFT JOIN evaluations e ON e.id=(SELECT id FROM evaluations x WHERE x.candidate_id=c.id AND x.stage IN ('sol','terra','luna')
+      ORDER BY CASE x.stage WHEN 'sol' THEN 0 WHEN 'terra' THEN 1 ELSE 2 END, x.id DESC LIMIT 1)
+    WHERE c.run_id=? ORDER BY c.score DESC, c.id`).all(run.id) as any[])
+    .map(c => ({ ...c, ai_reason: (() => { try { const v = JSON.parse(c.ai_reason); return Array.isArray(v) ? v.join('；') : String(c.ai_reason ?? ''); } catch { return c.ai_reason; } })() }));
+  return reply.type('text/html; charset=utf-8').send(renderRunDetail({ csrf: s.csrf, run, deliveries, candidates,
+    queued: queuedWindows().includes(run.window_key), notice: NOTICES[String(req.query.notice ?? '')] }));
+});
+
+app.post<{ Params: { id: string } }>('/runs/:id/rerun', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s || !requireWrite(req, reply, s)) return;
+  const run = db.prepare('SELECT id, window_key, status, finished_at FROM runs WHERE id=?').get(Number(req.params.id)) as any;
+  if (!run) return reply.code(404).send({ error: '运行记录不存在' });
+  if (run.status === 'succeeded') return reply.code(409).send({ error: '这次运行已经成功，如需再发一次请用“重新发送邮件”' });
+  queueRequest(REQUEST_DIR, { type: 'rerun', window: run.window_key });
+  return reply.redirect(`/runs/${run.id}?notice=rerun`);
+});
+
+app.post<{ Params: { id: string } }>('/runs/:id/resend', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s || !requireWrite(req, reply, s)) return;
+  const b = db.prepare(`SELECT b.id FROM briefs b WHERE b.run_id=? AND b.status='final' ORDER BY b.version DESC LIMIT 1`).get(Number(req.params.id)) as any;
+  if (!b) return reply.code(404).send({ error: '这次运行没有可发送的日报' });
+  queueRequest(REQUEST_DIR, { type: 'resend', briefId: b.id });
+  return reply.redirect(`/runs/${Number(req.params.id)}?notice=resend`);
+});
+
+// ---- 订阅输出：所有 RSS 地址集中一处 ----
+app.get('/feeds', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  const base = process.env.ADMIN_BASE_URL ?? '';
+  const briefToken = briefFeedToken(db);
+  const tg = telegramDb.prepare('SELECT all_rss_token FROM telegram_settings WHERE singleton=1').get() as any;
+  const feeds: FeedRow[] = [
+    { group: '日报', name: '日报', note: '每期一条，内容与邮件相同；每天早、午、晚三期', url: briefToken ? `${base}/rss/briefs/${briefToken}` : null,
+      lastAt: (db.prepare(`SELECT max(created_at) t FROM briefs WHERE status='final'`).get() as any).t, action: '/rss/briefs/token' },
+    { group: 'Telegram', name: '跨频道要点', note: '每个时段一条，AI 合并所有频道并标注来源；与“全部频道”共用令牌',
+      url: tg?.all_rss_token ? `${base}/rss/telegram/digest/${tg.all_rss_token}` : null,
+      lastAt: (telegramDb.prepare(`SELECT max(window_end) t FROM telegram_digests WHERE status='completed'`).get() as any).t, action: '/telegram/rss/all/token' },
+    { group: 'Telegram', name: '全部频道', note: '每个频道每个时段各一条；与“跨频道要点”共用令牌',
+      url: tg?.all_rss_token ? `${base}/rss/telegram/all/${tg.all_rss_token}` : null,
+      lastAt: (telegramDb.prepare(`SELECT max(window_end) t FROM telegram_summaries`).get() as any).t, action: '/telegram/rss/all/token' },
+    ...(telegramDb.prepare(`SELECT s.id, s.reference, coalesce(s.display_name,s.title,s.reference) name, s.rss_token, s.enabled,
+        (SELECT max(window_end) FROM telegram_summaries m WHERE m.source_id=s.id) last
+      FROM telegram_sources s WHERE s.source_type='normal' ORDER BY s.enabled DESC, s.id`).all() as any[]).map(t => ({
+      group: 'Telegram 单个频道', name: t.name, note: `${t.reference}${t.enabled ? '' : ' · 已停用'}`,
+      url: t.rss_token ? `${base}/rss/telegram/source/${t.rss_token}` : null, lastAt: t.last, action: `/telegram/sources/${t.id}/token` })),
+    ...(db.prepare(`SELECT a.source_id, a.token, a.snapshot_at, a.kind, a.item_limit, s.display_name FROM allnet_subscriptions a
+      JOIN sources s ON s.id=a.source_id ORDER BY s.display_name`).all() as any[]).map(a => ({
+      group: '全网热点', name: a.display_name, note: `前 ${a.item_limit} 条`, url: a.token ? `${base}/rss/allnet/${a.token}` : null,
+      lastAt: a.snapshot_at, action: `/allnet/${encodeURIComponent(a.source_id)}/token`, empty: '尚无成功快照' })),
+  ];
+  return reply.type('text/html; charset=utf-8').send(renderFeeds({ csrf: s.csrf, now: Date.now(), feeds }));
+});
+
 app.post('/rss/briefs/token', async (req, reply) => {
   const s = requireAuth(req, reply); if (!s || !requireWrite(req, reply, s)) return;
-  rotateBriefFeedToken(db, (req.body as any)?.action === 'revoke'); return reply.redirect('/');
+  rotateBriefFeedToken(db, (req.body as any)?.action === 'revoke'); return reply.redirect(back(req, '/'));
 });
 app.get<{Params:{token:string}}>('/rss/briefs/:token', async (req, reply) => {
   if (!/^[a-f0-9]{64}$/.test(req.params.token)) return reply.code(404).send('订阅不存在');
@@ -303,18 +396,43 @@ app.get<{Params:{token:string}}>('/rss/briefs/:token', async (req, reply) => {
   return reply.header('Cache-Control', 'private, no-store, max-age=0').header('Referrer-Policy', 'no-referrer').type('application/rss+xml; charset=utf-8').send(body);
 });
 
-const telegramPage = (s: Session, extra: Record<string,unknown> = {}) => renderTelegram({
-  csrf: s.csrf,
-  sources: telegramSources(),
-  settings: telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any,
-  worker: telegramDb.prepare('SELECT * FROM telegram_worker_state WHERE singleton=1').get() as any,
-  vision: visionStats(telegramDb),
-  baseUrl: process.env.ADMIN_BASE_URL ?? '', ...extra,
+const telegramPage = (s: Session, extra: { tab?: TelegramTab; saved?: string; error?: string } = {}) => {
+  const settings = telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any;
+  return renderTelegram({
+    csrf: s.csrf, tab: extra.tab ?? 'sources', saved: extra.saved, error: extra.error,
+    sources: telegramSources(), settings,
+    worker: telegramDb.prepare('SELECT * FROM telegram_worker_state WHERE singleton=1').get() as any,
+    vision: visionStats(telegramDb),
+    digests: telegramDb.prepare('SELECT * FROM telegram_digests ORDER BY window_end DESC LIMIT 30').all() as any[],
+    // 与 runDueDigests 的回溯范围一致：更早的时段删掉后不会再自动生成
+    digestLookbackFrom: new Date(Date.now() - (Number(settings.raw_retention_days) + 1) * 864e5).toISOString(),
+  });
+};
+const TG_NOTICES: Record<string, string> = { regen: '已清除该时段的要点汇总，1 分钟内会按当前的频道总结重新生成。' };
+
+app.get<{ Querystring: { tab?: string; notice?: string } }>('/telegram', async (req, reply) => {
+  const s=requireAuth(req,reply); if(!s)return;
+  const tab = TELEGRAM_TABS.some(([k]) => k === req.query.tab) ? req.query.tab as TelegramTab : 'sources';
+  return reply.type('text/html; charset=utf-8').send(telegramPage(s, { tab, saved: TG_NOTICES[String(req.query.notice ?? '')] }));
 });
 
-app.get('/telegram', async (req, reply) => {
-  const s=requireAuth(req,reply); if(!s)return;
-  return reply.type('text/html; charset=utf-8').send(telegramPage(s));
+app.post('/telegram/vision/limit', async (req, reply) => {
+  const s=requireAuth(req,reply); if(!s||!requireWrite(req,reply,s))return;
+  try { setVisionDailyLimit(telegramDb, (req.body as any)?.limit); return reply.redirect('/settings?saved=vision#vision'); }
+  catch(e:any){ return reply.code(e instanceof TelegramError?e.code:500).type('text/html; charset=utf-8').send(settingsPage(s,{error:e instanceof TelegramError?e.message:'保存失败'})); }
+});
+app.post('/telegram/retention', async (req, reply) => {
+  const s=requireAuth(req,reply); if(!s||!requireWrite(req,reply,s))return; const b=(req.body??{}) as any;
+  try { updateTelegramRetention(telegramDb, { keepForever: b.keep_forever === '1', rawDays: b.raw_retention_days, summaryDays: b.summary_retention_days });
+    return reply.redirect('/settings?saved=retention#retention'); }
+  catch(e:any){ return reply.code(e instanceof TelegramError?e.code:500).type('text/html; charset=utf-8').send(settingsPage(s,{error:e instanceof TelegramError?e.message:'保存失败'})); }
+});
+app.post('/telegram/digests/regenerate', async (req, reply) => {
+  const s=requireAuth(req,reply); if(!s||!requireWrite(req,reply,s))return;
+  const w = String((req.body as any)?.window_end ?? '');
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(w)) return reply.code(400).send({ error: '时段格式无效' });
+  telegramDb.prepare('DELETE FROM telegram_digests WHERE window_end=?').run(w);
+  return reply.redirect('/telegram?tab=digests&notice=regen');
 });
 
 app.post('/telegram/sources', async (req, reply) => {
@@ -327,41 +445,41 @@ app.post('/telegram/sources', async (req, reply) => {
 
 app.post<{Params:{id:string}}>('/telegram/sources/:id/retry', async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;
-  try{retryTelegramSource(telegramDb,Number(req.params.id));return reply.redirect('/telegram');}
+  try{retryTelegramSource(telegramDb,Number(req.params.id));return reply.redirect(back(req,'/telegram'));}
   catch(e:any){return reply.code(e instanceof TelegramError?e.code:500).send({error:e instanceof TelegramError?e.message:'重试失败'});}
 });
 app.post<{Params:{id:string}}>('/telegram/sources/:id/toggle',async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;
-  try{toggleTelegramSource(telegramDb,Number(req.params.id),String((req.body as any)?.enabled)==='true');return reply.redirect('/telegram');}
+  try{toggleTelegramSource(telegramDb,Number(req.params.id),String((req.body as any)?.enabled)==='true');return reply.redirect(back(req,'/telegram'));}
   catch(e:any){return reply.code(e instanceof TelegramError?e.code:500).send({error:e instanceof TelegramError?e.message:'启停失败'});}
 });
 app.post<{Params:{id:string}}>('/telegram/sources/:id/name',async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;
-  try{renameTelegramSource(telegramDb,Number(req.params.id),String((req.body as any)?.display_name??''));return reply.redirect('/telegram');}
+  try{renameTelegramSource(telegramDb,Number(req.params.id),String((req.body as any)?.display_name??''));return reply.redirect(back(req,'/telegram'));}
   catch(e:any){return reply.code(e instanceof TelegramError?e.code:500).send({error:e instanceof TelegramError?e.message:'保存显示名失败'});}
 });
 app.post<{Params:{id:string}}>('/telegram/sources/:id/token',async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;
-  try{rotateSourceToken(telegramDb,Number(req.params.id),(req.body as any)?.action==='revoke');return reply.redirect('/telegram');}
+  try{rotateSourceToken(telegramDb,Number(req.params.id),(req.body as any)?.action==='revoke');return reply.redirect(back(req,'/telegram'));}
   catch(e:any){return reply.code(e instanceof TelegramError?e.code:500).send({error:e instanceof TelegramError?e.message:'令牌操作失败'});}
 });
 app.post('/telegram/rss/all/token',async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;
-  rotateAllToken(telegramDb,(req.body as any)?.action==='revoke');return reply.redirect('/telegram');
+  rotateAllToken(telegramDb,(req.body as any)?.action==='revoke');return reply.redirect(back(req,'/telegram'));
 });
 app.post('/telegram/settings',async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return; const b=(req.body??{}) as any;
-  try{updateTelegramSettings(telegramDb,{timezone:b.timezone,schedule:b.schedule,provider:b.provider,model:b.model,baseUrl:b.base_url,credentialRef:b.credential_ref,promptRules:b.prompt_rules});return reply.type('text/html; charset=utf-8').send(telegramPage(s,{saved:'Telegram 设置已保存；已完成的历史总结不会重写。'}));}
-  catch(e:any){return reply.code(e instanceof TelegramError?e.code:500).type('text/html; charset=utf-8').send(telegramPage(s,{error:e instanceof TelegramError?e.message:'设置保存失败'}));}
+  try{updateTelegramSettings(telegramDb,{timezone:b.timezone,schedule:b.schedule,provider:b.provider,model:b.model,baseUrl:b.base_url,credentialRef:b.credential_ref,promptRules:b.prompt_rules});return reply.redirect('/settings?saved=telegram#telegram');}
+  catch(e:any){return reply.code(e instanceof TelegramError?e.code:500).type('text/html; charset=utf-8').send(settingsPage(s,{error:e instanceof TelegramError?e.message:'设置保存失败'}));}
 });
 app.post('/telegram/vision/resume',async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;
-  resumeVisionQueue(telegramDb);return reply.redirect('/telegram');
+  resumeVisionQueue(telegramDb);return reply.redirect(back(req,'/telegram'));
 });
 for(const command of ['start','code','password'] as LoginCommand[]) app.post(`/telegram/login/${command}`,async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return;
-  try{const result=await sendLoginCommand(command,String((req.body as any)?.value??''));return reply.type('text/html; charset=utf-8').send(telegramPage(s,result.ok?{saved:`登录状态：${result.state??'已更新'}`}:{error:result.error??'登录失败'}));}
-  catch{return reply.code(503).type('text/html; charset=utf-8').send(telegramPage(s,{error:'Telegram worker 未运行或登录 Socket 不可用'}));}
+  try{const result=await sendLoginCommand(command,String((req.body as any)?.value??''));return reply.type('text/html; charset=utf-8').send(telegramPage(s,result.ok?{tab:'login',saved:`登录状态：${result.state??'已更新'}`}:{tab:'login',error:result.error??'登录失败'}));}
+  catch{return reply.code(503).type('text/html; charset=utf-8').send(telegramPage(s,{tab:'login',error:'Telegram 采集器未运行，或登录 Socket 不可用'}));}
 });
 
 app.get<{Params:{token:string}}>('/rss/telegram/source/:token',async(req,reply)=>{
@@ -398,7 +516,7 @@ app.post<{Params:{id:string}}>('/allnet/:id/toggle',async(req,reply)=>{
   const session=requireAuth(req,reply);if(!session||!requireWrite(req,reply,session))return;
   const enabled=(req.body as any)?.enabled;
   if(!['true','false'].includes(enabled))return reply.code(400).send({error:'无效启停状态'});
-  try {toggleAllnetCollection(db,req.params.id,enabled==='true');return reply.redirect('/allnet');}
+  try {toggleAllnetCollection(db,req.params.id,enabled==='true');return reply.redirect(back(req,'/allnet'));}
   catch(e:any){return reply.code(e.status??500).send({error:e.message});}
 });
 
@@ -435,7 +553,7 @@ for(const path of ['/allnet/add','/sources/allnet/add']) app.post(path,async(req
 });
 for(const path of ['/allnet/:id/token','/sources/:id/allnet/token']) app.post<{Params:{id:string}}>(path,async(req,reply)=>{
   const session=requireAuth(req,reply);if(!session||!requireWrite(req,reply,session))return;
-  try {rotateAllnetToken(db,req.params.id,(req.body as any)?.action==='revoke');return reply.redirect('/allnet');}
+  try {rotateAllnetToken(db,req.params.id,(req.body as any)?.action==='revoke');return reply.redirect(back(req,'/allnet'));}
   catch(e:any) {return reply.code(e.status??502).send({error:e.message});}
 });
 app.post('/settings/allnet/test',async(req,reply)=>{
@@ -629,7 +747,7 @@ app.post<{ Params: { id: string } }>('/candidates/:id/override', async (req, rep
     actor: 'owner',
   }));
   if (!r) return;
-  return b.redirect ? reply.redirect(String(b.redirect)) : r.result;
+  return b.redirect ? reply.redirect(back(req, '/')) : r.result;
 });
 
 app.post<{ Params: { id: string } }>('/sources/:id/toggle', async (req, reply) => {
@@ -639,7 +757,7 @@ app.post<{ Params: { id: string } }>('/sources/:id/toggle', async (req, reply) =
   const r = handleAction(reply, () =>
     toggleSource(db, req.params.id, String(b.enabled) === 'true', b.reason, 'owner'));
   if (!r) return;
-  return b.redirect ? reply.redirect(String(b.redirect)) : r.result;
+  return b.redirect ? reply.redirect(back(req, '/')) : r.result;
 });
 
 /** 补发第一步：只返回确认信息，不发送（PRD 16.5 两步确认）。 */
@@ -665,13 +783,17 @@ function settingsPage(s: Session, extra: { saved?: string; error?: string } = {}
   return renderSettings({
     csrf: s.csrf, vaultOk: h.ok, vaultReason: h.reason,
     secrets: maskedSecrets(), settings: resolveSettings() as any,
-    envOverrides: envOverrides(), ...extra,
+    envOverrides: envOverrides(),
+    telegram: renderTelegramSettings({ csrf: s.csrf, settings: telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any }),
+    ...extra,
   });
 }
+const SETTINGS_SAVED: Record<string, string> = { telegram: 'Telegram 总结设置已保存，已完成的历史总结不会重写。',
+  vision: '图片识别每日上限已保存。', retention: '数据保留设置已保存，下次维护时生效。' };
 
-app.get('/settings', async (req, reply) => {
+app.get<{ Querystring: { saved?: string } }>('/settings', async (req, reply) => {
   const s = requireAuth(req, reply); if (!s) return;
-  return reply.type('text/html; charset=utf-8').send(settingsPage(s));
+  return reply.type('text/html; charset=utf-8').send(settingsPage(s, { saved: SETTINGS_SAVED[String(req.query.saved ?? '')] }));
 });
 
 app.post('/settings/ai', async (req, reply) => {

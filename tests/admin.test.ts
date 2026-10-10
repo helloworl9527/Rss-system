@@ -1,13 +1,15 @@
 // 后台改版第一期：待处理事项、systemd 状态解析、日报 RSS、今日/系统页渲染、侧栏
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb, migrate } from '../packages/db/src/index.ts';
 import { computeAlerts, readUnits, type AlertInput } from '../packages/web/src/ops.ts';
 import { briefFeedToken, briefsRss, rotateBriefFeedToken } from '../packages/web/src/briefs-rss.ts';
-import { renderSystem, renderToday, setNavBadges, layout } from '../packages/web/src/views.ts';
+import { renderSystem, renderToday, renderRuns, renderRunDetail, renderFeeds, setNavBadges, layout, type RunRow } from '../packages/web/src/views.ts';
+import { parseRequest, pendingRequests, queueRequest, takeRequest } from '../packages/web/src/requests.ts';
+import { renderTelegram, renderTelegramSettings } from '../packages/telegram/src/views.ts';
 import { readyTelegramDb } from '../packages/telegram/src/db.ts';
-import { addTelegramSource, renameTelegramSource } from '../packages/telegram/src/core.ts';
+import { addTelegramSource, renameTelegramSource, setVisionDailyLimit, updateTelegramRetention } from '../packages/telegram/src/core.ts';
 
 let fail = 0;
 const ok = (n: string, c: boolean, d = '') => { if (!c) fail++; console.log(`  ${c ? '✅' : '❌'} ${n}${d ? '  ' + d : ''}`); };
@@ -47,8 +49,10 @@ console.log('待处理事项：\n');
 
   const st = healthy(); st.telegram.sources[0]!.last_success_at = iso(2 * 36e5);
   ok('启用的来源超过 1 小时没同步 → 故障', computeAlerts(st).some(x => x.title === '1 个 Telegram 来源超过 1 小时没有同步'));
-  const hb = healthy(); hb.telegram.heartbeatAt = iso(30 * 6e4);
-  ok('采集器心跳超过 15 分钟 → 故障', computeAlerts(hb).some(x => x.title === 'Telegram 采集器没有心跳'));
+  const hb = healthy(); hb.telegram.heartbeatAt = iso(20 * 6e4);
+  ok('一轮同步期间 20 分钟没心跳不算故障', !computeAlerts(hb).some(x => x.title.startsWith('Telegram 采集器')));
+  hb.telegram.heartbeatAt = iso(45 * 6e4);
+  ok('30 分钟没有任何进展 → 故障', computeAlerts(hb).some(x => x.title === 'Telegram 采集器 30 分钟没有进展'));
   const na = healthy(); na.telegram.authorized = false;
   ok('账号未登录 → 故障', computeAlerts(na).some(x => x.title === 'Telegram 账号未登录'));
 
@@ -143,18 +147,18 @@ console.log('\n页面渲染：\n');
     ],
     rss: { healthy: 31, enabled: 33, lastHarvestAt: iso(6e5), lastHarvestNew: 12 },
     telegram: { active: 15, enabled: 15, messages24h: 3184, authorized: true },
-    ai: { calls: 412 }, disk: healthy().disk, briefFeedUrl: 'https://rss.example/rss/briefs/abc' });
+    ai: { calls: 412 }, disk: healthy().disk });
   ok('待处理事项转义不可信文本', page.includes('&lt;script&gt;x&lt;/script&gt;') && !page.includes('<script>x'));
   ok('早报已投递并显示用时与条数', page.includes('已投递') && page.includes('用时 9 分 38 秒') && page.includes('13 条'));
   ok('到点 30 分钟仍无记录 → 没有运行', page.includes('没有运行'));
   ok('未来时段显示未开始', page.includes('未开始'));
   ok('AI 只显示调用次数、不显示费用', page.includes('412 次') && !page.includes('$') && !page.includes('费用') && !page.includes(' token'));
-  ok('显示日报 RSS 地址', page.includes('https://rss.example/rss/briefs/abc'));
+  ok('指向订阅输出页', page.includes('href="/feeds"'));
   ok('侧栏高亮当前页并显示计数', page.includes('<a href="/" class="on" aria-current="page">今日<span class="cnt bad">2</span></a>') && page.includes('Telegram<span class="cnt warn">1</span>'));
   ok('页面不含任何脚本', !/<script/i.test(page.replace('&lt;script', '')));
   const quiet = renderToday({ ...({} as any), csrf: 'c', now, dateLabel: 'x', alerts: [], slots: [], rss: { healthy: 1, enabled: 1, lastHarvestAt: null, lastHarvestNew: null },
-    telegram: { active: 0, enabled: 0, messages24h: 0, authorized: false }, ai: { calls: 0 }, disk: null, briefFeedUrl: null });
-  ok('没有事项时明确说明', quiet.includes('没有需要处理的事项') && quiet.includes('令牌已撤销'));
+    telegram: { active: 0, enabled: 0, messages24h: 0, authorized: false }, ai: { calls: 0 }, disk: null });
+  ok('没有事项时明确说明', quiet.includes('没有需要处理的事项'));
   setNavBadges(() => { throw new Error('db locked'); });
   ok('侧栏计数出错不影响页面', layout('设置', '<p>x</p>', 'c').includes('class="on" aria-current="page">设置'));
   const sys = renderSystem({ csrf: 'c', now, units: [], backups: healthy().backups, disk: healthy().disk, ai24h: { calls: 0, byStage: [] } });
@@ -173,6 +177,93 @@ console.log('\nTelegram 显示名：\n');
   ok('留空回退为频道标题', (() => { renameTelegramSource(tg, src.id, ''); return (tg.prepare('SELECT display_name FROM telegram_sources WHERE id=?').get(src.id) as any).display_name === null; })());
   ok('超长显示名被拒绝', (() => { try { renameTelegramSource(tg, src.id, 'x'.repeat(81)); return false; } catch { return true; } })());
   ok('记录审计', !!tg.prepare("SELECT 1 FROM telegram_audit_events WHERE action='source_renamed'").get());
+  tg.close();
+}
+
+
+console.log('\n后台操作请求队列：\n');
+{
+  const rq = join(dir, 'requests');
+  ok('只接受合法的时段键', parseRequest({ type: 'rerun', window: '2026-10-09:noon' }) !== null &&
+    parseRequest({ type: 'rerun', window: '2026-10-09:noon; rm -rf /' }) === null && parseRequest({ type: 'rerun', window: '--shadow' }) === null);
+  ok('补发只接受正整数 ID', parseRequest({ type: 'resend', briefId: 63 }) !== null && parseRequest({ type: 'resend', briefId: '63' }) === null && parseRequest({ type: 'other' }) === null);
+  queueRequest(rq, { type: 'rerun', window: '2026-10-09:noon' });
+  queueRequest(rq, { type: 'rerun', window: '2026-10-09:noon' });
+  queueRequest(rq, { type: 'resend', briefId: 63 });
+  ok('同一操作排队中不重复写入', pendingRequests(rq).length === 2);
+  ok('按先后顺序取出并删除', (takeRequest(rq) as any).window === '2026-10-09:noon' && pendingRequests(rq).length === 1);
+  writeFileSync(join(rq, '0000-bad.json'), '{"type":"rerun","window":"../../etc"}');
+  ok('格式无效的文件被丢弃', takeRequest(rq) === 'invalid' && (takeRequest(rq) as any).briefId === 63 && takeRequest(rq) === null);
+}
+
+console.log('\n日报记录页：\n');
+{
+  const base: RunRow = { id: 7, window_key: '2026-10-09:noon', window_label: '午报', scheduled_at: '2026-10-09T04:00:00.000Z', started_at: '2026-10-09T04:01:00.000Z',
+    finished_at: '2026-10-09T04:23:00.000Z', status: 'partial', stage: 'sending', trigger: 'timer', error: 'L2/L3 复核无进展、简报组装', cands: 640, items: null,
+    brief_id: null, delivery_status: null, sent_at: null, resends: 0 };
+  const ok1: RunRow = { ...base, id: 8, window_key: '2026-10-10:morning', window_label: '早报', status: 'succeeded', error: null, items: 13, brief_id: 63, delivery_status: 'sent', sent_at: '2026-10-10T00:09:48.000Z', resends: 1 };
+  const list = renderRuns({ csrf: 'c', runs: [ok1, base], filter: 'all', queued: ['2026-10-09:noon'] });
+  ok('列表显示已投递与补发次数', list.includes('已投递') && list.includes('补发 1 次'));
+  ok('排队中的时段显示排队', list.includes('排队中'));
+  ok('侧栏高亮日报记录', list.includes('<a href="/runs" class="on" aria-current="page">日报记录'));
+  const detail = renderRunDetail({ csrf: 'c', run: base, queued: false, deliveries: [], candidates: [
+    { id: 1, title: '<b>标题</b>', source_id: 'v2ex', canonical_url: 'https://e.com/1', decision: 'escalate', mandatory_class: 'none', section: null, filter_reason: null, stage: 'luna', confidence: 0.62, ai_reason: '需要复核', overridden: 0 },
+    { id: 2, title: '被过滤', source_id: 'v2ex', canonical_url: null, decision: 'filter', mandatory_class: null, section: null, filter_reason: '广告', stage: 'luna', confidence: 0.9, ai_reason: null, overridden: 1 }] });
+  ok('未发送的时段可以重新运行', detail.includes('action="/runs/7/rerun"') && detail.includes('重新运行此时段'));
+  ok('没有日报时不显示重新发送', !detail.includes('/runs/7/resend'));
+  ok('候选标题转义', detail.includes('&lt;b&gt;标题&lt;/b&gt;'));
+  ok('过滤掉的候选默认折叠', detail.includes('<details><summary>过滤 · 1 条</summary>'));
+  ok('人工处理表单返回本页', detail.includes('action="/candidates/1/override"') && detail.includes('name="redirect" value="/runs/7"'));
+  ok('显示 AI 层级与置信度', detail.includes('L1 · 置信 62%'));
+  ok('标记已人工处理', detail.includes('已人工处理'));
+  const sent = renderRunDetail({ csrf: 'c', run: ok1, queued: false, candidates: [],
+    deliveries: [{ delivery_type: 'primary', resend_sequence: 0, status: 'sent', sent_at: ok1.sent_at, created_at: ok1.sent_at!, error: null }] });
+  ok('已投递的时段只能重新发送', sent.includes('/runs/8/resend') && !sent.includes('/runs/8/rerun') && sent.includes('首次投递'));
+  ok('排队中按钮不可点', renderRunDetail({ csrf: 'c', run: base, queued: true, deliveries: [], candidates: [] }).includes('disabled>已排队，等待运行'));
+}
+
+console.log('\n订阅输出页：\n');
+{
+  const page = renderFeeds({ csrf: 'c', now, feeds: [
+    { group: '日报', name: '日报', note: '每期一条', url: 'https://x/rss/briefs/t', lastAt: iso(36e5), action: '/rss/briefs/token' },
+    { group: 'Telegram 单个频道', name: '<折腾>', note: '@a', url: null, lastAt: null, action: '/telegram/sources/1/token' }] });
+  ok('按分组列出', page.includes('<h2>日报</h2>') && page.includes('<h2>Telegram 单个频道</h2>'));
+  ok('操作完成后回到订阅输出页', page.includes('name="redirect" value="/feeds"'));
+  ok('令牌撤销后可重新生成', page.includes('令牌已撤销') && page.includes('>生成</button>'));
+  ok('名称转义', page.includes('&lt;折腾&gt;'));
+}
+
+console.log('\nTelegram 标签页与设置：\n');
+{
+  const settings = { timezone: 'Asia/Taipei', schedule_json: '["08:00","12:00","22:00"]', provider: 'openai_compatible', model: 'm', base_url: '', credential_ref: 'OPENAI_COMPAT_API_KEY',
+    prompt_rules: '', vision_model: 'gemini', vision_daily_limit: 1000, vision_paused: 0, raw_retention_days: 6, summary_retention_days: 30, keep_messages_forever: 1 };
+  const base = { csrf: 'c', sources: [], settings, worker: { authorized: 1, heartbeat_at: iso(6e4), login_state: 'authorized' },
+    vision: { pending: 1959, failed: 9, today: 120, oldestMinutes: 600 }, digestLookbackFrom: iso(7 * 864e5) };
+  const dg = (end: string) => ({ window_end: end, status: 'completed', fallback: 0, source_ids: '[1,2]', rendered_html: '<ol><li>x</li></ol>', error: null, attempts: 1, next_attempt_at: null, response_model: 'm' });
+  const digests = renderTelegram({ ...base, tab: 'digests', digests: [dg(iso(36e5)), dg(iso(20 * 864e5))] });
+  ok('当前标签高亮', digests.includes('href="/telegram?tab=digests" class="on"'));
+  ok('只有回溯范围内的时段能重新生成', (digests.match(/action="\/telegram\/digests\/regenerate"/g) ?? []).length === 1);
+  const vision = renderTelegram({ ...base, tab: 'vision', digests: [] });
+  ok('图片识别估算处理天数', vision.includes('1,959 张') && vision.includes('约 2 天处理完') && vision.includes('120 / 1,000'));
+  const login = renderTelegram({ ...base, tab: 'login', digests: [] });
+  ok('登录表单回到登录标签', login.includes('value="/telegram?tab=login"'));
+  const st = renderTelegramSettings({ csrf: 'c', settings });
+  ok('设置页有三个 Telegram 分组', st.includes('id="telegram"') && st.includes('id="vision"') && st.includes('id="retention"'));
+  ok('永久保留默认勾选', st.includes('name="keep_forever" value="1" checked'));
+}
+
+console.log('\n设置校验：\n');
+{
+  const tg = readyTelegramDb(join(dir, 'telegram2.db'));
+  const throws = (fn: () => void) => { try { fn(); return false; } catch { return true; } };
+  setVisionDailyLimit(tg, '1000');
+  ok('每日上限保存', (tg.prepare('SELECT vision_daily_limit v FROM telegram_settings').get() as any).v === 1000);
+  ok('每日上限超过 1440 被拒', throws(() => setVisionDailyLimit(tg, 2000)) && throws(() => setVisionDailyLimit(tg, 0)) && throws(() => setVisionDailyLimit(tg, '1.5')));
+  updateTelegramRetention(tg, { keepForever: false, rawDays: '10', summaryDays: 60 });
+  const r = tg.prepare('SELECT keep_messages_forever k, raw_retention_days r, summary_retention_days s FROM telegram_settings').get() as any;
+  ok('保留设置保存', r.k === 0 && r.r === 10 && r.s === 60);
+  ok('保留天数越界被拒', throws(() => updateTelegramRetention(tg, { keepForever: true, rawDays: 0, summaryDays: 30 })));
+  ok('设置变更有审计', !!tg.prepare("SELECT 1 FROM telegram_audit_events WHERE action='retention_updated'").get() && !!tg.prepare("SELECT 1 FROM telegram_audit_events WHERE action='vision_daily_limit_updated'").get());
   tg.close();
 }
 

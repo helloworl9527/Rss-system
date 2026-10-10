@@ -66,6 +66,11 @@ h2{font-size:15px;color:var(--ink);font-weight:650;margin:30px 0 10px}
 h2:first-child{margin-top:0}
 .sub{font-size:13px;color:var(--muted);margin:-4px 0 12px}
 .stack{display:grid;gap:10px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:0 0 16px;flex-wrap:wrap}
+.tabs a{padding:7px 13px;color:var(--muted);text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px;font-size:14px}
+.tabs a:hover{color:var(--ink)}
+.tabs a.on{color:var(--ink);border-color:var(--accent);font-weight:600}
+.pill.idle{background:var(--line-soft);color:var(--muted)}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:0 0 6px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:13px 15px;display:grid;gap:3px;align-content:start}
@@ -155,18 +160,18 @@ a{color:var(--accent)}
   th,td{padding:8px 9px;font-size:13px}
 }`;
 
-export type NavKey = 'today' | 'sources' | 'allnet' | 'telegram' | 'system' | 'settings';
+export type NavKey = 'today' | 'runs' | 'sources' | 'telegram' | 'feeds' | 'system' | 'settings';
 export type NavBadges = Partial<Record<NavKey, { count: number; level: 'bad' | 'warn' }>>;
 let navBadges: () => NavBadges = () => ({});
 /** 服务端启动时注册：侧栏每个页面旁显示待处理数量。计算失败不影响页面渲染。 */
 export function setNavBadges(fn: () => NavBadges): void { navBadges = fn; }
 
 const NAV: Array<[NavKey, string, string] | string> = [
-  ['today', '/', '今日'], ['sources', '/sources', '来源'], ['allnet', '/allnet', '全网热点'], ['telegram', '/telegram', 'Telegram'],
+  ['today', '/', '今日'], ['runs', '/runs', '日报记录'], ['sources', '/sources', '来源'], ['telegram', '/telegram', 'Telegram'], ['feeds', '/feeds', '订阅输出'],
   '系统', ['system', '/system', '系统运行'], ['settings', '/settings', '设置'],
 ];
-const NAV_BY_TITLE: Record<string, NavKey> = { '今日': 'today', '仪表盘': 'today', '来源': 'sources', '全网热点': 'allnet',
-  'Telegram 订阅': 'telegram', '系统运行': 'system', '设置': 'settings' };
+const NAV_BY_TITLE: Record<string, NavKey> = { '今日': 'today', '仪表盘': 'today', '日报记录': 'runs', '来源': 'sources', '全网热点': 'sources',
+  'Telegram 订阅': 'telegram', 'Telegram': 'telegram', '订阅输出': 'feeds', '系统运行': 'system', '设置': 'settings' };
 
 export function layout(title: string, body: string, csrf: string, active: NavKey | undefined = NAV_BY_TITLE[title]): string {
   let badges: NavBadges = {};
@@ -280,11 +285,14 @@ export function renderSources(o: {
     : '<p class="muted" style="padding:0 14px 12px">暂无来源。</p>';
   const vendors = SOURCE_GROUPS.slice(1).filter(([key])=>!['zhihu','weibo','baidu'].includes(key!)).map(([key, label]) => {
     const rows = o.sources.filter(s => s.source_group === key);
-    return `<details class="vendor" open><summary>${esc(label)}（${rows.length}）</summary>${manageTable(rows)}</details>`;
+    const bad = rows.filter(s => s.enabled && s.health !== 'healthy').length;
+    return `<details class="vendor"><summary>${esc(label)}（${rows.length}${bad ? `，<span class="warn">${bad} 个异常</span>` : ''}）</summary>${manageTable(rows)}</details>`;
   }).join('');
   const vendorCount = o.sources.filter(s => !['unclassified','zhihu','weibo','baidu'].includes(s.source_group)).length;
   const unclassified = o.sources.filter(s => s.source_group === 'unclassified');
-  const groupedSources = `<details open><summary>科技厂商（${vendorCount}）</summary>${vendors}</details>
+  const attention = o.sources.filter(s => s.enabled && (s.health === 'failing' || s.health === 'degraded'));
+  const groupedSources = `${attention.length ? `<h2>需要关注 · ${attention.length} 个</h2><p class="sub">连续失败或降级的来源，展开下方分组可管理全部来源。</p>${manageTable(attention)}<h2>全部来源</h2>` : '<div class="alerts"><div class="alert ok"><span class="sev">正常</span><div class="t">所有启用的来源都在正常采集</div><span></span></div></div><h2>全部来源</h2>'}
+    <details open><summary>科技厂商（${vendorCount}）</summary>${vendors}</details>
     <details open><summary>社会生活</summary>${SOURCE_GROUPS.filter(([key])=>['zhihu','weibo','baidu'].includes(key!)).map(([key,label])=>`<details open><summary>${esc(label)}</summary>${key==='baidu'?'<p class="muted">暂不可用 · 等待上游开放，无订阅地址</p>':''}${manageTable(o.sources.filter(s=>s.source_group===key))}</details>`).join('')}</details>
     <details open><summary>未归类（${unclassified.length}）</summary>${manageTable(unclassified)}</details>`;
 
@@ -298,8 +306,7 @@ export function renderSources(o: {
   const body = `
   ${o.saved ? `<div class="note">${esc(o.saved)}</div>` : ''}
   ${o.error ? `<div class="err">${esc(o.error)}</div>` : ''}
-
-  <h2>RSS 来源分类</h2>
+  <div class="page-h"><h1>来源</h1><span></span></div><nav class="tabs" aria-label="来源类型"><a href="/sources" class="on" aria-current="page">RSS 来源</a><a href="/allnet">全网热点</a></nav>
   <p class="sub">共 ${o.sources.length} 个来源，其中后台新增 ${admin.length} 个。分组仅用于后台整理，不改变日报筛选。</p>
   ${groupedSources}
 
@@ -379,6 +386,8 @@ export function renderSettings(o: {
   secrets: Array<{ name: string; set: boolean; hint: string }>;
   settings: Record<string, string | undefined>;
   envOverrides: string[];
+  /** Telegram 模块渲染的分组（总结、图片识别、数据保留），追加在页面末尾 */
+  telegram?: string;
   saved?: string; error?: string;
 }): string {
   const cur = o.settings.l1Provider ?? o.settings.aiProvider ?? 'mock';
@@ -403,7 +412,9 @@ export function renderSettings(o: {
   ${o.envOverrides.length ? `<div class="note">以下项被环境变量覆盖，页面上的设置对它们无效：
     ${o.envOverrides.map(esc).join('、')}</div>` : ''}
 
-  <h2>AI 模型与 API 地址</h2>
+  <div class="page-h"><h1>设置</h1><span>按模块分组</span></div>
+  <nav class="tabs" aria-label="设置分组"><a href="#ai">日报 AI 模型</a><a href="#keys">API Key</a><a href="#profiler">来源画像</a><a href="#allnet">全网热点</a>${o.telegram ? '<a href="#telegram">Telegram 总结</a><a href="#vision">图片识别</a><a href="#retention">数据保留</a>' : ''}</nav>
+  <h2 id="ai">日报 AI 模型与 API 地址</h2>
   <p class="sub">每个层级的 Base URL 都可以直接编辑。留空使用所选厂商的官方默认地址；“OpenAI 兼容格式”没有默认地址，必须填写 API 根地址（通常以 /v1 结尾）。</p>
   <form method="post" action="/settings/ai">
     <input type="hidden" name="csrf" value="${esc(o.csrf)}">
@@ -426,12 +437,12 @@ export function renderSettings(o: {
     <p><button class="primary" ${o.vaultOk ? '' : 'disabled'}>保存供应商设置</button></p>
   </form>
 
-  <h2>API Key</h2>
+  <h2 id="keys">API Key</h2>
   <p class="muted">加密存于 /var/lib/briefing/secrets.enc（0600），主密钥在 root 控制的
     /etc/briefing/env 中。页面只显示末四位，任何情况下不回显明文。</p>
   <table><tr><th>厂商</th><th>状态</th><th>设置</th></tr>${keyRows}</table>
 
-  <h2>Source Profiler（独立于 L1/L2/L3）</h2>
+  <h2 id="profiler">来源画像 Source Profiler（独立于 L1/L2/L3）</h2>
   <p class="sub">用于新来源画像、样本证据和规则提案。保存后生成新的配置版本；连接/结构化输出测试通过后才可启用。</p>
   <form method="post" action="/settings/source-profiler">
     <input type="hidden" name="csrf" value="${esc(o.csrf)}">
@@ -446,7 +457,7 @@ export function renderSettings(o: {
       <tr><td>启用</td><td><select name="enabled"><option value="true"${o.settings.sourceProfilerEnabled !== 'false' ? ' selected' : ''}>启用</option><option value="false"${o.settings.sourceProfilerEnabled === 'false' ? ' selected' : ''}>停用</option></select></td><td class="muted">启用前后台会执行结构化输出测试</td></tr>
     </table><p><button class="primary" ${o.vaultOk ? '' : 'disabled'}>测试并保存配置版本</button></p>
   </form>`;
-  return layout('设置', body + `<h2>全网热点</h2><p>在上方密钥保管库保存或更新 ALLNET_API_KEY。全网热点页可按名称订阅。</p><form method="post" action="/settings/allnet/test"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><button>测试连通性</button></form>`, o.csrf);
+  return layout('设置', body + `<h2 id="allnet">全网热点</h2><p>在上方密钥保管库保存或更新 ALLNET_API_KEY。订阅在“来源 → 全网热点”中按名称添加。</p><form method="post" action="/settings/allnet/test"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><button>测试连通性</button></form>` + (o.telegram ?? ''), o.csrf, 'settings');
 }
 
 export function renderAllnet(o: {
@@ -468,6 +479,7 @@ export function renderAllnet(o: {
         <form method="post" action="/allnet/${esc(s.id)}/token"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><button name="action" value="reset">重置令牌</button><button name="action" value="revoke">撤销令牌</button></form></td></tr>`;
   }).join('');
   return layout('全网热点', `
+    <div class="page-h"><h1>来源</h1><span></span></div><nav class="tabs" aria-label="来源类型"><a href="/sources">RSS 来源</a><a href="/allnet" class="on" aria-current="page">全网热点</a></nav>
     <h2>全网热点订阅管理</h2>
     ${o.saved?`<div class="note">${esc(o.saved)}</div>`:''}${o.error?`<div class="err">${esc(o.error)}</div>`:''}
     <p>任一页面启用就继续采集；是否进入日报由来源页单独控制。新增订阅默认仅供 RSS。</p>
@@ -500,7 +512,7 @@ const num = (n: number) => Number(n ?? 0).toLocaleString('en-US');
 
 
 export type TodaySlot = { key: string; label: string; clock: string; scheduledAt: number;
-  run?: { status: string; error: string | null; started_at: string | null; finished_at: string | null } | null;
+  run?: { id?: number; status: string; error: string | null; started_at: string | null; finished_at: string | null } | null;
   items?: number | null; delivery?: { status: string; sent_at: string | null; error: string | null } | null };
 
 function slotCard(s: TodaySlot, now: number): string {
@@ -522,7 +534,7 @@ function slotCard(s: TodaySlot, now: number): string {
     pill = '<span class="pill warn">进行中</span>';
     detail = r.started_at ? `已运行 ${fmtDur(now - Date.parse(r.started_at))}` : esc(r.status);
   }
-  return `<div class="slot"><div class="h"><b>${esc(s.label)}</b><span>${esc(s.clock)}</span></div>${pill}<div class="s">${detail}</div></div>`;
+  return `<div class="slot"><div class="h"><b>${r?.id ? `<a href="/runs/${r.id}">${esc(s.label)}</a>` : esc(s.label)}</b><span>${esc(s.clock)}</span></div>${pill}<div class="s">${detail}</div></div>`;
 }
 
 export function renderToday(o: {
@@ -530,7 +542,7 @@ export function renderToday(o: {
   rss: { healthy: number; enabled: number; lastHarvestAt: string | null; lastHarvestNew: number | null };
   telegram: { active: number; enabled: number; messages24h: number; authorized: boolean };
   ai: { calls: number };
-  disk: DiskStatus; briefFeedUrl: string | null;
+  disk: DiskStatus;
 }): string {
   const alerts = o.alerts.length
     ? `<div class="alerts">${o.alerts.map(a => `<div class="alert ${a.level}"><span class="sev">${a.level === 'bad' ? '故障' : '留意'}</span>
@@ -552,11 +564,7 @@ export function renderToday(o: {
     <div class="card"><span class="l">磁盘</span><span class="n">${o.disk ? `${Math.round(pct * 100)}%` : '—'}</span>
       ${o.disk ? `<div class="bar"><i class="${pct >= .95 ? 'bad' : pct >= .85 ? 'warn' : ''}" style="width:${Math.round(pct * 100)}%"></i></div><span class="d">剩余 ${gb(o.disk.freeBytes)}</span>` : '<span class="d">无法读取</span>'}</div>
   </div>
-  <h2>日报 RSS</h2>
-  <p class="sub">在 RSS 阅读器里订阅这个地址，每期日报发出后会作为一条新内容出现。地址含访问令牌，请勿公开。</p>
-  ${o.briefFeedUrl ? `<input class="feed" readonly value="${esc(o.briefFeedUrl)}" aria-label="日报 RSS 地址">` : '<p class="muted">令牌已撤销。</p>'}
-  <form class="inline" method="post" action="/rss/briefs/token" style="margin-top:8px"><input type="hidden" name="csrf" value="${esc(o.csrf)}">
-    <button name="action" value="reset">重置令牌</button><button name="action" value="revoke">撤销令牌</button></form>`;
+  <p class="sub" style="margin-top:18px">日报、Telegram 汇总等所有 RSS 地址在 <a href="/feeds">订阅输出</a> 页。</p>`;
   return layout('今日', body, o.csrf, 'today');
 }
 
@@ -594,4 +602,107 @@ export function renderSystem(o: { csrf: string; now: number; units: UnitStatus[]
   ${o.ai24h.byStage.length ? `<div class="tw"><table><tr><th>环节</th><th>模型</th><th class="n">次数</th></tr>${o.ai24h.byStage.map(t =>
     `<tr><td>${esc(STAGE_LABEL[t.stage] ?? t.stage)}</td><td><code>${esc(t.model)}</code></td><td class="n">${num(t.calls)}</td></tr>`).join('')}</table></div>` : '<p class="muted">最近 24 小时没有调用。</p>'}`;
   return layout('系统运行', body, o.csrf, 'system');
+}
+
+// ---------------- 日报记录（后台改版第二期） ----------------
+
+export type RunRow = { id: number; window_key: string; window_label: string; scheduled_at: string; started_at: string | null;
+  finished_at: string | null; status: string; stage: string | null; trigger: string; error: string | null;
+  cands: number; items: number | null; brief_id: number | null; delivery_status: string | null; sent_at: string | null; resends: number };
+
+const runPill = (r: Pick<RunRow, 'status' | 'delivery_status'>, queued = false) =>
+  queued ? '<span class="pill warn">排队中</span>'
+  : r.status === 'succeeded' ? (r.delivery_status === 'sent' ? '<span class="pill ok">已投递</span>' : `<span class="pill warn">${esc(r.delivery_status ?? '未投递')}</span>`)
+  : r.status === 'partial' || r.status === 'failed' ? '<span class="pill bad">未发送</span>'
+  : '<span class="pill warn">进行中</span>';
+const runTitle = (r: Pick<RunRow, 'window_key' | 'window_label'>) => `${r.window_key.slice(5, 10)} ${r.window_label}`;
+const runDur = (r: Pick<RunRow, 'started_at' | 'finished_at'>) =>
+  r.started_at && r.finished_at ? fmtDur(Date.parse(r.finished_at) - Date.parse(r.started_at)) : '—';
+
+export function renderRuns(o: { csrf: string; runs: RunRow[]; filter: 'all' | 'failed'; queued: string[]; notice?: string }): string {
+  const rows = o.runs.map(r => `<tr>
+    <td><a href="/runs/${r.id}"><b>${esc(runTitle(r))}</b></a><small>${r.started_at ? `${fmtTime(Date.parse(r.started_at))} 开始` : '未开始'}</small></td>
+    <td>${runPill(r, o.queued.includes(r.window_key))}</td>
+    <td class="n">${num(r.cands)}</td><td class="n">${r.items ?? '—'}</td><td class="n">${runDur(r)}</td>
+    <td>${r.status === 'succeeded' ? (r.sent_at ? `${fmtTime(Date.parse(r.sent_at), true)} 送达${r.resends ? ` · 补发 ${r.resends} 次` : ''}` : '') : `<span class="bad">${esc((r.error ?? '').slice(0, 80))}</span>`}</td>
+    <td><a href="/runs/${r.id}">详情</a></td></tr>`).join('');
+  const tab = (key: 'all' | 'failed', label: string) => `<a href="/runs${key === 'failed' ? '?status=failed' : ''}"${o.filter === key ? ' class="on" aria-current="page"' : ''}>${label}</a>`;
+  const body = `
+  ${o.notice ? `<div class="note">${esc(o.notice)}</div>` : ''}
+  <div class="page-h"><h1>日报记录</h1><span>最近 ${o.runs.length} 次运行</span></div>
+  <nav class="tabs" aria-label="筛选">${tab('all', '全部')}${tab('failed', '仅未发送')}</nav>
+  <div class="tw"><table><tr><th>时段</th><th>状态</th><th class="n">候选</th><th class="n">入选</th><th class="n">用时</th><th>说明</th><th></th></tr>
+  ${rows || '<tr><td colspan="7">没有符合条件的运行记录</td></tr>'}</table></div>`;
+  return layout('日报记录', body, o.csrf, 'runs');
+}
+
+const DECISION: Record<string, [string, string]> = {
+  retain: ['必选保留', 'ok'], normal: ['入选', 'ok'], escalate: ['待复核', 'warn'], filter: ['过滤', 'idle'] };
+const STAGE: Record<string, string> = { luna: 'L1', terra: 'L2', sol: 'L3', compose: '组装' };
+
+export function renderRunDetail(o: { csrf: string; run: RunRow; queued: boolean; notice?: string;
+  deliveries: Array<{ delivery_type: string; resend_sequence: number; status: string; sent_at: string | null; created_at: string; error: string | null }>;
+  candidates: Array<{ id: number; title: string; source_id: string; canonical_url: string | null; decision: string; mandatory_class: string | null;
+    section: string | null; filter_reason: string | null; stage: string | null; confidence: number | null; ai_reason: string | null; overridden: number }> }): string {
+  const r = o.run;
+  const csrf = `<input type="hidden" name="csrf" value="${esc(o.csrf)}">`;
+  const actions = [
+    r.status !== 'succeeded' && r.finished_at ? `<form class="inline" method="post" action="/runs/${r.id}/rerun">${csrf}<button class="primary"${o.queued ? ' disabled' : ''}>${o.queued ? '已排队，等待运行' : '重新运行此时段'}</button></form>` : '',
+    r.brief_id ? `<form class="inline" method="post" action="/runs/${r.id}/resend">${csrf}<button>重新发送邮件</button></form>` : '',
+  ].filter(Boolean).join('');
+  const groups = ['retain', 'normal', 'escalate', 'filter'].map(d => [d, o.candidates.filter(c => c.decision === d)] as const)
+    .concat([['other', o.candidates.filter(c => !DECISION[c.decision])] as const]).filter(([, xs]) => xs.length);
+  const cRow = (c: typeof o.candidates[number]) => {
+    const [label, cls] = DECISION[c.decision] ?? [c.decision, 'idle'];
+    return `<tr><td>${c.canonical_url ? `<a href="${esc(c.canonical_url)}" rel="noreferrer noopener" target="_blank">${esc(c.title)}</a>` : esc(c.title)}
+      <small>${esc(c.source_id)}${c.section ? ` · ${esc(c.section)}` : ''}${c.mandatory_class && c.mandatory_class !== 'none' ? ` · ${esc(c.mandatory_class)} 类` : ''}${c.overridden ? ' · <b>已人工处理</b>' : ''}</small></td>
+      <td><span class="pill ${cls}">${esc(label)}</span>${c.stage ? `<small>${esc(STAGE[c.stage] ?? c.stage)}${c.confidence != null ? ` · 置信 ${Math.round(c.confidence * 100)}%` : ''}</small>` : ''}</td>
+      <td class="muted">${esc((c.filter_reason ?? c.ai_reason ?? '').slice(0, 140))}</td>
+      <td><form class="inline" method="post" action="/candidates/${c.id}/override">${csrf}<input type="hidden" name="redirect" value="/runs/${r.id}">
+        <select name="action" aria-label="处理方式"><option value="include">改为入选</option><option value="retain">必选保留</option><option value="filter">过滤掉</option><option value="lock">锁定当前判定</option></select>
+        <input name="reason" required placeholder="原因" aria-label="原因" style="width:120px"><button>保存</button></form></td></tr>`;
+  };
+  const body = `
+  ${o.notice ? `<div class="note">${esc(o.notice)}</div>` : ''}
+  <div class="page-h"><h1>${esc(runTitle(r))}</h1><span><a href="/runs">← 日报记录</a></span></div>
+  <div class="cards">
+    <div class="card"><span class="l">状态</span><span>${runPill(r, o.queued)}</span><span class="d">${esc(r.stage ?? '')}</span></div>
+    <div class="card"><span class="l">候选 / 入选</span><span class="n">${num(r.cands)} / ${r.items ?? '—'}</span></div>
+    <div class="card"><span class="l">用时</span><span class="n">${runDur(r)}</span><span class="d">${r.started_at ? `${fmtTime(Date.parse(r.started_at), true)} 开始` : '未开始'}</span></div>
+    <div class="card"><span class="l">投递</span><span class="n">${r.sent_at ? fmtTime(Date.parse(r.sent_at), true) : '—'}</span><span class="d">${r.sent_at ? `邮件已送达${r.resends ? `，补发 ${r.resends} 次` : ''}` : '尚未送达'}</span></div>
+  </div>
+  ${r.error ? `<div class="err">${esc(r.error)}</div>` : ''}
+  ${actions ? `<div class="stack" style="grid-auto-flow:column;justify-content:start">${actions}</div>
+  <p class="sub">${r.status !== 'succeeded' ? '重新运行会走完整流程：已完成的 AI 判定会复用，只补做未完成的部分。' : ''}${r.brief_id ? '重新发送会把这一期再发一次到收件邮箱。' : ''}</p>` : ''}
+  ${o.deliveries.length ? `<h2>投递记录</h2><div class="tw"><table><tr><th>类型</th><th>状态</th><th>时间</th><th>错误</th></tr>${o.deliveries.map(d =>
+    `<tr><td>${d.delivery_type === 'primary' ? '首次投递' : d.delivery_type === 'resend' ? `补发 #${d.resend_sequence}` : esc(d.delivery_type)}</td>
+     <td>${d.status === 'sent' ? '<span class="pill ok">已送达</span>' : `<span class="pill bad">${esc(d.status)}</span>`}</td>
+     <td>${fmtTime(Date.parse(d.sent_at ?? d.created_at), true)}</td><td class="muted">${esc(d.error ?? '')}</td></tr>`).join('')}</table></div>` : ''}
+  <h2>候选内容</h2>
+  <p class="sub">人工处理在下一次运行或重新运行时生效；选择“锁定当前判定”可防止 AI 重新判定时改变结果。</p>
+  ${groups.map(([d, xs]) => {
+    const label = d === 'other' ? '其他' : DECISION[d]![0];
+    const table = `<div class="tw"><table><tr><th>标题</th><th>判定</th><th>理由</th><th>人工处理</th></tr>${xs.map(cRow).join('')}</table></div>`;
+    return d === 'filter' ? `<details><summary>${esc(label)} · ${xs.length} 条</summary>${table}</details>` : `<h2>${esc(label)} · ${xs.length} 条</h2>${table}`;
+  }).join('') || '<p class="muted">这次运行没有候选内容。</p>'}`;
+  return layout('日报记录', body, o.csrf, 'runs');
+}
+
+// ---------------- 订阅输出（后台改版第二期） ----------------
+
+export type FeedRow = { group: string; name: string; note: string; url: string | null; lastAt: string | null;
+  action: string; csrfExtra?: string; empty?: string };
+
+export function renderFeeds(o: { csrf: string; now: number; feeds: FeedRow[] }): string {
+  const csrf = `<input type="hidden" name="csrf" value="${esc(o.csrf)}"><input type="hidden" name="redirect" value="/feeds">`;
+  const groups = [...new Set(o.feeds.map(f => f.group))];
+  const row = (f: FeedRow) => `<tr><td><b>${esc(f.name)}</b><small>${esc(f.note)}</small></td>
+    <td>${f.lastAt ? esc(ago(f.lastAt)) : `<span class="muted">${esc(f.empty ?? '尚无内容')}</span>`}</td>
+    <td style="min-width:260px">${f.url ? `<input class="feed" readonly value="${esc(f.url)}" aria-label="${esc(f.name)} 订阅地址">` : '<span class="muted">令牌已撤销</span>'}</td>
+    <td><form class="inline" method="post" action="${esc(f.action)}">${csrf}<button name="action" value="reset">${f.url ? '重置' : '生成'}</button>${f.url ? '<button name="action" value="revoke">撤销</button>' : ''}</form></td></tr>`;
+  const body = `
+  <div class="page-h"><h1>订阅输出</h1><span>所有 RSS 订阅地址</span></div>
+  <p class="sub">地址里包含访问令牌，知道地址的人都能读取内容，请勿公开。重置后旧地址立即失效，需要在阅读器里换成新地址。</p>
+  ${groups.map(g => `<h2>${esc(g)}</h2><div class="tw"><table><tr><th>订阅</th><th>最近更新</th><th>地址</th><th></th></tr>${o.feeds.filter(f => f.group === g).map(row).join('')}</table></div>`).join('')}`;
+  return layout('订阅输出', body, o.csrf, 'feeds');
 }
