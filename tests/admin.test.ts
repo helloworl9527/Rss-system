@@ -155,8 +155,8 @@ const dir = mkdtempSync(join(tmpdir(), 'brief-admin-'));
   ok('正文不用邮件 HTML，没有任何内联样式', !content.includes('<table') && !content.includes('style='));
   ok('分区按规则顺序，条目用 h3', content.indexOf('<h2>AI 与科技趋势</h2>') < content.indexOf('<h2>社会与生活速览</h2>') && content.includes('<h3><a href="https://e.com/2"><AI> 条目</a></h3>'.replace('<AI>', '&lt;AI&gt;')));
   ok('结论加粗、摘要成段', content.includes('<p><strong>&lt;AI&gt; 条目的结论 &amp; 要点</strong></p><p>第一句。第二句。</p>'));
-  ok('来源显示名称并链接站点', content.includes('来源：<a href="https://www.v2ex.com/">V2EX</a>') && content.includes('来源：yicai'));
-  ok('另见列出同一故事的其他来源，排除主来源和日报之后才加入的', content.includes('另见：LINUX DO') && !content.includes('即刻') && !/另见：[^<]*V2EX/.test(content));
+  ok('条目底部不再有来源、另见和阅读原文，原文链接只在标题上', !content.includes('来源：') && !content.includes('另见') && !content.includes('阅读原文') && !content.includes('<small>')
+    && (content.match(/href="https:\/\/e\.com\/2"/g) ?? []).length === 1);
   ok('非 https 链接不进正文', !content.includes('javascript:') && content.includes('<h3>不安全链接条目</h3>'));
   ok('开头说明时间窗口', content.startsWith('<p>22:00–08:00 的新内容，共 3 条。</p>'));
   ok('列表预览按正文顺序列出前几条标题', feed.includes('<description>&lt;AI&gt; 条目；不安全链接条目；社会条目</description>'));

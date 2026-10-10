@@ -3,7 +3,7 @@
  *
  * 正文不复用邮件 HTML：邮件为兼容各家客户端用了表格布局、固定宽度和全量内联样式，
  * 在 NetNewsWire 里会渲染成带边框的窄盒子并重复标题。这里从 brief_items 重建一份
- * 语义化 HTML（分区 h2、条目 h3、段落），分区顺序与标题取自 rules.yaml，与邮件一致；
+ * 语义化 HTML（分区 h2、条目 h3、段落；原文链接只放在条目标题上），分区顺序与标题取自 rules.yaml，与邮件一致；
  * 排版完全交给阅读器主题。正文之后拼接同一时段的 Telegram 跨频道要点。
  * 令牌存于 feed_tokens（name='briefs'）。
  */
@@ -34,15 +34,9 @@ const mdLabel = (iso: string) => {
 
 /** 一期日报的阅读器正文。sections 默认取 rules.yaml，测试可注入。 */
 export function briefFeedHtml(db: DB, briefId: number, sections: Section[] = defaultSections()): { html: string; titles: string[]; count: number } {
-  const b = db.prepare(`SELECT b.created_at, r.window_start_at, r.window_end_at FROM briefs b JOIN runs r ON r.id=b.run_id WHERE b.id=?`).get(briefId) as any;
-  const items = db.prepare(`SELECT i.id, i.story_cluster_id, i.section, i.order_no, i.status, i.title, i.conclusion, i.summary_json,
-      i.source_name, i.source_url, coalesce(s.display_name, i.source_name) source_display, s.site_url
-    FROM brief_items i LEFT JOIN sources s ON s.id=i.source_name WHERE i.brief_id=? ORDER BY i.order_no`).all(briefId) as any[];
-  // 「另见」：同一故事的补充来源，只取这期日报生成时已有的成员
-  const others = db.prepare(`SELECT DISTINCT coalesce(s.display_name, f.source_id) name, s.site_url site
-    FROM cluster_members m JOIN item_versions v ON v.id=m.item_version_id JOIN feed_items f ON f.id=v.item_id
-    LEFT JOIN sources s ON s.id=f.source_id
-    WHERE m.cluster_id=? AND m.contribution='补充来源' AND m.created_at<=? AND f.source_id<>?`);
+  const b = db.prepare(`SELECT r.window_start_at, r.window_end_at FROM briefs b JOIN runs r ON r.id=b.run_id WHERE b.id=?`).get(briefId) as any;
+  const items = db.prepare(`SELECT i.section, i.title, i.conclusion, i.summary_json, i.source_url
+    FROM brief_items i WHERE i.brief_id=? ORDER BY i.order_no`).all(briefId) as any[];
   const link = (href: string | null, text: string) => href ? `<a href="${esc(href)}">${esc(text)}</a>` : esc(text);
 
   const titles: string[] = [];   // 按正文顺序，供列表预览
@@ -56,14 +50,9 @@ export function briefFeedHtml(db: DB, briefId: number, sections: Section[] = def
       titles.push(String(i.title));
       let summary: string[] = [];
       try { summary = JSON.parse(i.summary_json ?? '[]'); } catch { /* 旧数据 */ }
-      const also = i.story_cluster_id ? (others.all(i.story_cluster_id, b.created_at, i.source_name) as any[]) : [];
-      const meta = [`来源：${link(safeHref(i.site_url), i.source_display)}`,
-        also.length ? `另见：${also.map(o => link(safeHref(o.site), o.name)).join('、')}` : '',
-        url ? `<a href="${esc(url)}">阅读原文 ›</a>` : ''].filter(Boolean).join('　');
       return `<h3>${link(url, i.title)}</h3>` +
         `<p><strong>${esc(i.conclusion)}</strong></p>` +
-        (summary.length ? `<p>${summary.map(esc).join('')}</p>` : '') +
-        `<p><small>${meta}</small></p>`;
+        (summary.length ? `<p>${summary.map(esc).join('')}</p>` : '');
     }).join('');
   }).join('');
   const head = `<p>${esc(hhmm(b.window_start_at))}–${esc(hhmm(b.window_end_at))} 的新内容，共 ${items.length} 条。</p>`;
