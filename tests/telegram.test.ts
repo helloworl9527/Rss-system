@@ -5,7 +5,7 @@ import { readyTelegramDb } from '../packages/telegram/src/db.ts';
 import { addTelegramSource, extractUrls, normalizeTelegramReference, rotateAllToken, rotateSourceToken,
   toggleTelegramSource, updateTelegramSettings } from '../packages/telegram/src/core.ts';
 import { allRss, sourceRss } from '../packages/telegram/src/rss.ts';
-import { renderSummary, summarizeJob, TELEGRAM_SUMMARY_SCHEMA } from '../packages/telegram/src/summarize.ts';
+import { renderSummary, summarizeJob, SUMMARY_MAX_ATTEMPTS, TELEGRAM_SUMMARY_SCHEMA } from '../packages/telegram/src/summarize.ts';
 import { cleanupTelegram, retentionCutoff } from '../packages/telegram/src/maintenance.ts';
 import { effectiveMessageText } from '../packages/telegram/src/summarize.ts';
 import { runOneVisionTask, TELEGRAM_VISION_SCHEMA, validateVision, visionStats } from '../packages/telegram/src/vision.ts';
@@ -160,6 +160,16 @@ db.prepare(`INSERT INTO telegram_messages(source_id,chat_id,message_id,sent_at,t
 const bad={name:'mock',model:'m',strictness:'strict',complete:async()=>{throw new Error('isolated')}} as any;
 ok('单群失败返回且不抛出阻塞其他群组',!(await summarizeJob(db,Number(jf.lastInsertRowid),{provider:'mock',model:'m',promptRules:'',promptVersion:1,summaryRetentionDays:30},bad)));
 ok('失败任务保留有限重试',(db.prepare('SELECT status,next_attempt_at FROM telegram_summary_jobs WHERE id=?').get(jf.lastInsertRowid) as any).status==='failed');
+{
+  const row=()=>db.prepare('SELECT status,attempts,next_attempt_at FROM telegram_summary_jobs WHERE id=?').get(jf.lastInsertRowid) as any;
+  const delays:number[]=[];
+  for(let i=row().attempts;i<SUMMARY_MAX_ATTEMPTS;i++){
+    const before=Date.now(); await summarizeJob(db,Number(jf.lastInsertRowid),{provider:'mock',model:'m',promptRules:'',promptVersion:1,summaryRetentionDays:30},bad);
+    const r=row(); if(r.next_attempt_at) delays.push(Math.round((Date.parse(r.next_attempt_at)-before)/60000));
+  }
+  ok('失败重试按 5/10/20/40/80 分钟退避，覆盖约 2.5 小时的中转故障',JSON.stringify(delays)==='[10,20,40,80]'&&row().attempts===SUMMARY_MAX_ATTEMPTS);
+  ok('重试用完后不再排队',row().status==='failed'&&row().next_attempt_at===null);
+}
 db.prepare(`INSERT INTO telegram_urls(normalized_url,first_source_id,last_source_id,first_discovered_at,last_discovered_at,expires_at) VALUES('https://expired.test/',?,?,?,?,?)`).run(urlSrc.id,urlSrc.id,start,start,new Date(now.getTime()-1).toISOString());
 const oldMessageAt=new Date(now.getTime()-20*86400000).toISOString();
 db.prepare('UPDATE telegram_sources SET retain_all_history=1 WHERE id=?').run(src.id);

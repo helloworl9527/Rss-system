@@ -87,6 +87,10 @@ function merge(parts: SummaryShape[]): SummaryShape {
     uncertainty: uniq(parts.flatMap(x => x.uncertainty)) };
 }
 
+export const SUMMARY_MAX_ATTEMPTS = 6;
+/** 推理模型处理一整段频道消息常超过默认 90 秒，超时后重试只会重复同样的长请求 */
+const AI_TIMEOUT_MS = Number(process.env.TELEGRAM_AI_TIMEOUT_MS) || 240_000;
+
 export type TelegramAISettings = ProviderConfig & { promptRules: string; promptVersion: number; summaryRetentionDays: number; maxInputChars?: number };
 export async function summarizeJob(db: TelegramDB, jobId: number, cfg: TelegramAISettings, provider?: Provider): Promise<boolean> {
   const job = db.prepare(`SELECT j.*,coalesce(s.display_name,s.title,s.reference) title,s.source_type
@@ -141,8 +145,9 @@ export async function summarizeJob(db: TelegramDB, jobId: number, cfg: TelegramA
     })();
     return true;
   } catch (e: any) {
+    // 5/10/20/40/80 分钟退避，共约 2.5 小时：中转服务短时断开（授权失效、限流）时能自行补回
     const attempts = Number(job.attempts) + 1;
-    const retry = attempts < 3 ? new Date(Date.now() + 5 * 60_000 * attempts).toISOString() : null;
+    const retry = attempts < SUMMARY_MAX_ATTEMPTS ? new Date(Date.now() + 5 * 60_000 * 2 ** (attempts - 1)).toISOString() : null;
     db.prepare(`UPDATE telegram_summary_jobs SET status='failed',error=?,next_attempt_at=?,updated_at=? WHERE id=?`)
       .run(String(e?.message ?? e).slice(0,1000),retry,nowIso(),job.id);
     return false;
@@ -206,9 +211,9 @@ export async function runDueSummaries(db: TelegramDB, secret: string | undefined
   const jobs=db.prepare(`SELECT id FROM telegram_summary_jobs WHERE status='pending' OR
     (status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at<=?) ORDER BY window_end,source_id`).all(nowIso()) as any[];
   let done=0;
-  for(const j of jobs) if(await summarizeJob(db,j.id,{provider:s.provider,model:s.model,baseUrl:s.base_url??undefined,apiKey:secret,
+  for(const j of jobs) if(await summarizeJob(db,j.id,{provider:s.provider,model:s.model,baseUrl:s.base_url??undefined,apiKey:secret,timeoutMs:AI_TIMEOUT_MS,
     promptRules:s.prompt_rules,promptVersion:s.prompt_version,summaryRetentionDays:s.summary_retention_days})) done++;
-  await runDueDigests(db,{provider:s.provider,model:s.model,baseUrl:s.base_url??undefined,apiKey:secret,
+  await runDueDigests(db,{provider:s.provider,model:s.model,baseUrl:s.base_url??undefined,apiKey:secret,timeoutMs:AI_TIMEOUT_MS,
     summaryRetentionDays:s.summary_retention_days,lookbackDays:Number(s.raw_retention_days)+1});
   return done;
 }
