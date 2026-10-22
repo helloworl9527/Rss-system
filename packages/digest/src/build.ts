@@ -50,6 +50,8 @@ function pushedHistory(db: DB, before: Date) {
   const sent = db.prepare(`SELECT b.id, b.html_body FROM briefs b
     WHERE b.status = 'final' AND EXISTS (SELECT 1 FROM deliveries d WHERE d.brief_id = b.id AND d.status = 'sent' AND d.sent_at >= ? AND d.sent_at < ?)`)
     .all(since, before.toISOString()) as any[];
+  // DIGEST_IGNORE_LEGACY_HISTORY=1：重发新版日报时不以旧版正文去重（旧版内容不算新版已推送）
+  if (process.env.DIGEST_IGNORE_LEGACY_HISTORY === '1') sent.length = 0;
   for (const b of sent) {
     for (const r of extractRepos(b.html_body ?? '')) repos.add(r);
     for (const i of db.prepare(`SELECT bi.title, bi.source_url, coalesce(s.vendor, 'other') vendor FROM brief_items bi
