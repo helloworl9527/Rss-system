@@ -7,6 +7,9 @@ import { esc, safeUrl } from '../../templates/src/email.ts';
 import type { DigestData, DigestLink } from './core.ts';
 
 export const NO_POLITICS = '本时段暂无值得关注的时政动态。';
+/** 兼容旧数据：politics 曾是一段字符串。 */
+export const politicsList = (d: DigestData): string[] =>
+  Array.isArray(d.politics) ? d.politics : (d.politics ? [String(d.politics)] : []);
 export function digestSubject(d: DigestData): string {
   return `十六源日报｜${d.date} ${d.windowLabel}`;
 }
@@ -35,7 +38,9 @@ export function renderDigestHtml(d: DigestData): string {
     return `<li style="margin:0 0 8px;"><a href="${esc(u ?? '')}" style="${A}font-weight:700;">${esc(p.repo)}</a> — ${esc(p.description)}
 <span style="font-size:12px;color:${C.muted};">（提及：${links(p.mentionedBy, `color:${C.muted};`)}）</span></li>`;
   }).join('') + '</ul>' : `<p style="color:${C.muted};">本期无新的开源项目。</p>`;
-  const pol = `<p style="margin:0;">${esc(d.politics || NO_POLITICS)}</p>`;
+  const pl = politicsList(d);
+  const pol = pl.length ? `<ul style="margin:0;padding-left:20px;">${pl.map(b => `<li style="margin:0 0 6px;">${esc(b)}</li>`).join('')}</ul>`
+    : `<p style="margin:0;color:${C.muted};">${NO_POLITICS}</p>`;
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark"><title>${esc(digestSubject(d))}</title></head>
@@ -59,7 +64,8 @@ export function renderDigestText(d: DigestData): string {
   L.push('', '二、开源项目');
   if (!d.projects.length) L.push('本期无新的开源项目。');
   for (const p of d.projects) L.push(`• ${p.repo} — ${p.description}（提及：${p.mentionedBy.map(m => m.label).join('、')}）`, `  ${p.url}`);
-  L.push('', '三、时政速览', d.politics || NO_POLITICS, '');
+  const pl = politicsList(d);
+  L.push('', '三、时政速览', ...(pl.length ? pl.map(b => `• ${b}`) : [NO_POLITICS]), '');
   return L.join('\n');
 }
 
@@ -75,7 +81,8 @@ export function renderDigestFeedHtml(d: DigestData): string {
   h += `<h2>二、开源项目</h2>`;
   h += d.projects.length ? '<ul>' + d.projects.map(p => `<li><a href="${esc(safeUrl(p.url) ?? '')}"><strong>${esc(p.repo)}</strong></a> — ${esc(p.description)} <small>（提及：${ln(p.mentionedBy)}）</small></li>`).join('') + '</ul>'
     : '<p>本期无新的开源项目。</p>';
-  h += `<h2>三、时政速览</h2><p>${esc(d.politics || NO_POLITICS)}</p>`;
+  const pl = politicsList(d);
+  h += `<h2>三、时政速览</h2>` + (pl.length ? `<ul>${pl.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : `<p>${NO_POLITICS}</p>`);
   return h;
 }
 

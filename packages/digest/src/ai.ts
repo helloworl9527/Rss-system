@@ -38,7 +38,7 @@ const VENDOR_PROMPT = `你是中文科技日报编辑，负责「官方动态」
 输入是该厂商官方渠道（官网博客、更新日志、官方 X 账号、核心员工账号）在本时段发布的条目，以及近 72 小时已推送过的事件标题。
 任务：
 1. 把报道同一事件/同一发布的多条合并为一个事件（例如官网博客与官方 X 帖说的是同一次发布），item_ids 列出全部条目；不同事件不得合并。prehint_groups 给出按共享链接已确定属于同一事件的分组，必须保持在同一事件内。
-2. 每个事件写简洁中文标题 title（不超过 30 字，不加任何星号、emoji 或评分符号）和 1–2 句中文摘要 summary（合计不超过 90 字），综合所有合并条目的细节互相补充，只写事实，不写建议。
+2. 每个事件写简洁中文标题 title（不超过 30 字，不加任何星号、emoji 或评分符号）。条目已按厂商分组展示，title 与 summary 都不得以厂商名或其产品母公司名开头或作主语（例如厂商为 OpenAI 时，不写「OpenAI 发布…」，直接写「发布…」；厂商为 Google 时不写「Google 推出…」，写「推出…」）和 1–2 句中文摘要 summary（合计不超过 90 字），综合所有合并条目的细节互相补充，只写事实，不写建议。
 3. trivial=true：回复、寒暄、活动/直播预告、招聘、纯转发、无实质信息的帖子。
 4. repeat=true：与 recent_pushed 中某个已推送事件是同一件事且没有实质新信息。
 每个输入条目必须恰好出现在一个事件中。${GUARD}`;
@@ -126,13 +126,13 @@ export async function describeProjects(p: Provider, projects: Array<{ repo: stri
 }
 
 // ---------- 时政速览 ----------
-const POL_SCHEMA = { type: 'object', additionalProperties: false, required: ['paragraph'], properties: { paragraph: { type: 'string' } } };
-export async function politicsParagraph(p: Provider, items: DigestSourceItem[]): Promise<{ text: string; error?: string }> {
-  if (!items.length) return { text: '' };
+const POL_SCHEMA = { type: 'object', additionalProperties: false, required: ['bullets'], properties: { bullets: { type: 'array', items: { type: 'string' } } } };
+export async function politicsBullets(p: Provider, items: DigestSourceItem[]): Promise<{ bullets: string[]; error?: string }> {
+  if (!items.length) return { bullets: [] };
   try {
-    const out = await call<{ paragraph: string }>(p,
-      `你是中文新闻编辑。根据本时段的新闻标题与摘要，写一段 3–5 句的「时政速览」：只挑最重要的国内外时政、宏观经济与重大社会事件，客观陈述，句与句之间自然衔接。不列来源、不加链接、不加标题、不分点、不评论。${GUARD}`,
-      { news: items.map(i => ({ title: clip(i.title, 120), text: clip(i.text, 200) })) }, POL_SCHEMA, 'politics', 800);
-    return { text: String(out.paragraph).trim() };
-  } catch (e: any) { return { text: '', error: String(e?.message ?? e).slice(0, 200) }; }
+    const out = await call<{ bullets: string[] }>(p,
+      `你是中文新闻编辑。根据本时段的新闻标题与摘要，挑出最重要的 3–6 条国内外时政、宏观经济与重大社会事件，输出「时政速览」列表 bullets：每条一个新闻事件，用 1–2 句客观陈述，不同事件不得合并在一条里。不列来源、不加链接、不加序号或项目符号、不评论。${GUARD}`,
+      { news: items.map(i => ({ title: clip(i.title, 120), text: clip(i.text, 200) })) }, POL_SCHEMA, 'politics', 900);
+    return { bullets: out.bullets.map(b => String(b).replace(/^\s*(?:[•·\-*]|\d+[.、)])\s*/, '').trim()).filter(Boolean).slice(0, 8) };
+  } catch (e: any) { return { bullets: [], error: String(e?.message ?? e).slice(0, 200) }; }
 }

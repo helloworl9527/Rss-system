@@ -1,6 +1,6 @@
 // 新版日报：确定性规则与渲染的回归测试
 import assert from 'node:assert/strict';
-import { classifyRepost, decodeEntities, extractRepos, isReplyOrTrivial, linksFor, preMergeByLinks, similarity, type DigestSourceItem, type DigestData } from '../packages/digest/src/core.ts';
+import { stripVendorPrefix, classifyRepost, decodeEntities, extractRepos, isReplyOrTrivial, linksFor, preMergeByLinks, similarity, type DigestSourceItem, type DigestData } from '../packages/digest/src/core.ts';
 import { renderDigestHtml, renderDigestText, renderDigestFeedHtml } from '../packages/digest/src/render.ts';
 import { checkEmail } from '../packages/templates/src/email.ts';
 
@@ -29,7 +29,7 @@ const d: DigestData = { format: 'digest_v2', date: '2026-10-22', windowLabel: '�
   vendors: [{ vendor: 'openai', name: 'OpenAI', events: [{ title: 'Codex <cloud>', summary: '摘要。', itemIds: [1, 2],
     links: [{ label: 'OpenAI News', url: 'https://openai.com/a' }, { label: '@OpenAI', url: 'javascript:alert(1)' }] }] }],
   emptyVendors: ['Notion', 'DeepSeek'], projects: [{ repo: 'foo/bar', url: 'https://github.com/foo/bar', description: '一个工具', mentionedBy: [{ label: 'V2EX', url: 'https://v2ex.com/t/1' }] }],
-  politics: '' };
+  politics: ['第一条新闻。', '第二条<新闻>。'] };
 const html = renderDigestHtml(d), text = renderDigestText(d), feed = renderDigestFeedHtml(d);
 assert.deepEqual(checkEmail(html, text), []);
 for (const s of [html, text, feed]) {
@@ -40,4 +40,15 @@ for (const s of [html, text, feed]) {
 }
 assert.ok(html.includes('北京时间 10-22 08:00–12:00'));
 assert.ok(!html.includes('javascript:') && html.includes('&lt;cloud&gt;'));
+assert.equal(stripVendorPrefix('OpenAI 发布 GPT-6', 'openai', 'OpenAI'), '发布 GPT-6');
+assert.equal(stripVendorPrefix('Google推出 Gemma 4', 'google', 'Google'), '推出 Gemma 4');
+assert.equal(stripVendorPrefix('谷歌：更新搜索', 'google', 'Google'), '更新搜索');
+assert.equal(stripVendorPrefix('Claude Code 发布 2.1', 'anthropic', 'Anthropic'), 'Claude Code 发布 2.1', '产品名不是厂商名，保留');
+assert.equal(stripVendorPrefix('Codex 新功能', 'openai', 'OpenAI'), 'Codex 新功能');
+assert.ok(html.includes('<li style="margin:0 0 6px;">第一条新闻。</li>') && html.includes('第二条&lt;新闻&gt;。'));
+assert.ok(text.includes('• 第一条新闻。\n• 第二条<新闻>。'));
+assert.ok(feed.includes('<h2>三、时政速览</h2><ul><li>第一条新闻。</li>'));
+const old = renderDigestText({ ...d, politics: '旧版一段。' as any });
+assert.ok(old.includes('• 旧版一段。'), '兼容旧字符串数据');
+assert.ok(renderDigestText({ ...d, politics: [] }).includes('本时段暂无值得关注的时政动态。'));
 console.log('digest: all passed');

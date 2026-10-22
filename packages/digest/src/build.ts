@@ -6,9 +6,9 @@ import type { DB } from '../../db/src/index.ts';
 import type { Provider } from '../../ai/src/types.ts';
 import {
   classifyRepost, decodeEntities, extractRepos, isReplyOrTrivial, linksFor, preMergeByLinks, urlKey,
-  vendorName, vendorOrder, type DigestData, type DigestProject, type DigestSourceItem, type DigestVendor,
+  stripVendorPrefix, vendorName, vendorOrder, type DigestData, type DigestProject, type DigestSourceItem, type DigestVendor,
 } from './core.ts';
-import { composeVendorEvents, describeProjects, judgeReposts, politicsParagraph } from './ai.ts';
+import { composeVendorEvents, describeProjects, judgeReposts, politicsBullets } from './ai.ts';
 
 export type DigestWindow = { key: string; label: string; start: Date; end: Date };
 const H = 3600e3;
@@ -93,7 +93,7 @@ export async function buildDigest(db: DB, win: DigestWindow, provider: Provider,
       const its = e.itemIds.map(id => vi.find(i => i.id === id)!).filter(Boolean)
         .sort((a, b) => Number(b.sourceId.startsWith('x_') ? 0 : 1) - Number(a.sourceId.startsWith('x_') ? 0 : 1));
       if (e.itemIds.length > 1) log.push(`  合并 ${e.itemIds.length} 条 → ${vendorName(v)}：${e.title}`);
-      return { title: e.title, summary: e.summary, links: linksFor(its), itemIds: e.itemIds };
+      return { title: stripVendorPrefix(e.title, v, vendorName(v)), summary: stripVendorPrefix(e.summary, v, vendorName(v)), links: linksFor(its), itemIds: e.itemIds };
     });
     if (events.length) vendors.push({ vendor: v, name: vendorName(v), events }); else emptyVendors.push(vendorName(v));
   }
@@ -145,7 +145,7 @@ export async function buildDigest(db: DB, win: DigestWindow, provider: Provider,
   // 每个来源最多取 25 条，避免一财高频滚动淹没其他来源
   const perSrc = new Map<string, number>();
   const polPick = pol.filter(i => { const n = (perSrc.get(i.sourceId) ?? 0) + 1; perSrc.set(i.sourceId, n); return n <= 25; });
-  const politics = await politicsParagraph(provider, polPick);
+  const politics = await politicsBullets(provider, polPick);
   if (politics.error) log.push(`  ⚠️ 时政速览生成失败：${politics.error}`);
   log.push(`时政素材 ${pol.length} 条，送模型 ${polPick.length} 条`);
 
@@ -154,7 +154,7 @@ export async function buildDigest(db: DB, win: DigestWindow, provider: Provider,
     date: fmt(win.end, { year: 'numeric', month: '2-digit', day: '2-digit' }),
     windowLabel: win.label,
     windowRange: `${md(win.start)} ${hm(win.start)}–${md(win.start) !== md(win.end) ? md(win.end) + ' ' : ''}${hm(win.end)}`,
-    vendors, emptyVendors, projects, politics: politics.text,
+    vendors, emptyVendors, projects, politics: politics.bullets,
   };
   return { data, log };
 }

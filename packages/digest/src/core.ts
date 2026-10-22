@@ -30,7 +30,7 @@ export type DigestData = {
   vendors: DigestVendor[]; // 只含有内容的厂商
   emptyVendors: string[];  // 本期无更新的厂商显示名
   projects: DigestProject[];
-  politics: string;        // 3–5 句一段；无内容时为空串
+  politics: string[];      // 每条一个新闻，1–2 句；无内容时为空数组（旧数据可能是字符串）
 };
 
 /** 厂商显示名与固定顺序。未列出的厂商排在最后，按 id 显示。 */
@@ -166,3 +166,16 @@ export function linksFor(items: DigestSourceItem[]): DigestLink[] {
   }
   return out;
 }
+
+/** 去掉标题/摘要开头重复的厂商名（如 OpenAI 分组下的「OpenAI 发布…」→「发布…」）。 */
+export function stripVendorPrefix(text: string, vendorId: string, name: string): string {
+  const names = [...new Set([name, vendorId, name.replace(/^@/, ''), ...(VENDOR_ALIASES[vendorId] ?? [])])].filter(Boolean)
+    .sort((a, b) => b.length - a.length).map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const re = new RegExp(`^\\s*(?:${names.join('|')})(?:\\s*(?:公司|官方|团队|旗下))?\\s*(?:[:：,，]\\s*)?`, 'i');
+  const out = text.replace(re, '').trim();
+  return out.length >= 4 ? out : text.trim();
+}
+const VENDOR_ALIASES: Record<string, string[]> = {
+  anthropic: ['Anthropic'], openai: ['OpenAI'], google: ['Google', '谷歌'], github: ['GitHub'],
+  notion: ['Notion'], deepseek: ['DeepSeek', '深度求索'], cloudflare: ['Cloudflare'],
+};
