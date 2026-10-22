@@ -392,7 +392,7 @@ app.post('/rss/briefs/token', async (req, reply) => {
 });
 app.get<{Params:{token:string}}>('/rss/briefs/:token', async (req, reply) => {
   if (!/^[a-f0-9]{64}$/.test(req.params.token)) return reply.code(404).send('订阅不存在');
-  const body = briefsRss(db, req.params.token, process.env.ADMIN_BASE_URL ?? '', 20, undefined, since => digestsForBriefFeed(telegramDb, since));
+  const body = briefsRss(db, req.params.token, process.env.ADMIN_BASE_URL ?? '', 20);
   if (body === null) return reply.code(404).send('订阅不存在');
   return reply.header('Cache-Control', 'private, no-store, max-age=0').header('Referrer-Policy', 'no-referrer').type('application/rss+xml; charset=utf-8').send(body);
 });

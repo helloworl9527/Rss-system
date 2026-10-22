@@ -11,8 +11,8 @@
 # ============================================================
 
 meta:
-  rule_version: 20
-  updated_at: "2026-09-29"
+  rule_version: 21
+  updated_at: "2026-10-22"
   timezone: Asia/Taipei          # 全系统唯一时区基准（PRD 5.1）
   description: "初版：从 PRD V1.0 自然语言规则拆解而来，未经影子运行校准"
 
@@ -1206,6 +1206,16 @@ ai:
 # 13. 简报结构与文案约束（PRD 9.1 / 9.2）
 # ------------------------------------------------------------
 brief:
+  # v21（2026-10-22）新版日报结构。digest_v2 = 头部（日期 + 北京时间窗口）→
+  # 一、官方动态（按厂商分组，同厂商同事件合并，72h 跨期去重）→ 二、开源项目（72h 不重复）→
+  # 三、时政速览（3–5 句一段，不列来源）。旧分区、核心要点、审计区、评估附录、Telegram 要点均不再出现。
+  # 改回 legacy 即恢复旧版分区简报；下方 sections 仍用于渲染历史简报。
+  format: digest_v2
+  digest_sections:
+    - { id: official_updates, title: 一、官方动态 }
+    - { id: open_source_projects, title: 二、开源项目 }
+    - { id: politics_brief, title: 三、时政速览 }
+  dedup_window_hours: 72
   show_core_highlights: false
   # 未完成判定时禁止生成/发送，以免模型故障被伪装成“仅一条合格消息”。
   completeness_gate:

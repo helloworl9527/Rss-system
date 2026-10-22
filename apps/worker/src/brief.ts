@@ -62,6 +62,15 @@ const win = windowFromKey(run.window_key);
 const fmt = (d: Date) => new Intl.DateTimeFormat('sv-SE', {
   timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
 
+// ---------- 新版日报（官方动态 / 开源项目 / 时政速览） ----------
+// rules.yaml brief.format = digest_v2 时走新流程；改回 legacy 即恢复下方旧版分区简报。
+if (rules.brief?.format === 'digest_v2') {
+  const { runDigestBrief } = await import('./brief-digest.ts');
+  const code = await runDigestBrief({ db, run, win, rules, noSend: NO_SEND, shadow: SHADOW,
+    regenerate: REGENERATE, outDir: OUT_DIR });
+  db.close(); process.exit(code);
+}
+
 // ---------- 1. 取候选与判定 ----------
 type Row = {
   cid: number; vid: number; source_id: string; category: string; priority: number;
@@ -80,7 +89,7 @@ const rows = db.prepare(`
          f.canonical_url url, f.published_at, c.decision, c.mandatory_class, c.section,
          c.late_discovery, c.origin_window_key, f.first_seen_at,
          v.signals_json, c.filter_rule_id, c.filter_reason,
-         (json_extract(s.config_json,'$.official') IS NOT NULL) is_official,
+         coalesce(s.is_official,0) is_official,
          (SELECT e.result_json FROM evaluations e WHERE e.candidate_id=c.id
            AND e.stage IN ('sol','terra','luna')
            ORDER BY CASE e.stage WHEN 'sol' THEN 0 WHEN 'terra' THEN 1 ELSE 2 END, e.id DESC LIMIT 1) result_json
