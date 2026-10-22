@@ -27,7 +27,6 @@
 | Anthropic News · RSSHub | ai | claude | <https://www.anthropic.com/news> | <https://rsshub.bestblogs.dev/anthropic/news><br><https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml> |
 | DeepSeek 更新日志 | ai | deepseek | <https://api-docs.deepseek.com/zh-cn/updates/> | <https://api-docs.deepseek.com/zh-cn/updates/> |
 | Elsewhere News | article | unclassified | <https://elsewhere.news/> | <https://elsewhere.news/feed.xml> |
-| Hermes Agent | ai | hermes | <https://github.com/NousResearch/hermes-agent/releases> | <https://github.com/NousResearch/hermes-agent/releases.atom> |
 | @GitHub | developer | github | <https://x.com/GitHub> | <https://helloworl9527.github.io/x-rss-feed/feeds/github.xml> |
 | @thsottiaux | ai | unclassified | <https://x.com/thsottiaux> | <https://helloworl9527.github.io/x-rss-feed/feeds/thsottiaux.xml> |
 | 即刻 | society | unclassified | <https://web.okjike.com/topic/553870e8e4b0cafb0a1bef68> | <https://hub.slarker.me/jike/topic/553870e8e4b0cafb0a1bef68><br><https://rsshub.rssforever.com/jike/topic/553870e8e4b0cafb0a1bef68> |
@@ -41,7 +40,7 @@
 | 一财 · RSSHub | article | unclassified | <https://www.yicai.com/> | <https://rsshub.app/yicai/latest><br><https://rsshub.rssforever.com/yicai/latest><br><https://rsshub.bestblogs.dev/yicai/latest> |
 | @elonmusk | society | unclassified | <https://x.com/elonmusk> | <https://helloworl9527.github.io/x-rss-feed/feeds/elonmusk.xml> |
 
-共 33 个启用的日报来源。
+共 32 个启用的日报来源。
 
 ## Telegram 订阅频道
 
