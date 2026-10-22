@@ -157,7 +157,8 @@ function windowDefs(): WinDef[] {
     { id: 'noon', label: '午报', end_hour: 12 },
     { id: 'evening', label: '晚报', end_hour: 22 },
   ]).slice().sort((a, b) => a.end_hour - b.end_hour);
-  if (defs.length < 2) throw new Error('windows.schedule 至少需要两个窗口');
+  if (defs.length < 1) throw new Error('windows.schedule 至少需要一个窗口');
+  // 只有一个窗口时即「每日一期」：窗口为前一天同一时刻 → 当天该时刻（24 小时）
   return defs;
 }
 

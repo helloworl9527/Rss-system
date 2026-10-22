@@ -11,7 +11,7 @@
 # ============================================================
 
 meta:
-  rule_version: 21
+  rule_version: 22
   updated_at: "2026-10-22"
   timezone: Asia/Taipei          # 全系统唯一时区基准（PRD 5.1）
   description: "初版：从 PRD V1.0 自然语言规则拆解而来，未经影子运行校准"
@@ -27,10 +27,10 @@ meta:
 windows:
   timezone: Asia/Taipei
   # 按 end 时刻升序排列；morning 跨日（前一天 evening_end → 次日 08:00）
+  # v22（2026-10-22）改为每日一期：前一天 08:00 → 当天 08:00（北京时间，与台北同为 UTC+8）。
+  # 恢复三期：改回 morning(8)/noon(12)/evening(22) 三项并同步 deploy/systemd/brief-run.timer。
   schedule:
-    - { id: morning, label: 早报, end_hour: 8 }
-    - { id: noon,    label: 午报, end_hour: 12 }
-    - { id: evening, label: 晚报, end_hour: 22 }
+    - { id: daily, label: 日报, end_hour: 8 }
 
 # ------------------------------------------------------------
 # 1. URL 规范化（PRD 7.2）
@@ -1211,10 +1211,15 @@ brief:
   # 三、时政速览（3–5 句一段，不列来源）。旧分区、核心要点、审计区、评估附录、Telegram 要点均不再出现。
   # 改回 legacy 即恢复旧版分区简报；下方 sections 仍用于渲染历史简报。
   format: digest_v2
+  # 投递方式：rss_only = 只写入简报（RSS 发布），不发邮件；改为 email 恢复邮件投递。
+  delivery: rss_only
+  # 末尾附 Telegram 群组每日要点（四、Telegram 群组要点）。未就绪时最多等待这么久，之后不附并注明生成中。
+  telegram_daily: { enabled: true, wait_minutes: 15, max_age_hours: 3 }
   digest_sections:
     - { id: official_updates, title: 一、官方动态 }
     - { id: open_source_projects, title: 二、开源项目 }
     - { id: politics_brief, title: 三、时政速览 }
+    - { id: telegram_groups, title: 四、Telegram 群组要点 }
   dedup_window_hours: 72
   show_core_highlights: false
   # 未完成判定时禁止生成/发送，以免模型故障被伪装成“仅一条合格消息”。

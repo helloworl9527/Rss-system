@@ -9,6 +9,7 @@
 import { nowIso, type DB } from '../../../packages/db/src/index.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
 import { buildDigest, recordPushed } from '../../../packages/digest/src/build.ts';
+import { loadTelegramDaily } from '../../../packages/digest/src/telegram.ts';
 import { renderDigestHtml, renderDigestText, digestSubject, digestCount } from '../../../packages/digest/src/render.ts';
 import type { DigestData } from '../../../packages/digest/src/core.ts';
 import { checkEmail } from '../../../packages/templates/src/email.ts';
@@ -37,6 +38,11 @@ export async function runDigestBrief(o: {
     const built = await buildDigest(db, o.win, provider);
     built.log.forEach(l => console.log(l));
     data = built.data;
+    const tg = o.rules.brief?.telegram_daily;
+    if (tg?.enabled) {
+      data.telegram = await loadTelegramDaily(o.win.end, { waitMinutes: o.noSend ? 0 : Number(process.env.BRIEF_TELEGRAM_WAIT_MINUTES ?? tg.wait_minutes ?? 15), maxAgeHours: Number(tg.max_age_hours ?? 3), log: m => console.log(m) });
+      console.log(`Telegram 群组要点：${data.telegram.status === 'ready' ? `${data.telegram.categories.reduce((n, c) => n + c.items.length, 0)} 条` : '未就绪，注明生成中'}`);
+    }
     html = renderDigestHtml(data); text = renderDigestText(data);
     subject = digestSubject(data) + (o.regenerate ? '｜补发' : '');
     const errs = checkEmail(html, text);
@@ -55,7 +61,12 @@ export async function runDigestBrief(o: {
     console.log(`已保存新版简报 #${briefId} v${version}：官方事件 ${data.vendors.reduce((n, v) => n + v.events.length, 0)} 条 / 开源项目 ${data.projects.length} 个`);
   }
 
-  if (o.noSend) console.log('--no-send：跳过投递');
+  const rssOnly = o.rules.brief?.delivery === 'rss_only';
+  if (rssOnly) {
+    // 只发布 RSS：简报持久化即发布，同时登记 72 小时推送历史
+    if (!o.shadow) recordPushed(db, briefId, data);
+    console.log('delivery=rss_only：不发邮件，已通过 RSS 发布');
+  } else if (o.noSend) console.log('--no-send：跳过投递');
   else if (!to) console.log('未设置 MAIL_TO，跳过投递');
   else {
     const { mailer, kind, note } = mailerFromEnv(o.outDir);

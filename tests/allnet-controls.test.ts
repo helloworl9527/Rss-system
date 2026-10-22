@@ -43,8 +43,8 @@ try{
  add('off','rss-only','https://example.com/shared',oldSeen);const normalVid=add('normal','daily','https://example.com/shared',new Date().toISOString());
  assert.equal(itemsInWindow(db,win).find(r=>r.vid===normalVid)?.dup_canonical,0,'RSS-only content must not suppress eligible source');
  const newVid=add('hot','new','https://example.com/new',new Date().toISOString());assert.ok(itemsInWindow(db,win).some(r=>r.vid===newVid));
- db.prepare(`INSERT INTO runs(window_key,window_label,window_start_at,window_end_at,scheduled_at,status,trigger) VALUES('2026-09-06:evening','test',?,?,?,'running','timer')`).run(now,now,now);
- for(const vid of [newVid,normalVid])db.prepare(`INSERT INTO candidates(run_id,item_version_id,origin_window_key,decision,created_at) VALUES(1,?,'2026-09-06:evening','escalate',?)`).run(vid,now);
+ db.prepare(`INSERT INTO runs(window_key,window_label,window_start_at,window_end_at,scheduled_at,status,trigger) VALUES('2026-09-06:daily','test',?,?,?,'running','timer')`).run(now,now,now);
+ for(const vid of [newVid,normalVid])db.prepare(`INSERT INTO candidates(run_id,item_version_id,origin_window_key,decision,created_at) VALUES(1,?,'2026-09-06:daily','escalate',?)`).run(vid,now);
  const before=eligibilitySignature(db,1);toggleSource(db,'hot',false,'stop daily');
  assert.throws(()=>assertEligibilityUnchanged(db,1,before),/资格已变化/);
  assert.equal((db.prepare(`SELECT count(*) n FROM candidates c WHERE ${candidateEligibleSql()}`).get() as any).n,1,'Existing candidate excluded');

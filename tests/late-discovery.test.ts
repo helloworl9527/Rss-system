@@ -16,9 +16,9 @@ db.prepare(`INSERT INTO sources (id,name,display_name,category,host_group,harves
   config_json,source_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,1,?,?)`)
   .run('s1', 'S1', 'S1', 'forum', 'direct', 'standard', '{}', now, now);
 
-const cur = windowFromKey('2026-08-23:noon');          // 台北 08:00–12:00
+const cur = windowFromKey('2026-08-23:daily');         // 台北前日 08:00 → 当日 08:00
 const prev = previousWindows(cur, 3);
-const originWin = prev[0]!;                            // 2026-08-23:morning，台北前日22:00–08:00
+const originWin = prev[0]!;                            // 2026-08-22:daily
 
 // 系统在原窗口结束前确实采集过该来源（迁移截止点的前提）
 const watchedAt = new Date(originWin.end.getTime() - 3600e3).toISOString();
@@ -73,7 +73,7 @@ const cl = Number(db.prepare(`INSERT INTO story_clusters (cluster_key,canonical_
 db.prepare(`INSERT INTO cluster_members (cluster_id,item_version_id,created_at) VALUES (?,?,?)`)
   .run(cl, sent.vid, now);
 const runId = Number(db.prepare(`INSERT INTO runs (window_key,window_label,window_start_at,
-  window_end_at,scheduled_at,status,trigger) VALUES ('2026-08-23:morning','早报',?,?,?,'succeeded','timer')`)
+  window_end_at,scheduled_at,status,trigger) VALUES ('2026-08-22:daily','日报',?,?,?,'succeeded','timer')`)
   .run(originWin.start.toISOString(), originWin.end.toISOString(), now).lastInsertRowid);
 const bId = Number(db.prepare(`INSERT INTO briefs (run_id,version,subject,text_body,html_body,
   html_bytes,status,rule_version,created_at) VALUES (?,1,'s','t','h',1,'final',1,?)`).run(runId, now).lastInsertRowid);
