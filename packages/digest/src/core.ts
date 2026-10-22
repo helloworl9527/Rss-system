@@ -31,6 +31,14 @@ export type DigestData = {
   emptyVendors: string[];  // 本期无更新的厂商显示名
   projects: DigestProject[];
   politics: string[];      // 每条一个新闻，1–2 句；无内容时为空数组（旧数据可能是字符串）
+  /** 四、Telegram 群组要点（仅每日简报）。缺省 = 不显示该节。 */
+  telegram?: DigestTelegram;
+};
+export type DigestTelegram = {
+  status: 'ready' | 'pending';
+  windowStart?: string; windowEnd?: string;
+  categories: Array<{ name: string; items: Array<{ text: string; groups: string[] }> }>;
+  groups: string[];
 };
 
 /** 厂商显示名与固定顺序。未列出的厂商排在最后，按 id 显示。 */

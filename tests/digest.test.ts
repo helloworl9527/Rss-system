@@ -51,4 +51,14 @@ assert.ok(feed.includes('<h2>三、时政速览</h2><ul><li>第一条新闻。</
 const old = renderDigestText({ ...d, politics: '旧版一段。' as any });
 assert.ok(old.includes('• 旧版一段。'), '兼容旧字符串数据');
 assert.ok(renderDigestText({ ...d, politics: [] }).includes('本时段暂无值得关注的时政动态。'));
+// ---- 四、Telegram 群组要点 ----
+const tgd = { ...d, telegram: { status: 'ready' as const, windowStart: '2026-10-20T23:00:00Z', windowEnd: '2026-10-21T23:00:00Z',
+  categories: [{ name: '会员订阅/优惠', items: [{ text: 'Spotify 严查家庭组是否同住，7 天内没完成验证会被降级。', groups: ['折腾频道VIP群', '@TossiPhone'] }] }], groups: ['折腾频道VIP群', '@TossiPhone'] } };
+for (const s2 of [renderDigestHtml(tgd), renderDigestText(tgd), renderDigestFeedHtml(tgd)]) {
+  assert.ok(s2.includes('四、Telegram 群组要点') && s2.includes('Spotify 严查家庭组') && s2.includes('折腾频道VIP群、@TossiPhone'));
+  assert.ok(s2.indexOf('三、时政速览') < s2.indexOf('四、Telegram 群组要点'), 'Telegram 为最后一节');
+}
+assert.ok(renderDigestText({ ...d, telegram: { status: 'pending', categories: [], groups: [] } }).includes('群组要点生成中'));
+assert.ok(!renderDigestText(d).includes('四、Telegram'), '未配置时不出现该节');
+assert.deepEqual(checkEmail(renderDigestHtml(tgd), renderDigestText(tgd)), []);
 console.log('digest: all passed');

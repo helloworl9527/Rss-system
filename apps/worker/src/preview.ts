@@ -10,13 +10,15 @@
  * appendix_seen / pushed_* / audit_events。模型调用照常发生（需要真实摘要）。
  */
 import Database from 'better-sqlite3';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
 import { windowFromKey, windowToReport } from '../../../packages/domain/src/normalize.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
 import { buildDigest } from '../../../packages/digest/src/build.ts';
-import { renderDigestHtml, renderDigestText, digestSubject } from '../../../packages/digest/src/render.ts';
+import { loadTelegramDaily } from '../../../packages/digest/src/telegram.ts';
+import { loadRules } from '../../../packages/domain/src/rules.ts';
+import { renderDigestHtml, renderDigestText, renderDigestFeedHtml, digestSubject } from '../../../packages/digest/src/render.ts';
 import { checkEmail } from '../../../packages/templates/src/email.ts';
 
 const argv = process.argv.slice(2);
@@ -34,6 +36,15 @@ console.log(`预览 ${win.key} ${win.label} [${win.start.toISOString()} → ${wi
 const { data, log } = await buildDigest(db as any, win, provider);
 db.close();
 log.forEach(l => console.log(l));
+const tgCfg = (loadRules() as any).brief?.telegram_daily;
+if (arg('--telegram-json')) {
+  // 试运行生成的群组要点（未写库），用于预览完整日报
+  const d = JSON.parse(readFileSync(arg('--telegram-json')!, 'utf8'));
+  data.telegram = { status: 'ready', windowStart: d.windowStart, windowEnd: d.windowEnd, categories: d.categories, groups: d.groups };
+} else if (tgCfg?.enabled && !argv.includes('--no-telegram')) {
+  data.telegram = await loadTelegramDaily(win.end, { waitMinutes: 0, maxAgeHours: Number(tgCfg.max_age_hours ?? 3) });
+  console.log(`Telegram 群组要点：${data.telegram.status}`);
+}
 
 const html = renderDigestHtml(data), text = renderDigestText(data);
 const errs = checkEmail(html, text);
@@ -42,5 +53,6 @@ mkdirSync(out, { recursive: true });
 const base = join(out, `preview-${win.key.replace(':', '-')}`);
 writeFileSync(`${base}.html`, html);
 writeFileSync(`${base}.txt`, `主题：${digestSubject(data)}\n\n${text}`);
+writeFileSync(`${base}.rss.html`, `<!doctype html><meta charset="utf-8"><title>${digestSubject(data)}（RSS 正文）</title><h1>${digestSubject(data)}</h1>${renderDigestFeedHtml(data)}`);
 writeFileSync(`${base}.json`, JSON.stringify(data, null, 2));
 console.log(`✅ 预览已写入 ${base}.html / .txt / .json（未写库、未发送）`);

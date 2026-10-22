@@ -10,6 +10,13 @@ export const NO_POLITICS = '本时段暂无值得关注的时政动态。';
 /** 兼容旧数据：politics 曾是一段字符串。 */
 export const politicsList = (d: DigestData): string[] =>
   Array.isArray(d.politics) ? d.politics : (d.politics ? [String(d.politics)] : []);
+export const TG_PENDING = '群组要点生成中，稍后可在 Telegram 跨频道要点 RSS 查看。';
+const TG_TITLE = '四、Telegram 群组要点';
+const tgRange = (t: NonNullable<DigestData['telegram']>) => {
+  if (!t.windowStart || !t.windowEnd) return '';
+  const f = (iso: string) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
+  return `北京时间 ${f(t.windowStart)}–${f(t.windowEnd)}`;
+};
 export function digestSubject(d: DigestData): string {
   return `十六源日报｜${d.date} ${d.windowLabel}`;
 }
@@ -23,6 +30,14 @@ function links(ls: DigestLink[], style: string): string {
 const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif";
 const C = { page: '#eef1f5', card: '#ffffff', line: '#e2e7ee', ink: '#161b22', body: '#39424e', muted: '#6b7684', accent: '#1c5fa8' };
 const A = `color:${C.accent};text-decoration:none;`;
+
+function tgHtml(t: NonNullable<DigestData['telegram']>): string {
+  if (t.status !== 'ready') return `<p style="margin:0;color:${C.muted};">${esc(TG_PENDING)}</p>`;
+  if (!t.categories.length) return `<p style="margin:0;color:${C.muted};">本日没有值得关注的群组要点。</p>`;
+  return `<div style="font-size:12px;color:${C.muted};">${esc(tgRange(t))}</div>` + t.categories.map(c =>
+    `<h3 style="margin:14px 0 6px;font-size:15px;color:${C.accent};">${esc(c.name)}</h3><ul style="margin:0;padding-left:20px;">` +
+    c.items.map(i => `<li style="margin:0 0 6px;">${esc(i.text)}${i.groups.length ? ` <span style="font-size:12px;color:${C.muted};">〔${esc(i.groups.join('、'))}〕</span>` : ''}</li>`).join('') + '</ul>').join('');
+}
 
 export function renderDigestHtml(d: DigestData): string {
   const h2 = (t: string) => `<h2 style="margin:28px 0 12px;font-size:18px;color:${C.ink};border-bottom:2px solid ${C.line};padding-bottom:6px;">${esc(t)}</h2>`;
@@ -51,6 +66,7 @@ export function renderDigestHtml(d: DigestData): string {
 ${h2('一、官方动态')}${official}
 ${h2('二、开源项目')}${projects}
 ${h2('三、时政速览')}${pol}
+${d.telegram ? h2(TG_TITLE) + tgHtml(d.telegram) : ''}
 </div></body></html>`;
 }
 
@@ -66,6 +82,14 @@ export function renderDigestText(d: DigestData): string {
   for (const p of d.projects) L.push(`• ${p.repo} — ${p.description}（提及：${p.mentionedBy.map(m => m.label).join('、')}）`, `  ${p.url}`);
   const pl = politicsList(d);
   L.push('', '三、时政速览', ...(pl.length ? pl.map(b => `• ${b}`) : [NO_POLITICS]), '');
+  if (d.telegram) {
+    const t = d.telegram;
+    L.push(TG_TITLE);
+    if (t.status !== 'ready') L.push(TG_PENDING);
+    else if (!t.categories.length) L.push('本日没有值得关注的群组要点。');
+    else { L.push(tgRange(t)); for (const c of t.categories) { L.push('', `【${c.name}】`); for (const i of c.items) L.push(`• ${i.text}${i.groups.length ? `〔${i.groups.join('、')}〕` : ''}`); } }
+    L.push('');
+  }
   return L.join('\n');
 }
 
@@ -83,11 +107,20 @@ export function renderDigestFeedHtml(d: DigestData): string {
     : '<p>本期无新的开源项目。</p>';
   const pl = politicsList(d);
   h += `<h2>三、时政速览</h2>` + (pl.length ? `<ul>${pl.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : `<p>${NO_POLITICS}</p>`);
+  if (d.telegram) {
+    const t = d.telegram;
+    h += `<h2>${TG_TITLE}</h2>`;
+    if (t.status !== 'ready') h += `<p>${esc(TG_PENDING)}</p>`;
+    else if (!t.categories.length) h += '<p>本日没有值得关注的群组要点。</p>';
+    else h += `<p><small>${esc(tgRange(t))}</small></p>` + t.categories.map(c => `<h3>${esc(c.name)}</h3><ul>` +
+      c.items.map(i => `<li>${esc(i.text)}${i.groups.length ? ` <small>〔${esc(i.groups.join('、'))}〕</small>` : ''}</li>`).join('') + '</ul>').join('');
+  }
   return h;
 }
 
 export function digestCount(d: DigestData): number {
-  return d.vendors.reduce((n, v) => n + v.events.length, 0) + d.projects.length;
+  return d.vendors.reduce((n, v) => n + v.events.length, 0) + d.projects.length
+    + (d.telegram?.categories ?? []).reduce((n, c) => n + c.items.length, 0);
 }
 export function digestTitles(d: DigestData): string[] {
   return [...d.vendors.flatMap(v => v.events.map(e => e.title)), ...d.projects.map(p => p.repo)];
