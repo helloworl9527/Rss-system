@@ -740,7 +740,7 @@ sources:
     site_url: "https://x.com/antigravity"
     category: ai
     harvest_tier: standard
-    enabled: false                   # x-rss-feed 尚未生成该 feed（缺 workflow 推送权限），生成后改 true
+    enabled: true
     priority: 2
     host_group: github_x_rss
     endpoints:
@@ -755,7 +755,7 @@ sources:
     site_url: "https://x.com/AnthropicAI"
     category: ai
     harvest_tier: standard
-    enabled: false                   # x-rss-feed 尚未生成该 feed（缺 workflow 推送权限），生成后改 true
+    enabled: true
     priority: 2
     host_group: github_x_rss
     endpoints:
@@ -770,7 +770,7 @@ sources:
     site_url: "https://x.com/googlegemma"
     category: ai
     harvest_tier: standard
-    enabled: false                   # x-rss-feed 尚未生成该 feed（缺 workflow 推送权限），生成后改 true
+    enabled: true
     priority: 2
     host_group: github_x_rss
     endpoints:
@@ -785,7 +785,7 @@ sources:
     site_url: "https://x.com/Z_Lib_official"
     category: tech
     harvest_tier: standard
-    enabled: false                   # x-rss-feed 尚未生成该 feed（缺 workflow 推送权限），生成后改 true
+    enabled: true
     priority: 2
     host_group: github_x_rss
     endpoints:
@@ -800,7 +800,7 @@ sources:
     site_url: "https://x.com/NotionHQ"
     category: tech
     harvest_tier: standard
-    enabled: false                   # x-rss-feed 尚未生成该 feed（缺 workflow 推送权限），生成后改 true
+    enabled: true
     priority: 2
     host_group: github_x_rss
     endpoints:
@@ -815,7 +815,7 @@ sources:
     site_url: "https://x.com/Google"
     category: ai
     harvest_tier: standard
-    enabled: false                   # x-rss-feed 尚未生成该 feed（缺 workflow 推送权限），生成后改 true
+    enabled: true
     priority: 2
     host_group: github_x_rss
     endpoints:
@@ -830,7 +830,7 @@ sources:
     site_url: "https://x.com/naval"
     category: tech
     harvest_tier: standard
-    enabled: false                   # x-rss-feed 尚未生成该 feed（缺 workflow 推送权限），生成后改 true
+    enabled: true
     priority: 2
     host_group: github_x_rss
     endpoints:
@@ -845,7 +845,7 @@ sources:
     site_url: "https://x.com/ssamat"
     category: tech
     harvest_tier: standard
-    enabled: false                   # x-rss-feed 尚未生成该 feed（缺 workflow 推送权限），生成后改 true
+    enabled: true
     priority: 2
     host_group: github_x_rss
     endpoints:
