@@ -27,8 +27,16 @@
 | Anthropic News · RSSHub | ai | claude | <https://www.anthropic.com/news> | <https://rsshub.bestblogs.dev/anthropic/news><br><https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml> |
 | DeepSeek 更新日志 | ai | deepseek | <https://api-docs.deepseek.com/zh-cn/updates/> | <https://api-docs.deepseek.com/zh-cn/updates/> |
 | Elsewhere News | article | unclassified | <https://elsewhere.news/> | <https://elsewhere.news/feed.xml> |
+| @AnthropicAI | ai | unclassified | <https://x.com/AnthropicAI> | <https://helloworl9527.github.io/x-rss-feed/feeds/anthropicai.xml> |
+| @antigravity | ai | unclassified | <https://x.com/antigravity> | <https://helloworl9527.github.io/x-rss-feed/feeds/antigravity.xml> |
 | @GitHub | developer | github | <https://x.com/GitHub> | <https://helloworl9527.github.io/x-rss-feed/feeds/github.xml> |
+| @Google | ai | unclassified | <https://x.com/Google> | <https://helloworl9527.github.io/x-rss-feed/feeds/google.xml> |
+| @googlegemma | ai | unclassified | <https://x.com/googlegemma> | <https://helloworl9527.github.io/x-rss-feed/feeds/googlegemma.xml> |
+| @naval | tech | unclassified | <https://x.com/naval> | <https://helloworl9527.github.io/x-rss-feed/feeds/naval.xml> |
+| @NotionHQ | tech | unclassified | <https://x.com/NotionHQ> | <https://helloworl9527.github.io/x-rss-feed/feeds/notionhq.xml> |
+| @ssamat | tech | unclassified | <https://x.com/ssamat> | <https://helloworl9527.github.io/x-rss-feed/feeds/ssamat.xml> |
 | @thsottiaux | ai | unclassified | <https://x.com/thsottiaux> | <https://helloworl9527.github.io/x-rss-feed/feeds/thsottiaux.xml> |
+| @Z_Lib_official | tech | unclassified | <https://x.com/Z_Lib_official> | <https://helloworl9527.github.io/x-rss-feed/feeds/z_lib_official.xml> |
 | 即刻 | society | unclassified | <https://web.okjike.com/topic/553870e8e4b0cafb0a1bef68> | <https://hub.slarker.me/jike/topic/553870e8e4b0cafb0a1bef68><br><https://rsshub.rssforever.com/jike/topic/553870e8e4b0cafb0a1bef68> |
 | SuperTechFans | tech | unclassified | <https://www.supertechfans.com/cn/> | <https://www.supertechfans.com/cn/index.xml> |
 | @Weixin_WeChat | tech | unclassified | <https://x.com/Weixin_WeChat> | <https://helloworl9527.github.io/x-rss-feed/feeds/weixin_wechat.xml> |
@@ -36,7 +44,7 @@
 | 一财 · RSSHub | article | unclassified | <https://www.yicai.com/> | <https://rsshub.app/yicai/latest><br><https://rsshub.rssforever.com/yicai/latest><br><https://rsshub.bestblogs.dev/yicai/latest> |
 | @elonmusk | society | unclassified | <https://x.com/elonmusk> | <https://helloworl9527.github.io/x-rss-feed/feeds/elonmusk.xml> |
 
-共 28 个启用的日报来源。
+共 36 个启用的日报来源。
 
 ## Telegram 订阅频道
 
