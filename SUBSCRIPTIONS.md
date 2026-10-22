@@ -31,16 +31,12 @@
 | @thsottiaux | ai | unclassified | <https://x.com/thsottiaux> | <https://helloworl9527.github.io/x-rss-feed/feeds/thsottiaux.xml> |
 | 即刻 | society | unclassified | <https://web.okjike.com/topic/553870e8e4b0cafb0a1bef68> | <https://hub.slarker.me/jike/topic/553870e8e4b0cafb0a1bef68><br><https://rsshub.rssforever.com/jike/topic/553870e8e4b0cafb0a1bef68> |
 | SuperTechFans | tech | unclassified | <https://www.supertechfans.com/cn/> | <https://www.supertechfans.com/cn/index.xml> |
-| @TossiPhoneX | tech | unclassified | <https://t.me/TossiPhoneX> | <https://hub.slarker.me/telegram/channel/TossiPhoneX><br><https://t.me/s/TossiPhoneX><br><https://rsshub.rssforever.com/telegram/channel/TossiPhoneX> |
-| @zaihuapd | tech | unclassified | <https://t.me/zaihuapd> | <https://hub.slarker.me/telegram/channel/zaihuapd><br><https://t.me/s/zaihuapd><br><https://rsshub.rssforever.com/telegram/channel/zaihuapd> |
 | @Weixin_WeChat | tech | unclassified | <https://x.com/Weixin_WeChat> | <https://helloworl9527.github.io/x-rss-feed/feeds/weixin_wechat.xml> |
-| @durov | tech | unclassified | <https://t.me/durov> | <https://hub.slarker.me/telegram/channel/durov><br><https://t.me/s/durov><br><https://rsshub.rssforever.com/telegram/channel/durov> |
-| @karlshareChannel | tech | unclassified | <https://t.me/karlshareChannel> | <https://hub.slarker.me/telegram/channel/karlshareChannel><br><https://t.me/s/karlshareChannel><br><https://rsshub.rssforever.com/telegram/channel/karlshareChannel> |
 | @bbchinesd | society | unclassified | <https://x.com/bbchinesd> | <https://helloworl9527.github.io/x-rss-feed/feeds/bbchinesd.xml> |
 | 一财 · RSSHub | article | unclassified | <https://www.yicai.com/> | <https://rsshub.app/yicai/latest><br><https://rsshub.rssforever.com/yicai/latest><br><https://rsshub.bestblogs.dev/yicai/latest> |
 | @elonmusk | society | unclassified | <https://x.com/elonmusk> | <https://helloworl9527.github.io/x-rss-feed/feeds/elonmusk.xml> |
 
-共 32 个启用的日报来源。
+共 28 个启用的日报来源。
 
 ## Telegram 订阅频道
 
