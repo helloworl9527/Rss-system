@@ -136,3 +136,41 @@ export async function politicsBullets(p: Provider, items: DigestSourceItem[]): P
     return { bullets: out.bullets.map(b => String(b).replace(/^\s*(?:[•·\-*]|\d+[.、)])\s*/, '').trim()).filter(Boolean).slice(0, 8) };
   } catch (e: any) { return { bullets: [], error: String(e?.message ?? e).slice(0, 200) }; }
 }
+
+// ---------- 技术教程：判定 + 概括 ----------
+const TUT_SCHEMA = {
+  type: 'object', additionalProperties: false, required: ['results'],
+  properties: { results: { type: 'array', items: { type: 'object', additionalProperties: false,
+    required: ['id', 'tutorial', 'reason', 'summary'], properties: {
+      id: { type: 'integer' }, tutorial: { type: 'boolean' }, reason: { type: 'string' }, summary: { type: 'string' } } } } },
+};
+const TUT_PROMPT = `你是中文技术日报编辑。输入是 LINUX DO / V2EX 论坛帖子（标题、正文片段，正文可能被截断）及已抽取的确定性信号（有无代码块/命令/配置/步骤/外链等）。
+逐条判断它是否属于「可复现的技术教程」：给出了具体的操作步骤、命令、配置、部署/迁移/排障过程、踩坑经过或实测数据与结论，读者据此能复现或直接应用。
+tutorial=true 的条件：内容具体、可操作或有可验证的实测结论；即使正文被截断，只要已显示明确的步骤/方法/结果即可。
+tutorial=false 的情形（reason 用 12 字以内中文说明，如「纯提问求助」「闲聊/情绪帖」「营销推广」「福利/公益站/邀请码」「无步骤的资讯科普」「观点讨论」「项目自荐无步骤」「抽奖/红包」「内容过短」）：
+- 纯营销、AFF、邀请码、注册送额度、公益站/中转站推广、拉人头、出售/代购/求购；
+- 纯提问求助、闲聊、吐槽、晒单、生活感悟、投资/情感话题；
+- 只有新闻转述或科普概念、没有可操作步骤或实测结果；
+- 观点讨论、体验评价但没有方法或数据；
+- 仅宣传自己的项目而没有教程内容。
+tutorial=true 时写 summary：1–2 句中文（不超过 90 字），直接叙述做了什么、怎么做的关键点与结论；不要写来源名（LINUX DO、V2EX、L站、V站、佬友等）、不要用「帖子/作者分享了」这类转述口吻开头、不加 ⭐/🌟/emoji、不加评价和建议。tutorial=false 时 summary 填空字符串。
+每个输入条目必须恰好返回一个结果。${GUARD}`;
+export type TutorialVerdict = { id: number; tutorial: boolean; reason: string; summary: string };
+export async function judgeTutorials(p: Provider, items: Array<{ id: number; title: string; text: string; signals: string[] }>): Promise<{ results: Map<number, TutorialVerdict>; error?: string }> {
+  const results = new Map<number, TutorialVerdict>();
+  let error: string | undefined;
+  for (let i = 0; i < items.length; i += 12) {
+    const batch = items.slice(i, i + 12);
+    try {
+      const out = await call<{ results: any[] }>(p, TUT_PROMPT,
+        { posts: batch.map(b => ({ id: b.id, title: clip(b.title, 160), text: clip(b.text, 1200), signals: b.signals })) },
+        TUT_SCHEMA, 'tutorial_judge', 3000);
+      const valid = new Set(batch.map(b => b.id));
+      for (const r of out.results) {
+        if (!valid.has(r.id)) continue;
+        results.set(r.id, { id: r.id, tutorial: !!r.tutorial, reason: String(r.reason ?? '').trim(), summary: String(r.summary ?? '').trim() });
+      }
+    } catch (e: any) { error = String(e?.message ?? e).slice(0, 200); }
+  }
+  return { results, error };
+}

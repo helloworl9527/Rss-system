@@ -4,6 +4,7 @@
  *
  *   node apps/worker/src/preview.ts                    最近一个已结束窗口
  *   node apps/worker/src/preview.ts --window 2026-10-22:noon
+ *   node apps/worker/src/preview.ts --from 2026-10-22T16:00:00Z --to 2026-10-23T16:00:00Z   自定义窗口（ISO 时间）
  *   node apps/worker/src/preview.ts --out /tmp/preview  输出目录（默认 ./data/preview）
  *
  * 数据库以只读方式打开：不会生成 brief 版本、不会作废旧版本、不会写 deliveries /
@@ -28,12 +29,14 @@ if (vault.error) console.warn(`密钥保管库不可用：${vault.error}`);
 
 const db = new Database(process.env.DATABASE_PATH ?? './data/brief.db', { readonly: true, fileMustExist: true });
 db.pragma('busy_timeout = 5000');
-const win = arg('--window') ? windowFromKey(arg('--window')!) : windowToReport();
+const win = arg('--from') && arg('--to')
+  ? { key: `custom:${arg('--from')!.slice(0, 10)}`, label: arg('--label') ?? '预览', start: new Date(arg('--from')!), end: new Date(arg('--to')!) }
+  : arg('--window') ? windowFromKey(arg('--window')!) : windowToReport();
 const out = arg('--out') ?? './data/preview';
 const provider = await createProvider(providerFromEnv('L1'));
 
 console.log(`预览 ${win.key} ${win.label} [${win.start.toISOString()} → ${win.end.toISOString()}) 模型 ${provider.name}/${provider.model}`);
-const { data, log } = await buildDigest(db as any, win, provider);
+const { data, log, tutorialReport } = await buildDigest(db as any, win, provider);
 db.close();
 log.forEach(l => console.log(l));
 const tgCfg = (loadRules() as any).brief?.telegram_daily;
@@ -55,4 +58,5 @@ writeFileSync(`${base}.html`, html);
 writeFileSync(`${base}.txt`, `主题：${digestSubject(data)}\n\n${text}`);
 writeFileSync(`${base}.rss.html`, `<!doctype html><meta charset="utf-8"><title>${digestSubject(data)}（RSS 正文）</title><h1>${digestSubject(data)}</h1>${renderDigestFeedHtml(data)}`);
 writeFileSync(`${base}.json`, JSON.stringify(data, null, 2));
+if (tutorialReport) writeFileSync(`${base}.tutorials-report.json`, JSON.stringify(tutorialReport, null, 2));
 console.log(`✅ 预览已写入 ${base}.html / .txt / .json（未写库、未发送）`);

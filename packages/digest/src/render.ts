@@ -1,17 +1,22 @@
 /**
  * 新版日报渲染。邮件与 RSS 用同一份 DigestData，结构完全一致：
- *   头部（日期 + 北京时间窗口）→ 一、官方动态（按厂商）→ 二、开源项目 → 三、时政速览
+ *   头部（日期 + 北京时间窗口）→ 一、官方动态（按厂商）→ 二、开源项目 → 三、技术教程 → 四、时政速览 →（五、Telegram 群组要点）
+ * 旧数据（无 tutorials 字段）按原编号渲染：三、时政速览 / 四、Telegram，不显示技术教程节。
  * 安全：所有文本转义；链接只放行 https（safeUrl 重建）。不使用星标等评分符号。
  */
 import { esc, safeUrl } from '../../templates/src/email.ts';
-import type { DigestData, DigestLink } from './core.ts';
+import type { DigestData, DigestLink, DigestTutorial } from './core.ts';
 
 export const NO_POLITICS = '本时段暂无值得关注的时政动态。';
 /** 兼容旧数据：politics 曾是一段字符串。 */
 export const politicsList = (d: DigestData): string[] =>
   Array.isArray(d.politics) ? d.politics : (d.politics ? [String(d.politics)] : []);
 export const TG_PENDING = '群组要点生成中，稍后可在 Telegram 跨频道要点 RSS 查看。';
-const TG_TITLE = '四、Telegram 群组要点';
+export const NO_TUTORIALS = '本期无合适的技术教程。';
+/** 章节标题：有 tutorials 字段的新数据多一节「三、技术教程」，其后编号顺延。 */
+const hasTut = (d: DigestData) => Array.isArray(d.tutorials);
+const polTitle = (d: DigestData) => hasTut(d) ? '四、时政速览' : '三、时政速览';
+const tgTitle = (d: DigestData) => hasTut(d) ? '五、Telegram 群组要点' : '四、Telegram 群组要点';
 const tgRange = (t: NonNullable<DigestData['telegram']>) => {
   if (!t.windowStart || !t.windowEnd) return '';
   const f = (iso: string) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso));
@@ -53,6 +58,10 @@ export function renderDigestHtml(d: DigestData): string {
     return `<li style="margin:0 0 8px;"><a href="${esc(u ?? '')}" style="${A}font-weight:700;">${esc(p.repo)}</a> — ${esc(p.description)}
 <span style="font-size:12px;color:${C.muted};">（提及：${links(p.mentionedBy, `color:${C.muted};`)}）</span></li>`;
   }).join('') + '</ul>' : `<p style="color:${C.muted};">本期无新的开源项目。</p>`;
+  const tutorials = d.tutorials?.length ? `<ul style="margin:0;padding-left:20px;">` + d.tutorials.map(t => {
+    const u = safeUrl(t.url);
+    return `<li style="margin:0 0 8px;">${esc(t.summary)}${u ? ` <a href="${esc(u)}" style="${A}font-size:12px;">原帖</a>` : ''}</li>`;
+  }).join('') + '</ul>' : `<p style="color:${C.muted};">${NO_TUTORIALS}</p>`;
   const pl = politicsList(d);
   const pol = pl.length ? `<ul style="margin:0;padding-left:20px;">${pl.map(b => `<li style="margin:0 0 6px;">${esc(b)}</li>`).join('')}</ul>`
     : `<p style="margin:0;color:${C.muted};">${NO_POLITICS}</p>`;
@@ -65,8 +74,9 @@ export function renderDigestHtml(d: DigestData): string {
 <div style="font-size:13px;color:${C.muted};">${esc(header(d))}</div>
 ${h2('一、官方动态')}${official}
 ${h2('二、开源项目')}${projects}
-${h2('三、时政速览')}${pol}
-${d.telegram ? h2(TG_TITLE) + tgHtml(d.telegram) : ''}
+${hasTut(d) ? h2('三、技术教程') + tutorials : ''}
+${h2(polTitle(d))}${pol}
+${d.telegram ? h2(tgTitle(d)) + tgHtml(d.telegram) : ''}
 </div></body></html>`;
 }
 
@@ -80,11 +90,16 @@ export function renderDigestText(d: DigestData): string {
   L.push('', '二、开源项目');
   if (!d.projects.length) L.push('本期无新的开源项目。');
   for (const p of d.projects) L.push(`• ${p.repo} — ${p.description}（提及：${p.mentionedBy.map(m => m.label).join('、')}）`, `  ${p.url}`);
+  if (hasTut(d)) {
+    L.push('', '三、技术教程');
+    if (!d.tutorials!.length) L.push(NO_TUTORIALS);
+    for (const t of d.tutorials!) L.push(`• ${t.summary}`, `  原帖：${t.url}`);
+  }
   const pl = politicsList(d);
-  L.push('', '三、时政速览', ...(pl.length ? pl.map(b => `• ${b}`) : [NO_POLITICS]), '');
+  L.push('', polTitle(d), ...(pl.length ? pl.map(b => `• ${b}`) : [NO_POLITICS]), '');
   if (d.telegram) {
     const t = d.telegram;
-    L.push(TG_TITLE);
+    L.push(tgTitle(d));
     if (t.status !== 'ready') L.push(TG_PENDING);
     else if (!t.categories.length) L.push('本日没有值得关注的群组要点。');
     else { L.push(tgRange(t)); for (const c of t.categories) { L.push('', `【${c.name}】`); for (const i of c.items) L.push(`• ${i.text}${i.groups.length ? `〔${i.groups.join('、')}〕` : ''}`); } }
@@ -105,11 +120,13 @@ export function renderDigestFeedHtml(d: DigestData): string {
   h += `<h2>二、开源项目</h2>`;
   h += d.projects.length ? '<ul>' + d.projects.map(p => `<li><a href="${esc(safeUrl(p.url) ?? '')}"><strong>${esc(p.repo)}</strong></a> — ${esc(p.description)} <small>（提及：${ln(p.mentionedBy)}）</small></li>`).join('') + '</ul>'
     : '<p>本期无新的开源项目。</p>';
+  if (hasTut(d)) h += `<h2>三、技术教程</h2>` + (d.tutorials!.length
+    ? '<ul>' + d.tutorials!.map(t => `<li>${esc(t.summary)} ${ln([{ label: '原帖', url: t.url }])}</li>`).join('') + '</ul>' : `<p>${NO_TUTORIALS}</p>`);
   const pl = politicsList(d);
-  h += `<h2>三、时政速览</h2>` + (pl.length ? `<ul>${pl.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : `<p>${NO_POLITICS}</p>`);
+  h += `<h2>${polTitle(d)}</h2>` + (pl.length ? `<ul>${pl.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : `<p>${NO_POLITICS}</p>`);
   if (d.telegram) {
     const t = d.telegram;
-    h += `<h2>${TG_TITLE}</h2>`;
+    h += `<h2>${tgTitle(d)}</h2>`;
     if (t.status !== 'ready') h += `<p>${esc(TG_PENDING)}</p>`;
     else if (!t.categories.length) h += '<p>本日没有值得关注的群组要点。</p>';
     else h += `<p><small>${esc(tgRange(t))}</small></p>` + t.categories.map(c => `<h3>${esc(c.name)}</h3><ul>` +
@@ -119,9 +136,9 @@ export function renderDigestFeedHtml(d: DigestData): string {
 }
 
 export function digestCount(d: DigestData): number {
-  return d.vendors.reduce((n, v) => n + v.events.length, 0) + d.projects.length
+  return d.vendors.reduce((n, v) => n + v.events.length, 0) + d.projects.length + (d.tutorials?.length ?? 0)
     + (d.telegram?.categories ?? []).reduce((n, c) => n + c.items.length, 0);
 }
 export function digestTitles(d: DigestData): string[] {
-  return [...d.vendors.flatMap(v => v.events.map(e => e.title)), ...d.projects.map(p => p.repo)];
+  return [...d.vendors.flatMap(v => v.events.map(e => e.title)), ...d.projects.map(p => p.repo), ...(d.tutorials ?? []).map(t => t.title)];
 }
