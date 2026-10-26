@@ -112,6 +112,7 @@ export class OpenAICompatProvider implements Provider {
     const body = {
       model: this.model,
       max_tokens: req.maxOutputTokens,
+      ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
       response_format: responseFormat,
       messages: [
         { role: 'system', content: system },
