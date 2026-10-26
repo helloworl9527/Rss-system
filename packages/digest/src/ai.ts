@@ -144,16 +144,22 @@ const TUT_SCHEMA = {
     required: ['id', 'tutorial', 'reason', 'summary'], properties: {
       id: { type: 'integer' }, tutorial: { type: 'boolean' }, reason: { type: 'string' }, summary: { type: 'string' } } } } },
 };
-const TUT_PROMPT = `你是中文技术日报编辑。输入是 LINUX DO / V2EX 论坛帖子（标题、正文片段，正文可能被截断）及已抽取的确定性信号（有无代码块/命令/配置/步骤/外链等）。
-逐条判断它是否属于「可复现的技术教程」：给出了具体的操作步骤、命令、配置、部署/迁移/排障过程、踩坑经过或实测数据与结论，读者据此能复现或直接应用。
-tutorial=true 的条件：内容具体、可操作或有可验证的实测结论；即使正文被截断，只要已显示明确的步骤/方法/结果即可。
-tutorial=false 的情形（reason 用 12 字以内中文说明，如「纯提问求助」「闲聊/情绪帖」「营销推广」「福利/公益站/邀请码」「无步骤的资讯科普」「观点讨论」「项目自荐无步骤」「抽奖/红包」「内容过短」）：
-- 纯营销、AFF、邀请码、注册送额度、公益站/中转站推广、拉人头、出售/代购/求购；
-- 纯提问求助、闲聊、吐槽、晒单、生活感悟、投资/情感话题；
-- 只有新闻转述或科普概念、没有可操作步骤或实测结果；
-- 观点讨论、体验评价但没有方法或数据；
-- 仅宣传自己的项目而没有教程内容。
-tutorial=true 时写 summary：1–2 句中文（不超过 90 字），直接叙述做了什么、怎么做的关键点与结论；不要写来源名（LINUX DO、V2EX、L站、V站、佬友等）、不要用「帖子/作者分享了」这类转述口吻开头、不加 ⭐/🌟/emoji、不加评价和建议。tutorial=false 时 summary 填空字符串。
+const TUT_PROMPT = `你是中文技术日报编辑，负责「技术干货」板块。输入是 LINUX DO / V2EX 论坛帖子（标题、正文片段，正文可能被截断，图片和链接已被去掉）及已抽取的确定性信号。
+逐条判断它是否「有技术价值、值得技术读者看」。tutorial=true 的内容类型（满足任一即可，信息可以不完整，只要正文或标题已给出有用的信息）：
+- 教程、配置/部署/迁移/排障/踩坑/实测过程、命令与方案；
+- 技术科普、原理解析、行业与技术趋势分析；
+- 方法与经验分享（工作流、效率方法、AI 编程实践、变现或副业的做法与结果）；
+- 有观点、有论据或有亲身经历支撑的技术/行业讨论（例如技术圈现状、软件工程与 AI 的关系、模型使用体感与对比、安全漏洞带来的反思）；
+- 实用的技术资源与限时优惠信息：可用的新模型/新套餐/新渠道的可用性通知（哪个平台现在能用哪个模型或权益）、云服务或软件的官方限时活动/秒杀/补库存（即使帖子很短，只要说明了是什么活动、哪里可以参与，就属于有用的优惠信息）、值得知道的产品权益变化。
+tutorial=false（reason 用 12 字以内中文说明）：
+- 纯闲聊、情绪宣泄、晒生活、情感与婚姻家庭话题、段子（「闲聊/情绪帖」）；
+- 纯求助提问、没有给出任何信息的提问（「纯提问求助」）；
+- 生日红包、抽奖、领徽章、水贴、签到（「抽奖/红包/水贴」）；
+- AFF/邀请码/注册送额度、公益站或中转站拉新、出售/代购/求购等赤裸营销（「营销推广」；注意官方活动和可用性通知不属于此类，也不要因为帖子提到「送/免费」就判为抽奖水贴）；
+- 没有信息量的短帖，只有一句感叹、催更或标题党（「无信息量」）；但标题本身就是一条具体事实陈述的短帖（如「某平台现在可用某模型/某权益」「某产品上线了某功能」「某服务限时免费」）有信息量，正文再短也应收录，summary 直接复述该事实（标题和正文合起来写成 1–2 句即可）；
+- 纯新闻转述且没有任何独立信息（「资讯转述」）。
+拿不准且帖子含具体信息或明确观点时倾向收录（用户更怕漏信息），但纯情绪、纯提问、纯营销一律不收。
+tutorial=true 时：reason 写 12 字以内的入选理由（如「部署教程」「经验分享」「技术观点」「限时优惠信息」）；summary 写 1–2 句中文（不超过 90 字），直接写做法、关键信息、数据或结论；不要写来源名（LINUX DO、V2EX、L站、V站、佬友等），不要用「帖子/作者分享了/讨论了」之类转述口吻开头，不加 ⭐/🌟/emoji，不加评价和建议。tutorial=false 时 summary 填空字符串。
 每个输入条目必须恰好返回一个结果。${GUARD}`;
 export type TutorialVerdict = { id: number; tutorial: boolean; reason: string; summary: string };
 export async function judgeTutorials(p: Provider, items: Array<{ id: number; title: string; text: string; signals: string[] }>): Promise<{ results: Map<number, TutorialVerdict>; error?: string }> {
@@ -161,16 +167,25 @@ export async function judgeTutorials(p: Provider, items: Array<{ id: number; tit
   let error: string | undefined;
   for (let i = 0; i < items.length; i += 12) {
     const batch = items.slice(i, i + 12);
-    try {
+    const run = async (part: typeof batch) => {
       const out = await call<{ results: any[] }>(p, TUT_PROMPT,
-        { posts: batch.map(b => ({ id: b.id, title: clip(b.title, 160), text: clip(b.text, 1200), signals: b.signals })) },
+        { posts: part.map(b => ({ id: b.id, title: clip(b.title, 160), text: clip(b.text, 1200), signals: b.signals })) },
         TUT_SCHEMA, 'tutorial_judge', 3000);
-      const valid = new Set(batch.map(b => b.id));
+      const valid = new Set(part.map(b => b.id));
       for (const r of out.results) {
         if (!valid.has(r.id)) continue;
         results.set(r.id, { id: r.id, tutorial: !!r.tutorial, reason: String(r.reason ?? '').trim(), summary: String(r.summary ?? '').trim() });
       }
-    } catch (e: any) { error = String(e?.message ?? e).slice(0, 200); }
+    };
+    try { await run(batch); }
+    catch (e: any) {
+      // 整批失败（模型偶发 schema 错误）时拆成两半各再试一次，避免整批被保守排除
+      const mid = Math.ceil(batch.length / 2);
+      for (const part of [batch.slice(0, mid), batch.slice(mid)]) {
+        if (!part.length) continue;
+        try { await run(part); } catch (e2: any) { error = String(e2?.message ?? e2).slice(0, 200); }
+      }
+    }
   }
   return { results, error };
 }

@@ -1,7 +1,7 @@
 // 技术教程板块：预筛、去重、模型判定接线、渲染与 72h 登记的回归测试
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
-import { buildTutorials, prescreenTutorial, cleanTutorialSummary, TUTORIAL_SOURCES } from '../packages/digest/src/tutorials.ts';
+import { buildTutorials, prescreenTutorial, cleanTutorialSummary, tutorialKey, TUTORIAL_SOURCES, TUTORIAL_URL_OVERRIDES } from '../packages/digest/src/tutorials.ts';
 import { renderDigestHtml, renderDigestText, renderDigestFeedHtml, digestCount, digestTitles } from '../packages/digest/src/render.ts';
 import { recordPushed } from '../packages/digest/src/build.ts';
 import { checkEmail } from '../packages/templates/src/email.ts';
@@ -26,7 +26,10 @@ const pushedBefore = it({ id: 8, title: '昨天已推送的教程', url: 'https:
 assert.equal(prescreenTutorial(guide).reason, null);
 assert.match(prescreenTutorial(chat).reason!, /过短/);
 assert.match(prescreenTutorial(mk).reason!, /AFF|营销/);
-assert.match(prescreenTutorial(ask).reason!, /预筛/);
+assert.equal(prescreenTutorial(ask).reason, null, '预筛放宽：只挡短帖与 AFF，其余交给模型');
+assert.match(prescreenTutorial(it({ title: '反重力可以用了', text: 'image 780×372 17.7 KB' })).reason!, /过短/, '图片占位不算正文');
+assert.equal(tutorialKey('https://linux.do/t/topic/3061561/34'), 'linux.do/t/topic/3061561');
+assert.equal(tutorialKey('https://v2ex.com/t/1251245'), 'v2ex.com/t/1251245');
 assert.deepEqual(TUTORIAL_SOURCES, ['linuxdo', 'v2ex']);
 assert.equal(cleanTutorialSummary('⭐ 在 LINUX DO 上：用 Docker 部署了 Nginx。'), '用 Docker 部署了 Nginx。');
 
@@ -46,8 +49,15 @@ assert.deepEqual(r.tutorials.map(t => t.itemId), [1], '只入选步骤完整的�
 assert.ok(!/[⭐🌟]/.test(r.tutorials[0]!.summary) && r.tutorials[0]!.url === 'https://linux.do/t/1');
 assert.deepEqual(r.report.candidates, { linuxdo: 7, v2ex: 2 }, '官方条目不计入候选');
 const why = Object.fromEntries(r.report.excluded.map(x => [x.id, x.stage]));
-assert.deepEqual(why, { 2: 'prescreen', 3: 'prescreen', 4: 'prescreen', 5: 'project', 9: 'project', 6: 'dup', 7: 'repost', 8: 'history' });
-assert.equal(r.report.picked, 1);
+assert.deepEqual(why, { 2: 'model', 3: 'prescreen', 4: 'prescreen', 5: 'project', 9: 'project', 6: 'dup', 7: 'repost', 8: 'history' });
+assert.equal(r.report.picked, 1); assert.equal(r.report.pickedItems.length, 1);
+// 指定楼层深链覆盖显示链接，去重仍按主题帖
+const floorItem = it({ id: 11, title: '限时秒杀信息整理', url: 'https://linux.do/t/topic/3066730', text: guide.text });
+const fr = await buildTutorials({ ...provider, async complete(req: any) { return { data: { results: JSON.parse(req.userContent).posts.map((p: any) => ({ id: p.id, tutorial: true, reason: '限时优惠信息', summary: '整点补库存的限时活动。' })) } }; } } as any,
+  [floorItem], { ...ctx, pushedUrls: new Set() });
+assert.equal(fr.tutorials[0]!.url, TUTORIAL_URL_OVERRIDES['linux.do/t/topic/3066730']);
+const fr2 = await buildTutorials(provider, [floorItem], { ...ctx, pushedUrls: new Set(['linux.do/t/topic/3066730']) });
+assert.equal(fr2.report.excluded[0]!.stage, 'history', '带楼层链接登记后，按主题帖去重');
 // 模型失败：不收录任何帖子，板块为空而不是整体失败
 const bad: any = { ...provider, async complete() { throw new Error('boom'); } };
 const r2 = await buildTutorials(bad, [guide], { ...ctx, pushedUrls: new Set() });

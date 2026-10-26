@@ -9,7 +9,7 @@ import {
   stripVendorPrefix, vendorName, vendorOrder, type DigestData, type DigestProject, type DigestSourceItem, type DigestVendor,
 } from './core.ts';
 import { composeVendorEvents, describeProjects, judgeReposts, politicsBullets } from './ai.ts';
-import { buildTutorials, type TutorialReport } from './tutorials.ts';
+import { buildTutorials, tutorialKey, type TutorialReport } from './tutorials.ts';
 
 export type DigestWindow = { key: string; label: string; start: Date; end: Date };
 const H = 3600e3;
@@ -52,7 +52,7 @@ function pushedHistory(db: DB, before: Date) {
   // pushed_tutorials 由迁移 017 创建；表尚不存在（未迁移）时视为无历史，不报错
   if (db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='pushed_tutorials'`).get()) {
     for (const r of db.prepare(`SELECT title, url FROM pushed_tutorials WHERE pushed_at >= ? AND pushed_at < ?`).all(since, before.toISOString()) as any[]) {
-      tutTitles.push(r.title); const k = urlKey(r.url); if (k) tutUrls.add(k);
+      tutTitles.push(r.title); const k = tutorialKey(r.url); if (k) tutUrls.add(k);
     }
   }
   const sent = db.prepare(`SELECT b.id, b.html_body FROM briefs b
