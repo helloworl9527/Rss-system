@@ -10,6 +10,7 @@ import { nowIso, type DB } from '../../../packages/db/src/index.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
 import { buildDigest, recordPushed } from '../../../packages/digest/src/build.ts';
 import { loadTelegramDaily } from '../../../packages/digest/src/telegram.ts';
+import { stripDealsFromTelegram } from '../../../packages/digest/src/deals.ts';
 import { renderDigestHtml, renderDigestText, digestSubject, digestCount } from '../../../packages/digest/src/render.ts';
 import type { DigestData } from '../../../packages/digest/src/core.ts';
 import { checkEmail } from '../../../packages/templates/src/email.ts';
@@ -35,12 +36,18 @@ export async function runDigestBrief(o: {
     console.log(`复用已生成的新版简报 #${briefId}（v${existing.version}）`);
   } else {
     const provider = await createProvider(providerFromEnv('L1'));
-    const built = await buildDigest(db, o.win, provider);
+    const tgEnabled = !!o.rules.brief?.telegram_daily?.enabled;
+    const built = await buildDigest(db, o.win, provider, { telegramPath: tgEnabled ? (process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3') : null });
     built.log.forEach(l => console.log(l));
     data = built.data;
     const tg = o.rules.brief?.telegram_daily;
     if (tg?.enabled) {
       data.telegram = await loadTelegramDaily(o.win.end, { waitMinutes: o.noSend ? 0 : Number(process.env.BRIEF_TELEGRAM_WAIT_MINUTES ?? tg.wait_minutes ?? 15), maxAgeHours: Number(tg.max_age_hours ?? 3), log: m => console.log(m) });
+      if (data.telegram.status === 'ready') {
+        const r = await stripDealsFromTelegram(provider, data.telegram, (data.tutorials ?? []).filter(t => t.category === 'deals'), built.log);
+        data.telegram = r.tg;
+        console.log(`Telegram 汇总去掉重复羊毛 ${r.removed.length} 条`);
+      }
       console.log(`Telegram 群组要点：${data.telegram.status === 'ready' ? `${data.telegram.categories.reduce((n, c) => n + c.items.length, 0)} 条` : '未就绪，注明生成中'}`);
     }
     html = renderDigestHtml(data); text = renderDigestText(data);

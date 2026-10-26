@@ -22,6 +22,11 @@ export type DigestLink = { label: string; url: string };
 export type DigestEvent = { title: string; summary: string; links: DigestLink[]; itemIds: number[] };
 export type DigestVendor = { vendor: string; name: string; events: DigestEvent[] };
 export type DigestProject = { repo: string; url: string; description: string; mentionedBy: DigestLink[] };
+/** 技术教程：来自 LINUX DO / V2EX 的可复现技术帖。summary 为 1–2 句概括，url 为原帖链接。 */
+/** 板块内的专栏：tech 技术干货 / deals 羊毛资讯 / life 生活经验。旧数据缺省视为 tech。 */
+export type TutorialCategory = 'tech' | 'deals' | 'life';
+/** channel：forum 论坛帖 / telegram 群消息 / other 其他渠道；缺省视为 forum。url 为空字符串表示没有可用链接（不编造）。 */
+export type DigestTutorial = { title: string; summary: string; url: string; itemId: number; category?: TutorialCategory; channel?: 'forum' | 'telegram' | 'other' };
 export type DigestData = {
   format: 'digest_v2';
   date: string;            // YYYY-MM-DD（北京时间）
@@ -30,8 +35,10 @@ export type DigestData = {
   vendors: DigestVendor[]; // 只含有内容的厂商
   emptyVendors: string[];  // 本期无更新的厂商显示名
   projects: DigestProject[];
+  /** 三、技术教程。缺省（旧数据）= 无该板块；空数组 = 板块显示「本期无…」。 */
+  tutorials?: DigestTutorial[];
   politics: string[];      // 每条一个新闻，1–2 句；无内容时为空数组（旧数据可能是字符串）
-  /** 四、Telegram 群组要点（仅每日简报）。缺省 = 不显示该节。 */
+  /** 末节 Telegram 群组要点（仅每日简报）。缺省 = 不显示该节。 */
   telegram?: DigestTelegram;
 };
 export type DigestTelegram = {

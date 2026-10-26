@@ -32,6 +32,8 @@ export type CompleteRequest = {
   /** Schema 名称，部分厂商要求。 */
   schemaName: string;
   maxOutputTokens: number;
+  /** 可选采样温度；未设置时沿用供应商默认。目前仅 openai_compatible 适配器透传。 */
+  temperature?: number;
   /** 是否请求缓存稳定前缀。 */
   cachePrefix?: boolean;
   /** Optional trusted transport payload. The image itself remains untrusted model input. */
