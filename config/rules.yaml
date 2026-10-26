@@ -1218,9 +1218,12 @@ brief:
   digest_sections:
     - { id: official_updates, title: 一、官方动态 }
     - { id: open_source_projects, title: 二、开源项目 }
-    - { id: tech_tutorials, title: 三、技术教程 }
-    - { id: politics_brief, title: 四、时政速览 }
-    - { id: telegram_groups, title: 五、Telegram 群组要点 }
+    # 以下三章并列、无子标题；当日无内容的章节整章不显示，编号按实际出现的章节自动顺延（此处序号为全部出现时的编号）
+    - { id: tech_tutorials, title: 三、技术干货 }
+    - { id: deals, title: 四、羊毛资讯 }
+    - { id: life_tips, title: 五、生活经验 }
+    - { id: politics_brief, title: 六、时政速览 }
+    - { id: telegram_groups, title: 七、Telegram 群组要点 }
   dedup_window_hours: 72
   show_core_highlights: false
   # 未完成判定时禁止生成/发送，以免模型故障被伪装成“仅一条合格消息”。
