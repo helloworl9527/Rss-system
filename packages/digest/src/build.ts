@@ -9,7 +9,8 @@ import {
   stripVendorPrefix, vendorName, vendorOrder, type DigestData, type DigestProject, type DigestSourceItem, type DigestVendor,
 } from './core.ts';
 import { composeVendorEvents, describeProjects, judgeReposts, politicsBullets } from './ai.ts';
-import { buildTutorials, tutorialKey, type TutorialReport } from './tutorials.ts';
+import { buildTutorials, tutorialKey, TUTORIAL_SOURCES, type TutorialReport } from './tutorials.ts';
+import { collectExtraDeals, mergeAllDeals, type DealsReport } from './deals.ts';
 
 export type DigestWindow = { key: string; label: string; start: Date; end: Date };
 const H = 3600e3;
@@ -70,9 +71,9 @@ function pushedHistory(db: DB, before: Date) {
   return { urls, titles, repos, tutUrls, tutTitles };
 }
 
-export type DigestBuild = { data: DigestData; log: string[]; tutorialReport?: TutorialReport };
+export type DigestBuild = { data: DigestData; log: string[]; tutorialReport?: TutorialReport; dealsReport?: DealsReport };
 
-export async function buildDigest(db: DB, win: DigestWindow, provider: Provider, opts: { maxProjects?: number } = {}): Promise<DigestBuild> {
+export async function buildDigest(db: DB, win: DigestWindow, provider: Provider, opts: { maxProjects?: number; telegramPath?: string | null } = {}): Promise<DigestBuild> {
   const log: string[] = [];
   const from = win.start.toISOString(), to = win.end.toISOString();
   const items = loadItems(db, from, to, new Date(win.start.getTime() - 48 * H).toISOString());
@@ -156,6 +157,17 @@ export async function buildDigest(db: DB, win: DigestWindow, provider: Provider,
   });
   log.push(...tut.log);
 
+  // ---------- 羊毛资讯：论坛判为 deals 的 + 其他渠道 + Telegram 群消息，同平台同优惠合并 ----------
+  const vendorItemIds = new Set<number>(vendors.flatMap(v => v.events.flatMap(e => (e as any).itemIds ?? [])));
+  const extra = await collectExtraDeals(provider, {
+    items, skipItemIds: vendorItemIds, forumSources: [...TUTORIAL_SOURCES],
+    telegramPath: opts.telegramPath ?? null, start: from, end: to,
+    pushedUrls: history.tutUrls, pushedTitles: history.tutTitles,
+  }, log);
+  const deals = await mergeAllDeals(provider, tut.tutorials.filter(t => t.category === 'deals'), extra.extras, extra.report, log);
+  const tutorials = [...tut.tutorials.filter(t => t.category !== 'deals'), ...deals];
+  log.push(`羊毛资讯入选 ${deals.length} 条（论坛 ${tut.tutorials.filter(t => t.category === 'deals').length}、其他渠道 ${extra.report.other.picked}、Telegram ${extra.report.telegram.picked}，合并后）`);
+
   // ---------- 四、时政速览 ----------
   const pol = items.filter(i => i.role === 'politics')
     .sort((a, b) => String(b.publishedAt ?? b.firstSeenAt).localeCompare(String(a.publishedAt ?? a.firstSeenAt)));
@@ -171,9 +183,9 @@ export async function buildDigest(db: DB, win: DigestWindow, provider: Provider,
     date: fmt(win.end, { year: 'numeric', month: '2-digit', day: '2-digit' }),
     windowLabel: win.label,
     windowRange: `${md(win.start)} ${hm(win.start)}–${md(win.start) !== md(win.end) ? md(win.end) + ' ' : ''}${hm(win.end)}`,
-    vendors, emptyVendors, projects, tutorials: tut.tutorials, politics: politics.bullets,
+    vendors, emptyVendors, projects, tutorials, politics: politics.bullets,
   };
-  return { data, log, tutorialReport: tut.report };
+  return { data, log, tutorialReport: { ...tut.report, picked: tutorials.length }, dealsReport: extra.report };
 }
 
 /** 投递成功后登记本期推送的事件与项目，供下一期 72 小时去重。 */
@@ -184,10 +196,10 @@ export function recordPushed(db: DB, briefId: number, data: DigestData, at = new
   const done = db.prepare(`SELECT 1 FROM pushed_events WHERE brief_id = ? UNION ALL SELECT 1 FROM pushed_projects WHERE brief_id = ?`
     + (hasTut ? ` UNION ALL SELECT 1 FROM pushed_tutorials WHERE brief_id = ?` : '') + ` LIMIT 1`).get(...(hasTut ? [briefId, briefId, briefId] : [briefId, briefId]));
   if (done) return;
-  const tu = hasTut ? db.prepare(`INSERT INTO pushed_tutorials (title,summary,url,brief_id,pushed_at) VALUES (?,?,?,?,?)`) : null;
+  const tu = hasTut ? db.prepare(`INSERT INTO pushed_tutorials (title,summary,url,category,brief_id,pushed_at) VALUES (?,?,?,?,?,?)`) : null;
   db.transaction(() => {
     for (const v of data.vendors) for (const e of v.events) ev.run(v.vendor, e.title, e.summary, JSON.stringify(e.links.map(l => l.url)), briefId, at);
     for (const p of data.projects) pj.run(p.repo, p.description, briefId, at);
-    if (tu) for (const t of data.tutorials ?? []) tu.run(t.title, t.summary, t.url, briefId, at);
+    if (tu) for (const t of data.tutorials ?? []) tu.run(t.title, t.summary, t.url, t.category ?? 'tech', briefId, at);
   })();
 }

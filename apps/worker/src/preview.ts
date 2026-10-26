@@ -18,6 +18,7 @@ import { windowFromKey, windowToReport } from '../../../packages/domain/src/norm
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
 import { buildDigest } from '../../../packages/digest/src/build.ts';
 import { loadTelegramDaily } from '../../../packages/digest/src/telegram.ts';
+import { stripDealsFromTelegram } from '../../../packages/digest/src/deals.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
 import { renderDigestHtml, renderDigestText, renderDigestFeedHtml, digestSubject } from '../../../packages/digest/src/render.ts';
 import { checkEmail } from '../../../packages/templates/src/email.ts';
@@ -36,10 +37,12 @@ const out = arg('--out') ?? './data/preview';
 const provider = await createProvider(providerFromEnv('L1'));
 
 console.log(`预览 ${win.key} ${win.label} [${win.start.toISOString()} → ${win.end.toISOString()}) 模型 ${provider.name}/${provider.model}`);
-const { data, log, tutorialReport } = await buildDigest(db as any, win, provider);
+const tgCfg = (loadRules() as any).brief?.telegram_daily;
+const withTelegram = !argv.includes('--no-telegram') && (!!arg('--telegram-json') || !!tgCfg?.enabled);
+const { data, log, tutorialReport, dealsReport } = await buildDigest(db as any, win, provider,
+  { telegramPath: withTelegram ? (process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3') : null });
 db.close();
 log.forEach(l => console.log(l));
-const tgCfg = (loadRules() as any).brief?.telegram_daily;
 if (arg('--telegram-json')) {
   // 试运行生成的群组要点（未写库），用于预览完整日报
   const d = JSON.parse(readFileSync(arg('--telegram-json')!, 'utf8'));
@@ -47,6 +50,13 @@ if (arg('--telegram-json')) {
 } else if (tgCfg?.enabled && !argv.includes('--no-telegram')) {
   data.telegram = await loadTelegramDaily(win.end, { waitMinutes: 0, maxAgeHours: Number(tgCfg.max_age_hours ?? 3) });
   console.log(`Telegram 群组要点：${data.telegram.status}`);
+}
+// 已单独成条的羊毛资讯不再出现在 Telegram 汇总里（汇总其余内容不变）
+let tgRemoved: Array<{ category: string; text: string }> = [];
+if (data.telegram) {
+  const r = await stripDealsFromTelegram(provider, data.telegram, (data.tutorials ?? []).filter(t => t.category === 'deals'), log);
+  data.telegram = r.tg; tgRemoved = r.removed;
+  console.log(`Telegram 汇总去掉重复羊毛 ${tgRemoved.length} 条`);
 }
 
 const html = renderDigestHtml(data), text = renderDigestText(data);
@@ -58,5 +68,5 @@ writeFileSync(`${base}.html`, html);
 writeFileSync(`${base}.txt`, `主题：${digestSubject(data)}\n\n${text}`);
 writeFileSync(`${base}.rss.html`, `<!doctype html><meta charset="utf-8"><title>${digestSubject(data)}（RSS 正文）</title><h1>${digestSubject(data)}</h1>${renderDigestFeedHtml(data)}`);
 writeFileSync(`${base}.json`, JSON.stringify(data, null, 2));
-if (tutorialReport) writeFileSync(`${base}.tutorials-report.json`, JSON.stringify(tutorialReport, null, 2));
+if (tutorialReport) writeFileSync(`${base}.tutorials-report.json`, JSON.stringify({ ...tutorialReport, deals: dealsReport, telegramSummaryRemoved: tgRemoved }, null, 2));
 console.log(`✅ 预览已写入 ${base}.html / .txt / .json（未写库、未发送）`);

@@ -1,4 +1,4 @@
-// 技术教程板块：预筛、去重、模型判定接线、渲染与 72h 登记的回归测试
+// 技术干货板块（含专栏）：预筛、去重、模型判定接线、渲染与 72h 登记的回归测试
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import { buildTutorials, prescreenTutorial, cleanTutorialSummary, tutorialKey, TUTORIAL_SOURCES, TUTORIAL_URL_OVERRIDES } from '../packages/digest/src/tutorials.ts';
@@ -39,12 +39,13 @@ const provider: any = { name: 'mock', model: 'mock', strictness: 'strict', async
   const u = JSON.parse(req.userContent);
   seen.push(req.schemaName);
   if (req.schemaName === 'tutorial_judge') return { data: { results: u.posts.map((p: any) => p.id === 1 || p.id === 6
-    ? { id: p.id, tutorial: true, reason: '', summary: '⭐用 Docker Compose 部署 Nginx 反代，实测延迟下降 30%，需避开端口冲突。' }
-    : { id: p.id, tutorial: false, reason: '观点讨论', summary: '' }) } };
+    ? { id: p.id, tutorial: true, category: 'tech', reason: '', summary: '⭐用 Docker Compose 部署 Nginx 反代，实测延迟下降 30%，需避开端口冲突。' }
+    : { id: p.id, tutorial: false, category: 'none', reason: '观点讨论', summary: '' }) } };
   return { data: { verdicts: [] } };
 } };
 const ctx = { officials: [official], projectRepos: new Set(['foo/bar']), pushedUrls: new Set(['linux.do/t/8']), pushedTitles: [] as string[] };
 const r = await buildTutorials(provider, [guide, ask, chat, mk, repoPost, twin, dup, repostPost, pushedBefore, official], ctx);
+assert.equal(r.tutorials[0]!.category, 'tech'); assert.equal(r.report.pickedItems[0]!.category, 'tech');
 assert.deepEqual(r.tutorials.map(t => t.itemId), [1], '只入选步骤完整的教程，交叉发布去重');
 assert.ok(!/[⭐🌟]/.test(r.tutorials[0]!.summary) && r.tutorials[0]!.url === 'https://linux.do/t/1');
 assert.deepEqual(r.report.candidates, { linuxdo: 7, v2ex: 2 }, '官方条目不计入候选');
@@ -53,7 +54,7 @@ assert.deepEqual(why, { 2: 'model', 3: 'prescreen', 4: 'prescreen', 5: 'project'
 assert.equal(r.report.picked, 1); assert.equal(r.report.pickedItems.length, 1);
 // 指定楼层深链覆盖显示链接，去重仍按主题帖
 const floorItem = it({ id: 11, title: '限时秒杀信息整理', url: 'https://linux.do/t/topic/3066730', text: guide.text });
-const fr = await buildTutorials({ ...provider, async complete(req: any) { return { data: { results: JSON.parse(req.userContent).posts.map((p: any) => ({ id: p.id, tutorial: true, reason: '限时优惠信息', summary: '整点补库存的限时活动。' })) } }; } } as any,
+const fr = await buildTutorials({ ...provider, async complete(req: any) { return { data: { results: JSON.parse(req.userContent).posts.map((p: any) => ({ id: p.id, tutorial: true, category: 'deals', reason: '限时优惠信息', summary: '整点补库存的限时活动。' })) } }; } } as any,
   [floorItem], { ...ctx, pushedUrls: new Set() });
 assert.equal(fr.tutorials[0]!.url, TUTORIAL_URL_OVERRIDES['linux.do/t/topic/3066730']);
 const fr2 = await buildTutorials(provider, [floorItem], { ...ctx, pushedUrls: new Set(['linux.do/t/topic/3066730']) });
@@ -69,8 +70,8 @@ const base: DigestData = { format: 'digest_v2', date: '2026-10-23', windowLabel:
 const d: DigestData = { ...base, tutorials: r.tutorials };
 const outs = [renderDigestHtml(d), renderDigestText(d), renderDigestFeedHtml(d)];
 for (const s of outs) {
-  assert.ok(s.includes('三、技术教程') && s.includes('四、时政速览'));
-  assert.ok(s.indexOf('二、开源项目') < s.indexOf('三、技术教程') && s.indexOf('三、技术教程') < s.indexOf('四、时政速览'), '位置：开源项目之后、时政速览之前');
+  assert.ok(s.includes('三、技术干货') && s.includes('四、时政速览'));
+  assert.ok(s.indexOf('二、开源项目') < s.indexOf('三、技术干货') && s.indexOf('三、技术干货') < s.indexOf('四、时政速览'), '位置：开源项目之后、时政速览之前');
   assert.ok(s.includes('实测延迟下降 30%') && s.includes('https://linux.do/t/1'));
   assert.ok(!/[⭐★]/.test(s) && !s.includes('LINUX DO'), '无星标、条目不重复来源名');
 }
@@ -78,9 +79,26 @@ assert.deepEqual(checkEmail(outs[0]!, outs[1]!), []);
 const withTg = { ...d, telegram: { status: 'ready' as const, categories: [{ name: '优惠', items: [{ text: 'x', groups: ['g'] }] }], groups: ['g'] } };
 for (const s of [renderDigestText(withTg), renderDigestFeedHtml(withTg)]) assert.ok(s.includes('五、Telegram 群组要点') && s.indexOf('四、时政速览') < s.indexOf('五、Telegram'));
 // 空板块
-for (const s of [renderDigestHtml({ ...base, tutorials: [] }), renderDigestText({ ...base, tutorials: [] }), renderDigestFeedHtml({ ...base, tutorials: [] })]) assert.ok(s.includes('三、技术教程') && s.includes('本期无合适的技术教程'));
+for (const s of [renderDigestHtml({ ...base, tutorials: [] }), renderDigestText({ ...base, tutorials: [] }), renderDigestFeedHtml({ ...base, tutorials: [] })])
+  assert.ok(!s.includes('技术干货') && !s.includes('羊毛资讯') && !s.includes('生活经验') && !s.includes('本期无合适') && s.includes('三、时政速览'), '三个新章节当日无内容则整章不显示，编号不留空');
 // 旧数据（无 tutorials 字段）保持原编号、不出现新板块
-for (const s of [renderDigestHtml(base), renderDigestText(base), renderDigestFeedHtml(base)]) assert.ok(!s.includes('技术教程') && s.includes('三、时政速览'));
+for (const s of [renderDigestHtml(base), renderDigestText(base), renderDigestFeedHtml(base)]) assert.ok(!s.includes('技术干货') && s.includes('三、时政速览'));
+// 三个并列的顶级章节：技术干货、羊毛资讯、生活经验（顺序固定；缺 category 视为 tech；无内容的章节整章不显示，后续编号顺延）
+const mkT = (n: number, category?: any, extra: any = {}) => ({ title: `T${n}`, summary: `摘要${n}。`, url: `https://linux.do/t/${n}`, itemId: n, ...(category ? { category } : {}), ...extra });
+const catD: DigestData = { ...base, tutorials: [mkT(1, 'life'), mkT(2, 'deals'), mkT(3), mkT(4, 'tech')], telegram: { status: 'ready', categories: [{ name: '优惠', items: [{ text: 'x', groups: ['g'] }] }], groups: ['g'] } };
+for (const s of [renderDigestHtml(catD), renderDigestText(catD), renderDigestFeedHtml(catD)]) {
+  const at = (t: string) => s.indexOf(t);
+  assert.ok(at('三、技术干货') > 0 && at('三、技术干货') < at('四、羊毛资讯') && at('四、羊毛资讯') < at('五、生活经验') && at('五、生活经验') < at('六、时政速览') && at('六、时政速览') < at('七、Telegram 群组要点'), '顶级章节顺序与编号');
+  assert.ok(at('摘要3') < at('摘要4') && at('摘要4') < at('四、羊毛资讯') && at('摘要2') > at('四、羊毛资讯') && at('摘要2') < at('五、生活经验') && at('摘要1') > at('五、生活经验'), '条目归入对应章节');
+  assert.ok(!/<h3[^>]*>\s*(技术干货|羊毛资讯|生活经验)/.test(s), '没有小标题层级');
+}
+const onlyDeals: DigestData = { ...base, tutorials: [mkT(2, 'deals'), mkT(9, 'deals', { channel: 'telegram', url: 'https://t.me/g/9' }), mkT(8, 'deals', { channel: 'telegram', url: '' })] };
+for (const s of [renderDigestHtml(onlyDeals), renderDigestText(onlyDeals), renderDigestFeedHtml(onlyDeals)]) {
+  assert.ok(s.includes('三、羊毛资讯') && s.includes('四、时政速览') && !s.includes('技术干货') && !s.includes('生活经验'));
+  assert.ok(s.includes('原消息') && s.includes('https://t.me/g/9'));
+}
+const noLink = renderDigestText(onlyDeals).split('\n'); const k = noLink.findIndex(l => l.includes('摘要8'));
+assert.ok(!(noLink[k + 1] ?? '').includes('原'), '没有链接的条目不放链接，也不编造');
 assert.equal(digestCount(d), 2); assert.deepEqual(digestTitles(d), ['a/b', guide.title]);
 
 // ---- 72h 登记：迁移前不报错；迁移后写入并幂等 ----
@@ -92,8 +110,9 @@ db.exec('INSERT INTO briefs(id) VALUES (1),(2)');
 recordPushed(db, 1, d);   // 无 pushed_tutorials 表：只登记项目
 assert.equal(db.prepare('SELECT count(*) n FROM pushed_projects').get().n, 1);
 db.exec(await import('node:fs').then(f => f.readFileSync('./migrations/017_pushed_tutorials.sql', 'utf8')));
-recordPushed(db, 2, d);
+recordPushed(db, 2, { ...d, tutorials: [{ ...d.tutorials![0]!, category: 'deals' }] });
 assert.equal(db.prepare('SELECT count(*) n FROM pushed_tutorials').get().n, 1);
+assert.equal(db.prepare('SELECT category c FROM pushed_tutorials').get().c, 'deals');
 recordPushed(db, 2, d);
 assert.equal(db.prepare('SELECT count(*) n FROM pushed_tutorials').get().n, 1, '同一期不重复登记');
 console.log('tutorials: all passed');

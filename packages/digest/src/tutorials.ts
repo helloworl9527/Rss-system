@@ -6,7 +6,7 @@
  */
 import type { Provider } from '../../ai/src/types.ts';
 import { extractSignals, prescreenMandatory } from '../../domain/src/signals.ts';
-import { classifyRepost, extractRepos, similarity, urlKey, type DigestSourceItem, type DigestTutorial } from './core.ts';
+import { classifyRepost, extractRepos, similarity, urlKey, type DigestSourceItem, type DigestTutorial, type TutorialCategory } from './core.ts';
 import { judgeReposts, judgeTutorials } from './ai.ts';
 
 export const TUTORIAL_SOURCES = ['linuxdo', 'v2ex'];
@@ -26,7 +26,7 @@ export const tutorialKey = (u: string | null | undefined): string | null => {
 };
 
 export type TutorialExcluded = { id: number; sourceId: string; title: string; url: string | null; reason: string; stage: 'prescreen' | 'repost' | 'project' | 'history' | 'model' | 'dup' };
-export type TutorialPicked = { id: number; sourceId: string; title: string; url: string; reason: string };
+export type TutorialPicked = { id: number; sourceId: string; title: string; url: string; reason: string; category: TutorialCategory };
 export type TutorialReport = {
   candidates: Record<string, number>;   // 各来源候选帖总数
   sentToModel: number;
@@ -123,8 +123,8 @@ export async function buildTutorials(provider: Provider, items: DigestSourceItem
     const same = picked.find(p => similarity(p.title, it.title) >= 0.6 || similarity(p.summary, summary) >= 0.6);
     if (same) { exclude(it, `与已入选条目重复（交叉发布）：${same.title.slice(0, 20)}`, 'dup'); continue; }
     const url = TUTORIAL_URL_OVERRIDES[tutorialKey(it.url) ?? ''] ?? it.url;
-    picked.push({ title: it.title, summary, url, itemId: it.id });
-    report.pickedItems.push({ id: it.id, sourceId: it.sourceId, title: it.title, url, reason: r.reason });
+    picked.push({ title: it.title, summary, url, itemId: it.id, category: r.category });
+    report.pickedItems.push({ id: it.id, sourceId: it.sourceId, title: it.title, url, reason: r.reason, category: r.category });
   }
   report.picked = picked.length;
   const total = cands.length;

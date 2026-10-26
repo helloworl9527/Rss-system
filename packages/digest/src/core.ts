@@ -23,7 +23,10 @@ export type DigestEvent = { title: string; summary: string; links: DigestLink[];
 export type DigestVendor = { vendor: string; name: string; events: DigestEvent[] };
 export type DigestProject = { repo: string; url: string; description: string; mentionedBy: DigestLink[] };
 /** 技术教程：来自 LINUX DO / V2EX 的可复现技术帖。summary 为 1–2 句概括，url 为原帖链接。 */
-export type DigestTutorial = { title: string; summary: string; url: string; itemId: number };
+/** 板块内的专栏：tech 技术干货 / deals 羊毛资讯 / life 生活经验。旧数据缺省视为 tech。 */
+export type TutorialCategory = 'tech' | 'deals' | 'life';
+/** channel：forum 论坛帖 / telegram 群消息 / other 其他渠道；缺省视为 forum。url 为空字符串表示没有可用链接（不编造）。 */
+export type DigestTutorial = { title: string; summary: string; url: string; itemId: number; category?: TutorialCategory; channel?: 'forum' | 'telegram' | 'other' };
 export type DigestData = {
   format: 'digest_v2';
   date: string;            // YYYY-MM-DD（北京时间）
