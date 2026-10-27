@@ -1,6 +1,8 @@
 // Telegram 群组每日要点（daily_v2）：分块提取 → 按分类合并，不设条数上限
 import assert from 'node:assert/strict';
 import { isDaily, chunkMessages, composeDaily, normalizeCategory, renderDailyHtml, renderDailyMarkdown, dailyCount } from '../packages/telegram/src/daily.ts';
+import { collapseDuplicateMessages } from '../packages/telegram/src/core.ts';
+import { ProviderError } from '../packages/ai/src/types.ts';
 import { TELEGRAM_DIGEST_SCHEMA, validateDigest, fallbackDigest } from '../packages/telegram/src/digest.ts';
 
 assert.equal(normalizeCategory('eSIM'), 'eSIM/保号');
@@ -49,4 +51,45 @@ assert.deepEqual(d2.notes, ['B群 群本期生成失败']);
 assert.ok(renderDailyHtml(d2).includes('B群 群本期生成失败'));
 const dead: any = { ...fake, async complete() { throw new Error('down'); } };
 await assert.rejects(() => composeDaily(dead, [{ group: 'A群', messages: msgs(2) }, { group: 'B群', messages: msgs(2) }], 's', 'e'), /down/);
+
+// 内容被模型过滤：不重试、跳过该块，并与「生成失败」区分标注
+{
+  const filteredErr = () => { const e = new ProviderError('bad_request', '内容被模型过滤（响应无 choices，补全 0 token）'); e.contentFiltered = true; return e; };
+  let extractCalls: Record<string, number> = {};
+  const prov: any = { ...fake, async complete(req: any) {
+    if (req.schemaName === 'tg_extract') {
+      const group = /群：(.*)/.exec(req.userContent)![1]!; extractCalls[group] = (extractCalls[group] ?? 0) + 1;
+      if (group === 'F群') throw filteredErr();
+      if (group === 'G群') throw new Error('响应不是合法 JSON（响应体为空）');
+      if (group === 'P群' && /分块 2\//.test(req.userContent)) throw filteredErr();
+    }
+    return fake.complete(req);
+  } };
+  const big = (n: number) => Array.from({ length: n }, (_, i) => ({ message_id: i + 1, sent_at: '2026-10-21T00:00:00Z', reply_to_id: null, text: 'y'.repeat(500) + i }));
+  const d3 = await composeDaily(prov, [{ group: 'A群', messages: msgs(3) }, { group: 'F群', messages: msgs(3) }, { group: 'G群', messages: msgs(3) },
+    { group: 'P群', messages: big(8) }], 's', 'e', { maxChars: 3000 });
+  assert.equal(extractCalls['F群'], 1, '被过滤的块不重试');
+  assert.equal(extractCalls['G群'], 3, '普通失败仍重试 3 次');
+  assert.deepEqual(d3.notes, ['F群 群本期内容被模型过滤', 'G群 群本期生成失败', 'P群 群部分内容被模型过滤']);
+  assert.ok(dailyCount(d3) > 0 && d3.categories.every(c => c.items.every(i => !i.groups.includes('F群'))));
+}
+
+// 同窗口完全相同消息折叠成一条并标 ×N
+{
+  const rows = [
+    { message_id: 1, sent_at: 't1', reply_to_id: null, text: '广告 A' },
+    { message_id: 2, sent_at: 't2', reply_to_id: null, text: '正常讨论 1' },
+    { message_id: 3, sent_at: 't3', reply_to_id: null, text: '  广告   A\n' },      // 空白差异，规范化后相同
+    { message_id: 4, sent_at: 't4', reply_to_id: 3, text: '回复被折叠的消息' },
+    { message_id: 5, sent_at: 't5', reply_to_id: null, text: '广告 A' },
+    { message_id: 6, sent_at: 't6', reply_to_id: null, text: '广告 B' },
+  ];
+  const out = collapseDuplicateMessages(rows, m => m.text, (m, text) => ({ ...m, text }));
+  assert.deepEqual(out.map(m => m.message_id), [1, 2, 4, 6], '保留首次出现，其余顺序不变');
+  assert.equal(out[0]!.text, '广告 A\n（×3）'); assert.equal(out[0]!.sent_at, 't1');
+  assert.equal(out[1]!.text, '正常讨论 1', 'N=1 不加标注');
+  assert.equal(out[2]!.reply_to_id, 1, '回复被折叠消息时指向保留的那条');
+  assert.equal(out[3]!.text, '广告 B');
+  assert.equal(rows[0]!.text, '广告 A', '不修改输入');
+}
 console.log('telegram-daily: all passed');

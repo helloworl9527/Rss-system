@@ -1,7 +1,7 @@
 import type { Provider, ProviderConfig } from '../../ai/src/types.ts';
 import { createProvider } from '../../ai/src/registry.ts';
 import type { TelegramDB } from './db.ts';
-import { cleanViewpoint, consolidateViewpoints, isGroupAdminNotice, summaryHash, validateSummary, nowIso, type SummaryShape } from './core.ts';
+import { cleanViewpoint, collapseDuplicateMessages, consolidateViewpoints, isGroupAdminNotice, summaryHash, validateSummary, nowIso, type SummaryShape } from './core.ts';
 import { runDueDigests } from './digest.ts';
 
 export const TELEGRAM_SUMMARY_SCHEMA = {
@@ -113,9 +113,10 @@ export async function summarizeJob(db: TelegramDB, jobId: number, cfg: TelegramA
       AND v.superseded_at IS NULL AND v.status IN ('downloading','pending','running','retry')`)
     .get(job.source_id, job.window_start, job.window_end) as any).n);
   if (outstanding && Date.now() < Date.parse(job.window_end) + 10 * 60_000) return false;
-  const messages = rawMessages.filter(m => !isGroupAdminNotice(m.text))
+  // 同一窗口内完全相同的消息折叠成一条并标「×N」（刷屏重复内容会触发模型内容过滤）
+  const messages = collapseDuplicateMessages(rawMessages.filter(m => !isGroupAdminNotice(m.text))
     .map(m => ({...m,effective_text:effectiveMessageText(m)}))
-    .filter(m => m.effective_text.trim());
+    .filter(m => m.effective_text.trim()), m => m.effective_text, (m, t) => ({...m, effective_text: t}));
   if (!messages.length) { db.prepare('DELETE FROM telegram_summary_jobs WHERE id=?').run(jobId); return false; }
   const inputHash = summaryHash(messages.map(m => [m.message_id,m.sent_at,m.reply_to_id,m.effective_text]));
   const now = nowIso();
@@ -152,9 +153,11 @@ export async function summarizeJob(db: TelegramDB, jobId: number, cfg: TelegramA
     // 5/10/20/40/80 分钟退避，共约 2.5 小时：中转服务短时断开（授权失效、限流）时能自行补回
     const attempts = Number(job.attempts) + 1;
     console.error(`Telegram 总结失败 job=${jobId} source=${job.source_id}（${job.title}）第${attempts}次：${safeLogError(e)}`);
-    const retry = attempts < SUMMARY_MAX_ATTEMPTS ? new Date(Date.now() + 5 * 60_000 * 2 ** (attempts - 1)).toISOString() : null;
+    // 内容被模型过滤（响应无 choices）：重试结果不会变，直接结束，不走退避重试
+    const filtered = Boolean(e?.contentFiltered);
+    const retry = !filtered && attempts < SUMMARY_MAX_ATTEMPTS ? new Date(Date.now() + 5 * 60_000 * 2 ** (attempts - 1)).toISOString() : null;
     db.prepare(`UPDATE telegram_summary_jobs SET status='failed',error=?,next_attempt_at=?,updated_at=? WHERE id=?`)
-      .run(String(e?.message ?? e).slice(0,1000),retry,nowIso(),job.id);
+      .run((filtered ? '内容被模型过滤，不再重试：' : '') + String(e?.message ?? e).slice(0,1000),retry,nowIso(),job.id);
     return false;
   }
 }
