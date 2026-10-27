@@ -63,7 +63,9 @@ console.log('等待所有频道就绪：\n');
   db.prepare('UPDATE telegram_sync_state SET last_window_end=? WHERE source_id=?').run(W, c);
   const pending = db.prepare(`INSERT INTO telegram_summary_jobs(source_id,window_start,window_end,input_hash,provider,model,prompt_version,status,created_at,updated_at)
     VALUES(?,?,?,'','mock','m',1,'pending',?,?)`).run(c, W0, W, W, W);
-  ok('同一时刻还有频道总结未完成时不生成', await runDueDigests(db, cfg, provider, now) === 0 && calls === 0);
+  ok('窗口结束 40 分钟内还有频道总结未完成时不生成', await runDueDigests(db, cfg, provider, new Date('2026-10-09T12:20:00Z')) === 0 && calls === 0);
+  ok('超过 40 分钟后不再被未完成的频道总结任务阻塞', await runDueDigests(db, cfg, provider, now) === 1 && calls > 0);
+  db.prepare('DELETE FROM telegram_digests').run(); calls = 0;
   db.prepare('DELETE FROM telegram_summary_jobs WHERE id=?').run(pending.lastInsertRowid);
 }
 
@@ -116,7 +118,9 @@ console.log('\n单频道与 AI 失败兜底：\n');
   t = new Date(t.getTime() + 3600_000); await runDueDigests(db, cfg, broken, t);
   const fb = db.prepare('SELECT * FROM telegram_digests WHERE window_end=?').get(W3) as any;
   ok('第 3 次失败后退回逐频道拼接，时段不缺席', fb.status === 'completed' && fb.fallback === 1 && fb.attempts === 3 && String(fb.error).includes('upstream down'));
-  ok('兜底取各频道重要信息并轮流排列、标注频道', String(fb.rendered_html).startsWith('<ol><li><p><strong>A 话题 的细节</strong></p><p><small>来源：折腾搞机</small></p></li><li><p><strong>B 话题 的细节</strong></p><p><small>来源：eSIM群</small></p></li></ol>'), String(fb.rendered_html));
+  const fbj = JSON.parse(fb.summary_json);
+  ok('兜底为 daily_v2 结构（日报能读取），每个频道一个分类并标注频道', fbj.format === 'daily_v2' && fbj.categories.length === 2 &&
+    String(fb.rendered_html).includes('<h3>折腾搞机</h3><ul><li>A 话题 的细节 <small>〔折腾搞机〕</small></li></ul>') && String(fb.rendered_html).includes('<h3>eSIM群</h3>'), String(fb.rendered_html));
 }
 
 console.log('\n补采未覆盖的窗口不推进：\n');

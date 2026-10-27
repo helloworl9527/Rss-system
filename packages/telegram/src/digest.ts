@@ -10,7 +10,7 @@ import type { Provider, ProviderConfig } from '../../ai/src/types.ts';
 import { createProvider } from '../../ai/src/registry.ts';
 import type { TelegramDB } from './db.ts';
 import { cleanViewpoint, nowIso, stripMessageReferences, summaryHash } from './core.ts';
-import { composeDaily, isDaily, loadWindowMessages, renderDailyHtml, DAILY_FORMAT } from './daily.ts';
+import { composeDaily, isDaily, loadWindowMessages, renderDailyHtml, DAILY_FORMAT, type DailyDigest } from './daily.ts';
 
 const RENTAL_COMMUNITY = '[合租社群]Netflix|YouTube|Spotify|office365|Hbo|Surge|美剧|等音乐影视聊天机场电影盒子软路由';
 export const channelName = (name: unknown) => String(name ?? '') === RENTAL_COMMUNITY ? '合租社群' : String(name ?? '');
@@ -18,6 +18,12 @@ export const channelName = (name: unknown) => String(name ?? '') === RENTAL_COMM
 /** 某个频道迟迟同步不到该时刻时，最多等这么久，之后不再等它，免得一个坏来源让整个时段缺席。 */
 const LAGGING_SOURCE_GRACE_MS = 3 * 3600_000;
 const MAX_AI_ATTEMPTS = 3;
+/** 窗口结束后超过这么久，不再因为某个频道的总结任务 pending/待重试而阻塞跨频道要点（要点直接读原始消息，不依赖单频道总结）。 */
+const UNFINISHED_JOB_GRACE_MS = 40 * 60_000;
+/** 错误信息进日志前去掉可能的密钥/令牌。 */
+export const safeError = (e: unknown) => String((e as any)?.message ?? e)
+  .replace(/Bearer\s+\S+/gi, 'Bearer ***').replace(/\bsk-[A-Za-z0-9_-]{8,}/g, 'sk-***')
+  .replace(/(api[_-]?key|token|authorization|secret)(["'\s:=]+)[^\s"',}]+/gi, '$1$2***').slice(0, 300);
 
 /** 2026-10-22 起取消条数上限（用户要求列出全部实质要点）；常量仅为兼容保留。 */
 export const MAX_POINTS = Number.POSITIVE_INFINITY;
@@ -63,23 +69,19 @@ export function validateDigest(value: any, channels: string[]): DigestShape {
 }
 
 /**
- * AI 不可用（或只有一个频道）时的确定性要点：每个频道优先取「重要信息」，没有再取「主题」，
- * 末尾补「不确定信息」；多个频道轮流取，保证每个频道都露面。
+ * AI 不可用时的确定性要点（daily_v2 结构，日报 loadTelegramDaily 能直接读取）：
+ * 每个频道一个分类，优先取「重要信息」，没有再取「主题」，末尾补「不确定信息」。
  */
-export function fallbackDigest(parts: Part[]): DigestShape {
+export function fallbackDigest(parts: Part[], windowStart = '', windowEnd = '', notes: string[] = []): DailyDigest {
   const clean = (xs: unknown) => (Array.isArray(xs) ? xs : []).map(cleanViewpoint).filter(Boolean) as string[];
-  const queues = parts.map(p => {
+  const seen = new Set<string>();
+  const categories = parts.map(p => {
     const facts = clean(p.summary?.important);
-    return [...(facts.length ? facts : clean(p.summary?.topics)), ...clean(p.summary?.uncertainty)]
-      .map(text => ({ text, detail: '', channels: [p.channel] }));
-  });
-  const points: Point[] = []; const seen = new Set<string>();
-  for (let i = 0; queues.some(q => i < q.length); i++)
-    for (const q of queues) {
-      const p = q[i];
-      if (p && !seen.has(p.text)) { seen.add(p.text); points.push(p); }
-    }
-  return { points };
+    const items = [...(facts.length ? facts : clean(p.summary?.topics)), ...clean(p.summary?.uncertainty)]
+      .filter(text => !seen.has(text) && !!seen.add(text)).map(text => ({ text, groups: [p.channel] }));
+    return { name: p.channel, items };
+  }).filter(c => c.items.length);
+  return { format: DAILY_FORMAT, windowStart, windowEnd, categories, groups: [...new Set(parts.map(p => p.channel))], ...(notes.length ? { notes } : {}) };
 }
 
 /**
@@ -120,7 +122,7 @@ function partsFor(db: TelegramDB, windowEnd: string): Part[] {
 function windowReady(db: TelegramDB, windowEnd: string, now: Date): boolean {
   const unfinished = (db.prepare(`SELECT count(*) n FROM telegram_summary_jobs WHERE window_end=? AND
     (status IN ('pending','running') OR (status='failed' AND next_attempt_at IS NOT NULL))`).get(windowEnd) as any).n;
-  if (unfinished) return false;
+  if (unfinished && now.getTime() < Date.parse(windowEnd) + UNFINISHED_JOB_GRACE_MS) return false;
   if (now.getTime() >= Date.parse(windowEnd) + LAGGING_SOURCE_GRACE_MS) return true;
   const lagging = (db.prepare(`SELECT count(*) n FROM telegram_sources s LEFT JOIN telegram_sync_state ss ON ss.source_id=s.id
     WHERE s.enabled=1 AND s.status='active' AND s.source_type='normal'
@@ -152,16 +154,17 @@ export async function buildDigest(db: TelegramDB, windowEnd: string, cfg: Provid
       ON CONFLICT(window_end) DO UPDATE SET ${cols.filter(c => c !== 'window_end').map(c => `${c}=excluded.${c}`).join(',')}`)
       .run(...cols.map(c => (row as any)[c]));
   };
-  const complete = (d: DigestShape, fallback: boolean, model: string | null, error: string | null = null) => save({
-    status: 'completed', summary_json: JSON.stringify(d), rendered_html: renderDigest(d, channels), fallback: fallback ? 1 : 0,
+  const complete = (d: DailyDigest, fallback: boolean, model: string | null, error: string | null = null) => save({
+    status: 'completed', summary_json: JSON.stringify(d), rendered_html: renderDailyHtml(d), fallback: fallback ? 1 : 0,
     response_model: model, error });
   try {
     const p = provider ?? await createProvider(cfg);
-    const d = await composeDaily(p, groups, windowStart, windowEnd);
+    const d = await composeDaily(p, groups, windowStart, windowEnd, { log: m => { if (m.startsWith('⚠️')) console.log(m); } });
     save({ status: 'completed', summary_json: JSON.stringify(d), rendered_html: renderDailyHtml(d), fallback: 0, response_model: p.model, error: null });
   } catch (e: any) {
     const error = String(e?.message ?? e).slice(0, 1000);
-    if (attempts >= MAX_AI_ATTEMPTS) { complete(fallbackDigest(parts), true, null, error); return true; }
+    console.error(`Telegram 跨频道要点生成失败 窗口=${windowEnd} 第${attempts}次：${safeError(e)}`);
+    if (attempts >= MAX_AI_ATTEMPTS) { complete(fallbackDigest(parts, windowStart, windowEnd, ['AI 汇总失败，以下为各群摘要的直接拼接']), true, null, error); return true; }
     save({ error, next_attempt_at: new Date(now.getTime() + 10 * 60_000 * attempts).toISOString() });
     return false;
   }

@@ -1214,7 +1214,7 @@ brief:
   # 投递方式：rss_only = 只写入简报（RSS 发布），不发邮件；改为 email 恢复邮件投递。
   delivery: rss_only
   # 末尾附 Telegram 群组每日要点（四、Telegram 群组要点）。未就绪时最多等待这么久，之后不附并注明生成中。
-  telegram_daily: { enabled: true, wait_minutes: 15, max_age_hours: 3 }
+  telegram_daily: { enabled: true, wait_minutes: 5, max_age_hours: 3 }
   digest_sections:
     - { id: official_updates, title: 一、官方动态 }
     - { id: open_source_projects, title: 二、开源项目 }
