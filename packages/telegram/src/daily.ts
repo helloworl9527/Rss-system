@@ -10,7 +10,7 @@
 import type { Provider } from '../../ai/src/types.ts';
 import { validate } from '../../ai/src/schema.ts';
 import type { TelegramDB } from './db.ts';
-import { cleanViewpoint, isGroupAdminNotice, stripMessageReferences } from './core.ts';
+import { cleanViewpoint, collapseDuplicateMessages, isGroupAdminNotice, stripMessageReferences } from './core.ts';
 import { effectiveMessageText } from './summarize.ts';
 
 export const DAILY_FORMAT = 'daily_v2';
@@ -59,7 +59,7 @@ async function call<T>(p: Provider, systemPrompt: string, user: string, schema: 
       const errs = validate(r.data, schema);
       if (errs.length) throw new Error(`schema: ${errs.slice(0, 2).join('; ')}`);
       return r.data as T;
-    } catch (e) { last = e; await new Promise(r => setTimeout(r, Number(process.env.TELEGRAM_DAILY_RETRY_MS ?? 2000) * (i + 1))); }
+    } catch (e) { last = e; if ((e as any)?.contentFiltered) break; /* 内容被过滤：重试结果不会变 */ await new Promise(r => setTimeout(r, Number(process.env.TELEGRAM_DAILY_RETRY_MS ?? 2000) * (i + 1))); }
   }
   throw last;
 }
@@ -84,9 +84,10 @@ export function loadWindowMessages(db: TelegramDB, start: string, end: string, g
       FROM telegram_messages m LEFT JOIN telegram_media_tasks v ON v.chat_id=m.chat_id AND v.message_id=m.message_id
         AND v.superseded_at IS NULL AND v.status='completed'
       WHERE m.source_id=? AND m.sent_at>=? AND m.sent_at<? AND m.deleted_at IS NULL ORDER BY m.sent_at,m.message_id`).all(s.id, start, end) as any[];
-    const messages = rows.filter(r => !isGroupAdminNotice(r.text))
+    // 同一窗口内完全相同的消息（刷屏广告、机器人重复回复）折叠成一条并标「×N」，避免重复垃圾内容触发模型内容过滤
+    const messages = collapseDuplicateMessages(rows.filter(r => !isGroupAdminNotice(r.text))
       .map(r => ({ message_id: r.message_id, sent_at: r.sent_at, reply_to_id: r.reply_to_id, text: effectiveMessageText(r) }))
-      .filter(m => m.text.trim());
+      .filter(m => m.text.trim()), m => m.text, (m, text) => ({ ...m, text }));
     if (messages.length) out.push({ group: groupName(s.name), messages });
   }
   return out;
@@ -111,10 +112,10 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
   const maxChars = opts.maxChars ?? 14000;
   // ---------- 1. 逐群分块提取 ----------
   const points: Array<{ category: string; text: string; group: string }> = [];
-  const failed: string[] = []; const partial: string[] = []; let lastError: unknown;
+  const failed: string[] = []; const partial: string[] = []; const notes: string[] = []; let lastError: unknown;
   for (const g of groups) {
     const chunks = chunkMessages(g.messages, maxChars);
-    let okChunks = 0;
+    let okChunks = 0; let filteredChunks = 0; let errorChunks = 0;
     for (const [i, chunk] of chunks.entries()) {
       const user = `群：${g.group}\n分块 ${i + 1}/${chunks.length}\n\n` + chunk.map(m =>
         `<message id="${m.message_id}" time="${m.sent_at}" reply_to="${m.reply_to_id ?? ''}">\n${m.text}\n</message>`).join('\n');
@@ -123,18 +124,22 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
       catch (e: any) {
         // 单个群（或分块）失败不拖垮整份要点：记录后跳过，其余群照常生成
         lastError = e;
-        log(`⚠️ 提取 ${g.group} 第 ${i + 1}/${chunks.length} 块失败，已跳过：${String(e?.message ?? e).slice(0, 120)}`);
+        if (e?.contentFiltered) filteredChunks++; else errorChunks++;
+        log(`⚠️ 提取 ${g.group} 第 ${i + 1}/${chunks.length} 块${e?.contentFiltered ? '被模型过滤' : '失败'}，已跳过：${String(e?.message ?? e).slice(0, 120)}`);
         continue;
       }
       okChunks++;
       for (const x of r.points) { const t = clean(x.text); if (t) points.push({ category: normalizeCategory(x.category), text: t, group: g.group }); }
     }
     if (okChunks === 0 && chunks.length) failed.push(g.group); else if (okChunks < chunks.length) partial.push(g.group);
+    // 区分「内容被模型过滤」与「生成失败」；整群无一块成功时沿用「本期生成失败」文案
+    const all = okChunks === 0 && chunks.length > 0;
+    if (filteredChunks) notes.push(all && !errorChunks ? `${g.group} 群本期内容被模型过滤` : `${g.group} 群部分内容被模型过滤`);
+    if (errorChunks) notes.push(all && !filteredChunks ? `${g.group} 群本期生成失败` : `${g.group} 群本期部分内容生成失败`);
     log(`提取 ${g.group}：${g.messages.length} 条消息 / ${chunks.length} 块（成功 ${okChunks}）→ 累计要点 ${points.length}`);
   }
   // 全部群都失败才视为整体失败（交给上层重试 / 兜底）
   if (groups.length && failed.length === groups.length) throw lastError ?? new Error('所有群提取失败');
-  const notes = [...failed.map(n => `${n} 群本期生成失败`), ...partial.map(n => `${n} 群本期部分内容生成失败`)];
   // ---------- 2. 按分类跨群合并 ----------
   const groupNames = groups.map(g => g.group);
   const valid = new Set(groupNames);

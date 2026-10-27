@@ -95,6 +95,8 @@ export class ProviderError extends Error {
        *  缩短输入几乎不减少输出，那样重试等于白试一次。 */
       | 'truncated';
   status?: number;
+  /** 响应没有任何可用 choice（上游安全过滤）：重试和换小块都不会变，调用方应跳过而不是重试。 */
+  contentFiltered?: boolean;
   retryable: boolean;
   constructor(kind: ProviderError['kind'], message: string, status?: number) {
     super(message);

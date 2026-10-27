@@ -191,6 +191,34 @@ const GROUP_ADMIN_NOTICE = [
   /找不到要封禁的(?:频道|用户)|无法通过用户名封禁用户/u,
   /^\s*\S*\*{2,}\S*\s.*已被(?:永久)?(?:封禁|禁言|踢出|移出)/u,
 ];
+/** 规范化后比较：去首尾空白、合并连续空白。 */
+export const normalizeMessageText = (text: unknown): string => String(text ?? '').replace(/\s+/g, ' ').trim();
+
+/**
+ * 同一频道、同一窗口内「规范化后完全相同」的消息折叠成一条：保留首次出现的消息（时间、ID、回复关系不变），
+ * 重复 N>1 次时在文本末尾标注「×N」。被折叠消息的 ID 被回复时，回复指向改到保留的那条，引用不会悬空。
+ * 输入需已按时间排序；其他消息及顺序不变。
+ */
+export function collapseDuplicateMessages<T extends { message_id: number; reply_to_id: number | null }>(
+  items: T[], getText: (x: T) => string, withText: (x: T, text: string) => T): T[] {
+  const first = new Map<string, number>(); const count = new Map<string, number>(); const alias = new Map<number, number>();
+  for (const it of items) {
+    const key = normalizeMessageText(getText(it));
+    if (!first.has(key)) first.set(key, it.message_id); else alias.set(it.message_id, first.get(key)!);
+    count.set(key, (count.get(key) ?? 0) + 1);
+  }
+  const out: T[] = [];
+  for (const it of items) {
+    const key = normalizeMessageText(getText(it));
+    if (first.get(key) !== it.message_id) continue;
+    const n = count.get(key)!;
+    const reply = it.reply_to_id != null && alias.has(it.reply_to_id) ? alias.get(it.reply_to_id)! : it.reply_to_id;
+    const base = reply === it.reply_to_id ? it : { ...it, reply_to_id: reply };
+    out.push(n > 1 ? withText(base, `${getText(it)}\n（×${n}）`) : base);
+  }
+  return out;
+}
+
 export function isGroupAdminNotice(text: unknown): boolean {
   const value = String(text ?? '');
   return GROUP_ADMIN_NOTICE.some(re => re.test(value));
