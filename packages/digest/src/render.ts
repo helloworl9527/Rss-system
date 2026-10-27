@@ -52,7 +52,8 @@ function tgHtml(t: NonNullable<DigestData['telegram']>): string {
   if (!t.categories.length) return `<p style="margin:0;color:${C.muted};">本日没有值得关注的群组要点。</p>`;
   return `<div style="font-size:12px;color:${C.muted};">${esc(tgRange(t))}</div>` + t.categories.map(c =>
     `<h3 style="margin:14px 0 6px;font-size:15px;color:${C.accent};">${esc(c.name)}</h3><ul style="margin:0;padding-left:20px;">` +
-    c.items.map(i => `<li style="margin:0 0 6px;">${esc(i.text)}${i.groups.length ? ` <span style="font-size:12px;color:${C.muted};">〔${esc(i.groups.join('、'))}〕</span>` : ''}</li>`).join('') + '</ul>').join('');
+    c.items.map(i => `<li style="margin:0 0 6px;">${esc(i.text)}${i.groups.length ? ` <span style="font-size:12px;color:${C.muted};">〔${esc(i.groups.join('、'))}〕</span>` : ''}</li>`).join('') + '</ul>').join('')
+    + (t.notes ?? []).map(n => `<p style="margin:10px 0 0;font-size:12px;color:${C.muted};">${esc(n)}</p>`).join('');
 }
 
 export function renderDigestHtml(d: DigestData): string {
@@ -111,7 +112,7 @@ export function renderDigestText(d: DigestData): string {
     L.push(LY.tg);
     if (t.status !== 'ready') L.push(TG_PENDING);
     else if (!t.categories.length) L.push('本日没有值得关注的群组要点。');
-    else { L.push(tgRange(t)); for (const c of t.categories) { L.push('', `【${c.name}】`); for (const i of c.items) L.push(`• ${i.text}${i.groups.length ? `〔${i.groups.join('、')}〕` : ''}`); } }
+    else { L.push(tgRange(t)); for (const c of t.categories) { L.push('', `【${c.name}】`); for (const i of c.items) L.push(`• ${i.text}${i.groups.length ? `〔${i.groups.join('、')}〕` : ''}`); } for (const n of t.notes ?? []) L.push('', `（${n}）`); }
     L.push('');
   }
   return L.join('\n');
@@ -139,7 +140,8 @@ export function renderDigestFeedHtml(d: DigestData): string {
     if (t.status !== 'ready') h += `<p>${esc(TG_PENDING)}</p>`;
     else if (!t.categories.length) h += '<p>本日没有值得关注的群组要点。</p>';
     else h += `<p><small>${esc(tgRange(t))}</small></p>` + t.categories.map(c => `<h3>${esc(c.name)}</h3><ul>` +
-      c.items.map(i => `<li>${esc(i.text)}${i.groups.length ? ` <small>〔${esc(i.groups.join('、'))}〕</small>` : ''}</li>`).join('') + '</ul>').join('');
+      c.items.map(i => `<li>${esc(i.text)}${i.groups.length ? ` <small>〔${esc(i.groups.join('、'))}〕</small>` : ''}</li>`).join('') + '</ul>').join('')
+      + (t.notes ?? []).map(n => `<p><small>${esc(n)}</small></p>`).join('');
   }
   return h;
 }

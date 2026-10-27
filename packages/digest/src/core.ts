@@ -46,6 +46,7 @@ export type DigestTelegram = {
   windowStart?: string; windowEnd?: string;
   categories: Array<{ name: string; items: Array<{ text: string; groups: string[] }> }>;
   groups: string[];
+  notes?: string[];
 };
 
 /** 厂商显示名与固定顺序。未列出的厂商排在最后，按 id 显示。 */

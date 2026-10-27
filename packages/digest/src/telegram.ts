@@ -21,7 +21,7 @@ export async function loadTelegramDaily(briefEnd: Date, o: { waitMinutes?: numbe
         WHERE status='completed' AND window_end>=? AND window_end<=? ORDER BY window_end DESC LIMIT 1`).get(from, briefEnd.toISOString()) as any;
       if (row?.summary_json) {
         const d = JSON.parse(row.summary_json);
-        if (d?.format === 'daily_v2') return { status: 'ready', windowStart: row.window_start, windowEnd: row.window_end, categories: d.categories, groups: d.groups ?? [] };
+        if (d?.format === 'daily_v2') return { status: 'ready', windowStart: row.window_start, windowEnd: row.window_end, categories: d.categories, groups: d.groups ?? [], ...(Array.isArray(d.notes) && d.notes.length ? { notes: d.notes.map(String) } : {}) };
       }
     } catch (e: any) { log(`读取 Telegram 要点失败：${String(e?.message ?? e).slice(0, 160)}`); }
     finally { db.close(); }
