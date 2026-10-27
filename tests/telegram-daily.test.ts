@@ -1,7 +1,7 @@
 // Telegram 群组每日要点（daily_v2）：分块提取 → 按分类合并，不设条数上限
 import assert from 'node:assert/strict';
 import { isDaily, chunkMessages, composeDaily, normalizeCategory, renderDailyHtml, renderDailyMarkdown, dailyCount } from '../packages/telegram/src/daily.ts';
-import { collapseDuplicateMessages } from '../packages/telegram/src/core.ts';
+import { collapseDuplicateMessages, SPAM_DUPLICATE_MIN_COUNT, SPAM_DUPLICATE_MIN_LENGTH } from '../packages/telegram/src/core.ts';
 import { ProviderError } from '../packages/ai/src/types.ts';
 import { TELEGRAM_DIGEST_SCHEMA, validateDigest, fallbackDigest } from '../packages/telegram/src/digest.ts';
 
@@ -30,7 +30,7 @@ const fake: any = { name: 'mock', model: 'm', strictness: 'strict', async comple
   const list = JSON.parse(req.userContent.slice(req.userContent.indexOf('\n\n') + 2));
   return { data: { items: list.map((x: any) => ({ text: x.text, groups: [...x.groups, '编造群'] })) }, usage: {}, responseId: 'r', model: 'm' };
 } };
-const msgs = (n: number) => Array.from({ length: n }, (_, i) => ({ message_id: i + 1, sent_at: '2026-10-21T00:00:00Z', reply_to_id: null, text: 'x'.repeat(500) }));
+const msgs = (n: number) => Array.from({ length: n }, (_, i) => ({ message_id: i + 1, sent_at: '2026-10-21T00:00:00Z', reply_to_id: null, text: 'x'.repeat(500) + i }));  // 各条文本互不相同，避免被当作垃圾重复消息折叠/丢弃
 const d = await composeDaily(fake, [{ group: 'A群', messages: msgs(30) }, { group: 'B群', messages: msgs(3) }], 's', 'e', { maxChars: 3000 });
 assert.ok(calls.filter(c => c === 'tg_extract').length > 2, '按群分块提取');
 assert.ok(calls.includes('tg_merge'), '按分类合并');
@@ -91,5 +91,33 @@ await assert.rejects(() => composeDaily(dead, [{ group: 'A群', messages: msgs(2
   assert.equal(out[2]!.reply_to_id, 1, '回复被折叠消息时指向保留的那条');
   assert.equal(out[3]!.text, '广告 B');
   assert.equal(rows[0]!.text, '广告 A', '不修改输入');
+}
+
+// 垃圾重复消息：长文本重复 ≥5 次整组丢弃；短文本只折叠；2～4 次折叠；回复被丢弃的消息不悬空
+{
+  assert.equal(SPAM_DUPLICATE_MIN_COUNT, 5); assert.equal(SPAM_DUPLICATE_MIN_LENGTH, 30);
+  const longAd = '点击链接领取限时福利资源，立即免费观看，名额有限先到先得，不要错过！'; // 规范化后 ≥ 30 字符
+  assert.ok(longAd.length >= 30);
+  const mk = (id: number, text: string, reply: number | null = null) => ({ message_id: id, sent_at: `t${id}`, reply_to_id: reply, text });
+  const dropped: Array<{ count: number; length: number; hash: string }> = [];
+  const rows = [
+    ...Array.from({ length: 5 }, (_, i) => mk(i + 1, i % 2 ? `  ${longAd}  ` : longAd)),   // 长文本 ×5（含空白差异）→ 丢弃
+    ...Array.from({ length: 6 }, (_, i) => mk(10 + i, '哈哈')),                              // 短文本 ×6 → 折叠保留
+    ...Array.from({ length: 4 }, (_, i) => mk(20 + i, longAd + '（另一条）')),             // 长文本 ×4 → 折叠保留
+    mk(30, '正常消息'),
+    mk(31, '回复垃圾广告', 3),                                                               // 回复被丢弃的消息
+    mk(32, '回复被折叠的消息', 22),                                                          // 回复被折叠消息 → 指向保留的那条
+  ];
+  const out = collapseDuplicateMessages(rows, m => m.text, (m, text) => ({ ...m, text }), { onDrop: d => dropped.push(d) });
+  assert.deepEqual(out.map(m => m.message_id), [10, 20, 30, 31, 32]);
+  assert.equal(out[0]!.text, '哈哈\n（×6）', '短文本高频只折叠、不丢弃');
+  assert.equal(out[1]!.text, longAd + '（另一条）\n（×4）', '2～4 次折叠并标 ×N');
+  assert.equal(out.find(m => m.message_id === 31)!.reply_to_id, null, '回复被丢弃的垃圾消息：reply_to 置空，不报错');
+  assert.equal(out.find(m => m.message_id === 32)!.reply_to_id, 20);
+  assert.equal(dropped.length, 1); assert.equal(dropped[0]!.count, 5);
+  assert.ok(JSON.stringify(dropped).indexOf('福利') < 0, '回调/日志信息不含原文');
+  assert.ok(/^[0-9a-f]{8}$/.test(dropped[0]!.hash));
+  assert.equal(collapseDuplicateMessages(rows.slice(0, 4), m => m.text, (m, text) => ({ ...m, text })).length, 1, '长文本 ×4 折叠成 1 条');
+  assert.equal(collapseDuplicateMessages(rows.slice(0, 5), m => m.text, (m, text) => ({ ...m, text })).length, 0, '长文本 ×5 全部丢弃');
 }
 console.log('telegram-daily: all passed');

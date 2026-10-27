@@ -116,7 +116,8 @@ export async function summarizeJob(db: TelegramDB, jobId: number, cfg: TelegramA
   // 同一窗口内完全相同的消息折叠成一条并标「×N」（刷屏重复内容会触发模型内容过滤）
   const messages = collapseDuplicateMessages(rawMessages.filter(m => !isGroupAdminNotice(m.text))
     .map(m => ({...m,effective_text:effectiveMessageText(m)}))
-    .filter(m => m.effective_text.trim()), m => m.effective_text, (m, t) => ({...m, effective_text: t}));
+    .filter(m => m.effective_text.trim()), m => m.effective_text, (m, t) => ({...m, effective_text: t}),
+    { onDrop: d => console.log(`Telegram 丢弃重复垃圾消息：${job.title} ${d.count} 条（长度 ${d.length}，哈希 ${d.hash}）`) });
   if (!messages.length) { db.prepare('DELETE FROM telegram_summary_jobs WHERE id=?').run(jobId); return false; }
   const inputHash = summaryHash(messages.map(m => [m.message_id,m.sent_at,m.reply_to_id,m.effective_text]));
   const now = nowIso();
