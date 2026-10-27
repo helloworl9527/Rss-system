@@ -183,6 +183,23 @@ ok('失败任务保留有限重试',(db.prepare('SELECT status,next_attempt_at F
   ok('总结提示词里重复消息折叠为一条并标 ×6',(prompt.match(/<message /g)??[]).length===2&&prompt.includes('重复广告\n（×6）'));
   ok('内容被过滤：第 1 次即结束，不排重试',r.status==='failed'&&r.attempts===1&&r.next_attempt_at===null&&r.error.startsWith('内容被模型过滤'));
 }
+{
+  // 长文本重复 ≥5 次视为垃圾刷屏，不送模型；短文本高频重复只折叠
+  const fs1=new Date(now.getTime()+21601000).toISOString(),fe1=new Date(now.getTime()+25201000).toISOString();
+  const js=db.prepare(`INSERT INTO telegram_summary_jobs(source_id,window_start,window_end,input_hash,provider,model,prompt_version,status,created_at,updated_at) VALUES(?,?,?,'','mock','m',1,'pending',?,?)`).run(src.id,fs1,fe1,start2,start2);
+  const ins=db.prepare(`INSERT INTO telegram_messages(source_id,chat_id,message_id,sent_at,text,content_hash,collected_at) VALUES(?,?,?,?,?,?,?)`);
+  const spamText='点击链接领取限时福利资源，立即免费观看，名额有限先到先得，不要错过！';
+  for(let i=0;i<6;i++) ins.run(src.id,-1001,9300+i,new Date(Date.parse(fs1)+i*1000).toISOString(),spamText,'sp'+i,fs1);
+  for(let i=0;i<6;i++) ins.run(src.id,-1001,9310+i,new Date(Date.parse(fs1)+10000+i*1000).toISOString(),'哈哈','sh'+i,fs1);
+  ins.run(src.id,-1001,9320,new Date(Date.parse(fs1)+20000).toISOString(),'正常消息内容','nm',fs1);
+  let prompt='';
+  const capture={name:'mock',model:'m',strictness:'strict',complete:async(r:any)=>{prompt=r.userContent;throw new Error('stop')}} as any;
+  const logs:string[]=[];const origLog=console.log;console.log=(...a:any[])=>{logs.push(a.join(' '))};
+  try{await summarizeJob(db,Number(js.lastInsertRowid),{provider:'mock',model:'m',promptRules:'',promptVersion:1,summaryRetentionDays:30},capture)}finally{console.log=origLog}
+  ok('总结提示词不含被丢弃的垃圾重复消息',!prompt.includes('福利资源'));
+  ok('高频短消息只折叠保留（×6）',prompt.includes('哈哈\n（×6）')&&prompt.includes('正常消息内容')&&(prompt.match(/<message /g)??[]).length===2);
+  ok('丢弃垃圾消息写日志，只含条数/长度/哈希，不含原文',logs.some(l=>l.includes('丢弃重复垃圾消息')&&l.includes('6 条'))&&!logs.join('').includes('福利资源'));
+}
 db.prepare(`INSERT INTO telegram_urls(normalized_url,first_source_id,last_source_id,first_discovered_at,last_discovered_at,expires_at) VALUES('https://expired.test/',?,?,?,?,?)`).run(urlSrc.id,urlSrc.id,start,start,new Date(now.getTime()-1).toISOString());
 const oldMessageAt=new Date(now.getTime()-20*86400000).toISOString();
 db.prepare('UPDATE telegram_sources SET retain_all_history=1 WHERE id=?').run(src.id);

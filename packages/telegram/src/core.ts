@@ -194,25 +194,49 @@ const GROUP_ADMIN_NOTICE = [
 /** 规范化后比较：去首尾空白、合并连续空白。 */
 export const normalizeMessageText = (text: unknown): string => String(text ?? '').replace(/\s+/g, ' ').trim();
 
+/** 同一窗口内规范化后完全相同的消息重复这么多次（含）及以上，且文本够长时视为垃圾刷屏，直接丢弃、不送模型。 */
+export const SPAM_DUPLICATE_MIN_COUNT = 5;
+/** 只有规范化后长度达到这个值的重复消息才会被当作垃圾丢弃；更短的（如「哈哈」「好的」）只折叠不丢弃。 */
+export const SPAM_DUPLICATE_MIN_LENGTH = 30;
+export type DuplicateDropInfo = { count: number; length: number; hash: string };
+export type CollapseOptions = {
+  spamMinCount?: number; spamMinLength?: number;
+  /** 丢弃了一组垃圾重复消息时回调；只给出条数、长度和文本哈希前缀，不含原文。 */
+  onDrop?: (info: DuplicateDropInfo) => void;
+};
+
 /**
- * 同一频道、同一窗口内「规范化后完全相同」的消息折叠成一条：保留首次出现的消息（时间、ID、回复关系不变），
- * 重复 N>1 次时在文本末尾标注「×N」。被折叠消息的 ID 被回复时，回复指向改到保留的那条，引用不会悬空。
+ * 同一频道、同一窗口内「规范化后完全相同」的消息：
+ *  · 重复 2～(N阈值-1) 次：折叠成一条，保留首次出现的消息（时间、ID、回复关系不变），文本末尾标注「×N」；
+ *  · 重复 ≥ SPAM_DUPLICATE_MIN_COUNT 次且规范化长度 ≥ SPAM_DUPLICATE_MIN_LENGTH：当作垃圾刷屏整组丢弃（不送模型）；
+ *    短消息即使高频重复也只折叠，不丢弃。
+ * 被折叠消息的 ID 被回复时，回复指向保留的那条；回复被丢弃的垃圾消息时，reply_to 置空，引用不会悬空。
  * 输入需已按时间排序；其他消息及顺序不变。
  */
 export function collapseDuplicateMessages<T extends { message_id: number; reply_to_id: number | null }>(
-  items: T[], getText: (x: T) => string, withText: (x: T, text: string) => T): T[] {
+  items: T[], getText: (x: T) => string, withText: (x: T, text: string) => T, opts: CollapseOptions = {}): T[] {
+  const minCount = opts.spamMinCount ?? SPAM_DUPLICATE_MIN_COUNT, minLen = opts.spamMinLength ?? SPAM_DUPLICATE_MIN_LENGTH;
   const first = new Map<string, number>(); const count = new Map<string, number>(); const alias = new Map<number, number>();
   for (const it of items) {
     const key = normalizeMessageText(getText(it));
     if (!first.has(key)) first.set(key, it.message_id); else alias.set(it.message_id, first.get(key)!);
     count.set(key, (count.get(key) ?? 0) + 1);
   }
+  const isSpam = (key: string) => count.get(key)! >= minCount && key.length >= minLen;
+  const dropped = new Set<number>();
+  for (const it of items) {
+    const key = normalizeMessageText(getText(it));
+    if (isSpam(key)) dropped.add(it.message_id);
+  }
+  if (opts.onDrop) for (const [key, n] of count) if (isSpam(key))
+    opts.onDrop({ count: n, length: key.length, hash: createHash('sha256').update(key).digest('hex').slice(0, 8) });
   const out: T[] = [];
   for (const it of items) {
     const key = normalizeMessageText(getText(it));
-    if (first.get(key) !== it.message_id) continue;
+    if (dropped.has(it.message_id) || first.get(key) !== it.message_id) continue;
     const n = count.get(key)!;
-    const reply = it.reply_to_id != null && alias.has(it.reply_to_id) ? alias.get(it.reply_to_id)! : it.reply_to_id;
+    let reply = it.reply_to_id != null && alias.has(it.reply_to_id) ? alias.get(it.reply_to_id)! : it.reply_to_id;
+    if (reply != null && dropped.has(reply)) reply = null;
     const base = reply === it.reply_to_id ? it : { ...it, reply_to_id: reply };
     out.push(n > 1 ? withText(base, `${getText(it)}\n（×${n}）`) : base);
   }

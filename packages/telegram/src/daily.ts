@@ -84,10 +84,11 @@ export function loadWindowMessages(db: TelegramDB, start: string, end: string, g
       FROM telegram_messages m LEFT JOIN telegram_media_tasks v ON v.chat_id=m.chat_id AND v.message_id=m.message_id
         AND v.superseded_at IS NULL AND v.status='completed'
       WHERE m.source_id=? AND m.sent_at>=? AND m.sent_at<? AND m.deleted_at IS NULL ORDER BY m.sent_at,m.message_id`).all(s.id, start, end) as any[];
-    // 同一窗口内完全相同的消息（刷屏广告、机器人重复回复）折叠成一条并标「×N」，避免重复垃圾内容触发模型内容过滤
+    // 同一窗口内完全相同的消息折叠成一条并标「×N」；长文本重复 ≥5 次视为垃圾刷屏直接丢弃（不送模型，避免触发内容过滤）
     const messages = collapseDuplicateMessages(rows.filter(r => !isGroupAdminNotice(r.text))
       .map(r => ({ message_id: r.message_id, sent_at: r.sent_at, reply_to_id: r.reply_to_id, text: effectiveMessageText(r) }))
-      .filter(m => m.text.trim()), m => m.text, (m, text) => ({ ...m, text }));
+      .filter(m => m.text.trim()), m => m.text, (m, text) => ({ ...m, text }),
+      { onDrop: d => console.log(`Telegram 丢弃重复垃圾消息：${groupName(s.name)} ${d.count} 条（长度 ${d.length}，哈希 ${d.hash}）`) });
     if (messages.length) out.push({ group: groupName(s.name), messages });
   }
   return out;
