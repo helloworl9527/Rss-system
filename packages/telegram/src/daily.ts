@@ -12,10 +12,12 @@ import { validate } from '../../ai/src/schema.ts';
 import type { TelegramDB } from './db.ts';
 import { cleanViewpoint, collapseDuplicateMessages, isGroupAdminNotice, stripMessageReferences } from './core.ts';
 import { effectiveMessageText } from './summarize.ts';
+import { collectLinks, findLinks, isTelegramMessageUrl, normalizeLink, renderLinkedHtml, restrictLinks } from './links.ts';
 
 export const DAILY_FORMAT = 'daily_v2';
 export const SUGGESTED_CATEGORIES = ['会员订阅/优惠', 'eSIM/保号', '银行/支付', '数码/系统', 'AI/软件工具', '网络/代理', '海外生活/出行', '其他'];
-export type DailyItem = { text: string; groups: string[] };
+/** sourceUrls：条目里购买地址所在原消息的 t.me 链接（原消息有 source_url 才有；由代码按链接回查，不由模型生成）。 */
+export type DailyItem = { text: string; groups: string[]; sourceUrls?: string[] };
 export type DailyCategory = { name: string; items: DailyItem[] };
 export type DailyDigest = { format: typeof DAILY_FORMAT; windowStart: string; windowEnd: string; categories: DailyCategory[]; groups: string[]; /** 简短说明，如「X 群本期生成失败」 */ notes?: string[] };
 
@@ -24,7 +26,8 @@ const LINE_RULES = `每条要点写成一行完整中文短句（一般 30–90 
 - 问题已有解决办法：把方法具体写进同一行（步骤、设置项、替代渠道），不要只写「有解决方法」。
 - 未解决、只有个别反馈或说法不一：照样列出，句末加「（未确认）」；有人反馈方法无效时句末加「（有人反馈失败）」。
 - 禁止空泛话题名和「有人提到」「群友表示」等引导语；不得出现消息 ID、编号或时间引用。
-- 不写：闲聊寒暄、广告与推广、群管理和机器人通知（入群验证、欢迎、封禁禁言）、没有实际内容的消息。`;
+- 不写：闲聊寒暄、广告与推广、群管理和机器人通知（入群验证、欢迎、封禁禁言）、没有实际内容的消息。
+- 购买地址：消息里报了某商品、服务或账号的价格，且原消息带购买地址（http 链接、\`xxx.com/buy/123\` 这类不带 http 的域名路径、t.me 机器人或商品链接）时，必须把该地址逐字原样写进同一条价格要点（写在价格之后，如「独享苹果 ID 1u 或 4 元，购买：tg7788.com/buy/553」）。地址只能照抄输入消息里的，不得编造、补全、改写或自己加 http://；问价的消息和回复它的消息（见 reply_to / reply_to_text）里的价格与地址要合并成一条。原消息没有购买地址就不要写任何地址，也不要写「链接」「略」「未提供购买地址」「无链接」之类的占位词或说明，价格照常写。`;
 
 const EXTRACT_SCHEMA = {
   type: 'object', additionalProperties: false, required: ['points'],
@@ -49,6 +52,7 @@ const MERGE_PROMPT = `你是 Telegram 多群要点编辑。输入是同一分类
 3. 按对读者的重要程度从高到低排序：影响面广的规则/价格/政策变化、可操作的方法在前，个别反馈在后。
 4. 合并后若既有成功反馈又有失败反馈，如实写明；仍未确认的保留「（未确认）」，有人反馈失败的保留「（有人反馈失败）」。
 ${LINE_RULES}
+5. 要点里的购买地址（链接或域名路径）必须逐字原样保留，不得改写、删除或新增。
 groups 只能逐字使用输入中出现的群名。${GUARD}`;
 
 async function call<T>(p: Provider, systemPrompt: string, user: string, schema: any, name: string, maxOut: number): Promise<T> {
@@ -72,7 +76,8 @@ export function normalizeCategory(name: unknown): string {
   return hit ?? n.slice(0, 12);
 }
 
-type GroupMessages = { group: string; messages: Array<{ message_id: number; sent_at: string; reply_to_id: number | null; text: string }> };
+type GroupMessage = { message_id: number; sent_at: string; reply_to_id: number | null; text: string; source_url?: string | null };
+type GroupMessages = { group: string; messages: GroupMessage[] };
 
 /** 读取窗口内各群消息（含图片识别结果），已过滤群管理通知与空消息。只读。 */
 export function loadWindowMessages(db: TelegramDB, start: string, end: string, groupName: (raw: string) => string = x => x): GroupMessages[] {
@@ -80,13 +85,13 @@ export function loadWindowMessages(db: TelegramDB, start: string, end: string, g
     WHERE source_type='normal' AND enabled=1 ORDER BY id`).all() as any[];
   const out: GroupMessages[] = [];
   for (const s of sources) {
-    const rows = db.prepare(`SELECT m.message_id,m.sent_at,m.reply_to_id,m.text,v.description,v.key_text,v.uncertainty vision_uncertainty
+    const rows = db.prepare(`SELECT m.message_id,m.sent_at,m.reply_to_id,m.source_url,m.text,v.description,v.key_text,v.uncertainty vision_uncertainty
       FROM telegram_messages m LEFT JOIN telegram_media_tasks v ON v.chat_id=m.chat_id AND v.message_id=m.message_id
         AND v.superseded_at IS NULL AND v.status='completed'
       WHERE m.source_id=? AND m.sent_at>=? AND m.sent_at<? AND m.deleted_at IS NULL ORDER BY m.sent_at,m.message_id`).all(s.id, start, end) as any[];
     // 同一窗口内完全相同的消息折叠成一条并标「×N」；长文本重复 ≥5 次视为垃圾刷屏直接丢弃（不送模型，避免触发内容过滤）
     const messages = collapseDuplicateMessages(rows.filter(r => !isGroupAdminNotice(r.text))
-      .map(r => ({ message_id: r.message_id, sent_at: r.sent_at, reply_to_id: r.reply_to_id, text: effectiveMessageText(r) }))
+      .map(r => ({ message_id: r.message_id, sent_at: r.sent_at, reply_to_id: r.reply_to_id, source_url: r.source_url || null, text: effectiveMessageText(r) }))
       .filter(m => m.text.trim()), m => m.text, (m, text) => ({ ...m, text }),
       { onDrop: d => console.log(`Telegram 丢弃重复垃圾消息：${groupName(s.name)} ${d.count} 条（长度 ${d.length}，哈希 ${d.hash}）`) });
     if (messages.length) out.push({ group: groupName(s.name), messages });
@@ -105,6 +110,22 @@ export function chunkMessages<T extends { text: string }>(messages: T[], maxChar
   return chunks;
 }
 
+const REPLY_QUOTE_MAX = 120;
+const quoteOf = (text: string) => text.replace(/\s+/g, ' ').replace(/["<>]/g, ' ').trim().slice(0, REPLY_QUOTE_MAX);
+/** 本块里的消息所回复的、但不在本块里的消息（问价和回复被分块切开时，让模型仍能看到问的是什么）。 */
+export function replyContext(chunk: GroupMessage[], byId: Map<number, GroupMessage>): GroupMessage[] {
+  const inChunk = new Set(chunk.map(m => m.message_id));
+  return [...new Set(chunk.map(m => m.reply_to_id).filter((id): id is number => id != null && !inChunk.has(id) && byId.has(id)))].map(id => byId.get(id)!);
+}
+export function renderChunk(chunk: GroupMessage[], byId: Map<number, GroupMessage>): string {
+  const inChunk = new Set(chunk.map(m => m.message_id));
+  return chunk.map(m => {
+    const target = m.reply_to_id != null && !inChunk.has(m.reply_to_id) ? byId.get(m.reply_to_id) : undefined;
+    const quote = target ? ` reply_to_text="${quoteOf(target.text)}"` : '';
+    return `<message id="${m.message_id}" time="${m.sent_at}" reply_to="${m.reply_to_id ?? ''}"${quote}>\n${m.text}\n</message>`;
+  }).join('\n');
+}
+
 export type DailyProgress = (msg: string) => void;
 
 export async function composeDaily(p: Provider, groups: GroupMessages[], windowStart: string, windowEnd: string,
@@ -116,10 +137,12 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
   const failed: string[] = []; const partial: string[] = []; const notes: string[] = []; let lastError: unknown;
   for (const g of groups) {
     const chunks = chunkMessages(g.messages, maxChars);
+    const byId = new Map(g.messages.map(m => [m.message_id, m]));
     let okChunks = 0; let filteredChunks = 0; let errorChunks = 0;
     for (const [i, chunk] of chunks.entries()) {
-      const user = `群：${g.group}\n分块 ${i + 1}/${chunks.length}\n\n` + chunk.map(m =>
-        `<message id="${m.message_id}" time="${m.sent_at}" reply_to="${m.reply_to_id ?? ''}">\n${m.text}\n</message>`).join('\n');
+      const user = `群：${g.group}\n分块 ${i + 1}/${chunks.length}\n\n` + renderChunk(chunk, byId);
+      // 白名单：本块消息 + 被它们回复（但在别的块里）的消息中的链接；摘要里的链接只能来自这里
+      const allowed = collectLinks([...chunk.map(m => m.text), ...replyContext(chunk, byId).map(x => x.text)]);
       let r: { points: Array<{ category: string; text: string }> };
       try { r = await call<{ points: Array<{ category: string; text: string }> }>(p, EXTRACT_PROMPT, user, EXTRACT_SCHEMA, 'tg_extract', 6000); }
       catch (e: any) {
@@ -130,7 +153,11 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
         continue;
       }
       okChunks++;
-      for (const x of r.points) { const t = clean(x.text); if (t) points.push({ category: normalizeCategory(x.category), text: t, group: g.group }); }
+      for (const x of r.points) {
+        const c = restrictLinks(clean(x.text), allowed);
+        if (c.removed.length) log(`⚠️ ${g.group}：剔除 ${c.removed.length} 个不在原消息里的链接`);
+        if (c.text) points.push({ category: normalizeCategory(x.category), text: c.text, group: g.group });
+      }
     }
     if (okChunks === 0 && chunks.length) failed.push(g.group); else if (okChunks < chunks.length) partial.push(g.group);
     // 区分「内容被模型过滤」与「生成失败」；整群无一块成功时沿用「本期生成失败」文案
@@ -143,6 +170,10 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
   if (groups.length && failed.length === groups.length) throw lastError ?? new Error('所有群提取失败');
   // ---------- 2. 按分类跨群合并 ----------
   const groupNames = groups.map(g => g.group);
+  // 链接（规范形式）→ 含该链接的原消息 source_url（仅 t.me 消息链接；原消息没有 source_url 就没有）
+  const linkSources = new Map<string, string[]>();
+  for (const g of groups) for (const m of g.messages) if (isTelegramMessageUrl(m.source_url))
+    for (const l of findLinks(m.text)) { const k = normalizeLink(l.raw); const a = linkSources.get(k) ?? []; if (!a.includes(m.source_url)) a.push(m.source_url); linkSources.set(k, a); }
   const valid = new Set(groupNames);
   const byCat = new Map<string, typeof points>();
   for (const x of points) byCat.set(x.category, [...(byCat.get(x.category) ?? []), x]);
@@ -152,11 +183,20 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
     const mergeOnce = async (list: Array<{ text: string; groups: string[] }>) => {
       const r = await call<{ items: DailyItem[] }>(p, MERGE_PROMPT, `分类：${name}\n\n${JSON.stringify(list.map(x => ({ text: x.text, groups: x.groups })))}`,
         MERGE_SCHEMA, 'tg_merge', 8000);
-      return r.items.map(i => ({ text: clean(i.text), groups: [...new Set(i.groups.map(g => String(g).trim()).filter(g => valid.has(g)))] }))
+      return r.items.map(i => ({ text: restrictLinks(clean(i.text), collectLinks(list.map(x => x.text))).text, groups: [...new Set(i.groups.map(g => String(g).trim()).filter(g => valid.has(g)))] }))
         .filter(i => i.text);
     };
-    let items: DailyItem[] = xs.map(x => ({ text: x.text, groups: [x.group] }));
-    if (items.length > 1 || new Set(xs.map(x => x.group)).size > 1) {
+    // 带购买地址的要点不交给合并模型（防止地址在合并中被改写或丢掉）：按地址确定性去重，合并后排在该分类末尾
+    const linked = xs.filter(x => findLinks(x.text).length), plain = xs.filter(x => !findLinks(x.text).length);
+    const linkedItems = new Map<string, DailyItem>();
+    for (const x of linked) {
+      const key = findLinks(x.text).map(l => normalizeLink(l.raw)).sort().join('|');
+      const hit = linkedItems.get(key);
+      if (!hit) linkedItems.set(key, { text: x.text, groups: [x.group], sourceUrls: sourceUrlsFor(x.text, linkSources) });
+      else { if (x.text.length > hit.text.length) hit.text = x.text; if (!hit.groups.includes(x.group)) hit.groups.push(x.group); }
+    }
+    let items: DailyItem[] = plain.map(x => ({ text: x.text, groups: [x.group] }));
+    if (items.length > 1 || new Set(plain.map(x => x.group)).size > 1) {
       try {
         if (items.length <= batch) items = await mergeOnce(items);
         else {
@@ -167,7 +207,8 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
       } catch (e: any) { log(`⚠️ 分类 ${name} 合并失败，保留未合并要点：${String(e?.message ?? e).slice(0, 120)}`); }
     }
     // 模型漏掉来源群时退回原始来源
-    for (const it of items) if (!it.groups.length) it.groups = [...new Set(xs.filter(x => x.text === it.text).map(x => x.group))].slice(0, 3);
+    for (const it of items) if (!it.groups.length) it.groups = [...new Set(plain.filter(x => x.text === it.text).map(x => x.group))].slice(0, 3);
+    items.push(...[...linkedItems.values()].map(i => i.sourceUrls?.length ? i : { text: i.text, groups: i.groups }));
     if (items.length) categories.push({ name, items });
     log(`合并 ${name}：${xs.length} → ${items.length}`);
   }
@@ -176,19 +217,24 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
   return { format: DAILY_FORMAT, windowStart, windowEnd, categories, groups: groupNames, ...(notes.length ? { notes } : {}) };
 }
 
+const sourceUrlsFor = (text: string, linkSources: Map<string, string[]>): string[] =>
+  [...new Set(findLinks(text).flatMap(l => linkSources.get(normalizeLink(l.raw)) ?? []))].slice(0, 2);
+
 export const isDaily = (x: any): x is DailyDigest => x?.format === DAILY_FORMAT && Array.isArray(x?.categories);
 export const dailyCount = (d: DailyDigest) => d.categories.reduce((n, c) => n + c.items.length, 0);
 
 const esc = (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-/** 语义化 HTML（RSS / 后台），无样式。 */
+/** 条目里购买地址所在原消息的 t.me 链接（只放行 t.me 消息链接）。 */
+const sourceLinksHtml = (i: DailyItem) => (i.sourceUrls ?? []).filter(isTelegramMessageUrl).map(u => ` <small>（<a href="${esc(u)}">原消息</a>）</small>`).join('');
+/** 语义化 HTML（RSS / 后台），无样式。链接渲染成可点击的 <a>（不带协议头的补 https:// 作 href，显示文字保持原样）。 */
 export function renderDailyHtml(d: DailyDigest): string {
   const note = (d.notes ?? []).map(n => `<p><small>${esc(n)}</small></p>`).join('');
   if (!d.categories.length) return '<p>本日没有值得关注的群组要点。</p>' + note;
   return d.categories.map(c => `<h3>${esc(c.name)}</h3><ul>` + c.items.map(i =>
-    `<li>${esc(i.text)}${i.groups.length ? ` <small>〔${esc(i.groups.join('、'))}〕</small>` : ''}</li>`).join('') + '</ul>').join('') + note;
+    `<li>${renderLinkedHtml(i.text, esc)}${sourceLinksHtml(i)}${i.groups.length ? ` <small>〔${esc(i.groups.join('、'))}〕</small>` : ''}</li>`).join('') + '</ul>').join('') + note;
 }
 export function renderDailyMarkdown(d: DailyDigest): string {
   const note = (d.notes ?? []).map(n => `\n（${n}）`).join('');
   if (!d.categories.length) return '本日没有值得关注的群组要点。\n' + note;
-  return d.categories.map(c => `### ${c.name}\n\n` + c.items.map(i => `- ${i.text}${i.groups.length ? ` 〔${i.groups.join('、')}〕` : ''}`).join('\n')).join('\n\n') + '\n' + note;
+  return d.categories.map(c => `### ${c.name}\n\n` + c.items.map(i => `- ${i.text}${(i.sourceUrls ?? []).filter(isTelegramMessageUrl).map(u => `（原消息：${u}）`).join('')}${i.groups.length ? ` 〔${i.groups.join('、')}〕` : ''}`).join('\n')).join('\n\n') + '\n' + note;
 }

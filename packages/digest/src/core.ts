@@ -44,7 +44,7 @@ export type DigestData = {
 export type DigestTelegram = {
   status: 'ready' | 'pending';
   windowStart?: string; windowEnd?: string;
-  categories: Array<{ name: string; items: Array<{ text: string; groups: string[] }> }>;
+  categories: Array<{ name: string; items: Array<{ text: string; groups: string[]; /** 购买地址所在原消息的 t.me 链接（有才有） */ sourceUrls?: string[] }> }>;
   groups: string[];
   notes?: string[];
 };

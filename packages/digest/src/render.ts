@@ -7,6 +7,7 @@
  */
 import { esc, safeUrl } from '../../templates/src/email.ts';
 import type { DigestData, DigestLink, DigestTutorial } from './core.ts';
+import { isTelegramMessageUrl, renderLinkedHtml } from '../../telegram/src/links.ts';
 
 export const NO_POLITICS = '本时段暂无值得关注的时政动态。';
 /** 兼容旧数据：politics 曾是一段字符串。 */
@@ -47,12 +48,19 @@ const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragin
 const C = { page: '#eef1f5', card: '#ffffff', line: '#e2e7ee', ink: '#161b22', body: '#39424e', muted: '#6b7684', accent: '#1c5fa8' };
 const A = `color:${C.accent};text-decoration:none;`;
 
+type TgItem = NonNullable<DigestData['telegram']>['categories'][number]['items'][number];
+/** Telegram 要点正文：文本里的购买地址渲染成可点击链接（只放行 https，不带协议头的补 https://），有 t.me 原消息链接再附「原消息」。 */
+function tgText(i: TgItem, attrs = ''): string {
+  const a = attrs ? ` ${attrs}` : '';
+  return renderLinkedHtml(i.text, esc, { href: u => safeUrl(u), attrs: a })
+    + (i.sourceUrls ?? []).filter(isTelegramMessageUrl).map(u => { const h = safeUrl(u); return h ? ` <small>（<a href="${esc(h)}"${a}>原消息</a>）</small>` : ''; }).join('');
+}
 function tgHtml(t: NonNullable<DigestData['telegram']>): string {
   if (t.status !== 'ready') return `<p style="margin:0;color:${C.muted};">${esc(TG_PENDING)}</p>`;
   if (!t.categories.length) return `<p style="margin:0;color:${C.muted};">本日没有值得关注的群组要点。</p>`;
   return `<div style="font-size:12px;color:${C.muted};">${esc(tgRange(t))}</div>` + t.categories.map(c =>
     `<h3 style="margin:14px 0 6px;font-size:15px;color:${C.accent};">${esc(c.name)}</h3><ul style="margin:0;padding-left:20px;">` +
-    c.items.map(i => `<li style="margin:0 0 6px;">${esc(i.text)}${i.groups.length ? ` <span style="font-size:12px;color:${C.muted};">〔${esc(i.groups.join('、'))}〕</span>` : ''}</li>`).join('') + '</ul>').join('')
+    c.items.map(i => `<li style="margin:0 0 6px;">${tgText(i, `style="${A}"`)}${i.groups.length ? ` <span style="font-size:12px;color:${C.muted};">〔${esc(i.groups.join('、'))}〕</span>` : ''}</li>`).join('') + '</ul>').join('')
     + (t.notes ?? []).map(n => `<p style="margin:10px 0 0;font-size:12px;color:${C.muted};">${esc(n)}</p>`).join('');
 }
 
@@ -112,7 +120,7 @@ export function renderDigestText(d: DigestData): string {
     L.push(LY.tg);
     if (t.status !== 'ready') L.push(TG_PENDING);
     else if (!t.categories.length) L.push('本日没有值得关注的群组要点。');
-    else { L.push(tgRange(t)); for (const c of t.categories) { L.push('', `【${c.name}】`); for (const i of c.items) L.push(`• ${i.text}${i.groups.length ? `〔${i.groups.join('、')}〕` : ''}`); } for (const n of t.notes ?? []) L.push('', `（${n}）`); }
+    else { L.push(tgRange(t)); for (const c of t.categories) { L.push('', `【${c.name}】`); for (const i of c.items) L.push(`• ${i.text}${i.groups.length ? `〔${i.groups.join('、')}〕` : ''}`, ...(i.sourceUrls ?? []).filter(isTelegramMessageUrl).map(u => `  原消息：${u}`)); } for (const n of t.notes ?? []) L.push('', `（${n}）`); }
     L.push('');
   }
   return L.join('\n');
@@ -140,7 +148,7 @@ export function renderDigestFeedHtml(d: DigestData): string {
     if (t.status !== 'ready') h += `<p>${esc(TG_PENDING)}</p>`;
     else if (!t.categories.length) h += '<p>本日没有值得关注的群组要点。</p>';
     else h += `<p><small>${esc(tgRange(t))}</small></p>` + t.categories.map(c => `<h3>${esc(c.name)}</h3><ul>` +
-      c.items.map(i => `<li>${esc(i.text)}${i.groups.length ? ` <small>〔${esc(i.groups.join('、'))}〕</small>` : ''}</li>`).join('') + '</ul>').join('')
+      c.items.map(i => `<li>${tgText(i)}${i.groups.length ? ` <small>〔${esc(i.groups.join('、'))}〕</small>` : ''}</li>`).join('') + '</ul>').join('')
       + (t.notes ?? []).map(n => `<p><small>${esc(n)}</small></p>`).join('');
   }
   return h;
