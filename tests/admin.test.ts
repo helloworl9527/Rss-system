@@ -172,11 +172,11 @@ const dir = mkdtempSync(join(tmpdir(), 'brief-admin-'));
     const merged = briefsRss(db, token!, 'https://rss.example', 20, sections, tg)!;
     const bodies = [...merged.matchAll(/<content:encoded>(.*?)<\/content:encoded>/gs)].map(m => m[1].replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
     const morning = bodies.find(b => b.includes('社会条目'))!;
-    ok('只向 Telegram 取本订阅覆盖的时段', asked === '2026-10-09T14:00:00.000Z');
-    ok('日报正文在前，同时段 Telegram 要点拼接在后', morning.indexOf('社会条目') < morning.indexOf('<h2>Telegram 频道要点</h2>') && morning.includes('TG 早间要点') && !morning.includes('TG 午间要点'));
-    ok('没有对应要点的日报不加空分区', !bodies.find(b => b.includes('晚报条目'))!.includes('Telegram 频道要点'));
-    ok('日报缺失的时段单独给出要点，排在最前', (merged.match(/<item>/g) ?? []).length === 3 && merged.indexOf('10月10日 午报 · 仅 Telegram 要点') < merged.indexOf('10月10日 早报 · 3 条')
-      && merged.includes('<guid isPermaLink="false">telegram-digest:2026-10-10T04:00:00.000Z</guid>') && merged.includes('<description>TG 午间要点；第二条</description>'));
+    // 2026-10-22：用户要求从日报 RSS 移除「Telegram 频道要点」，即使传入 Telegram 回调也不拼接。
+    ok('不再向 Telegram 取要点', asked === '');
+    ok('日报正文不含 Telegram 要点', !bodies.some(b => b.includes('Telegram 频道要点') || b.includes('TG 早间要点')));
+    ok('不再为日报缺失的时段单独给出 Telegram 要点', (merged.match(/<item>/g) ?? []).length === 2 && !merged.includes('仅 Telegram 要点'));
+    void morning;
     ok('日报条目 guid 不变，阅读器原地更新', merged.includes(`brief:2026-10-10:morning:${b2}`));
   }
   ok('错误令牌返回 null', briefsRss(db, 'f'.repeat(64), '') === null);

@@ -16,6 +16,7 @@ import { candidateEligibleSql } from '../../../packages/db/src/eligibility.ts';
 import { spawn } from 'node:child_process';
 import { openDb, nowIso, type DB } from '../../../packages/db/src/index.ts';
 import { windowToReport, windowFromKey } from '../../../packages/domain/src/normalize.ts';
+import { loadRules } from '../../../packages/domain/src/rules.ts';
 
 const argv = process.argv.slice(2);
 const winArg = argv.includes('--window') ? argv[argv.indexOf('--window') + 1] : null;
@@ -56,8 +57,13 @@ if (!nCand) {
   db.close(); process.exit(0);
 }
 
-// 2. L1 判定
 const failures: string[] = [];
+// 新版日报（digest_v2）直接读取来源条目，不使用 L1/L2/L3 判定结果；跳过以免 24 小时窗口的
+// 大批候选拖慢运行（改回 legacy 自动恢复）。
+const DIGEST_V2 = (loadRules() as any).brief?.format === 'digest_v2';
+if (DIGEST_V2) console.log('\nbrief.format=digest_v2：跳过 L1 判定与 L2/L3 复核');
+// 2. L1 判定
+if (!DIGEST_V2) {
 code = await step('L1 判定', 'apps/worker/src/triage.ts', ['--run', String(runId)]);
 if (code !== 0) failures.push('L1 判定');
 
@@ -84,6 +90,7 @@ for (let pass = 1; previousUnresolved > 0 && pass <= maxReviewPasses; pass++) {
 }
 if (unresolvedCount() > 0 && !failures.some(x => x.startsWith('L2/L3')))
   failures.push('L2/L3 复核未完成');
+}
 
 // 4. 简报组装与投递
 code = await step('简报组装与投递', 'apps/worker/src/brief.ts', ['--run', String(runId), ...passThrough]);

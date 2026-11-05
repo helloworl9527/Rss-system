@@ -112,6 +112,7 @@ export class OpenAICompatProvider implements Provider {
     const body = {
       model: this.model,
       max_tokens: req.maxOutputTokens,
+      ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
       response_format: responseFormat,
       messages: [
         { role: 'system', content: system },
@@ -136,6 +137,15 @@ export class OpenAICompatProvider implements Provider {
     const j: any = await r.json();
     const choice = j.choices?.[0];
     const text = choice?.message?.content ?? '';
+
+    // 上游内容安全过滤：HTTP 200 但 choices 为空（补全 0 token），或 finish_reason=content_filter。
+    // kind 仍是 bad_request（其他调用方行为不变），只打上 contentFiltered 标记供 Telegram 路径跳过且不重试。
+    if (!choice || choice.finish_reason === 'content_filter') {
+      const err = new ProviderError('bad_request',
+        `内容被模型过滤（${choice ? 'finish_reason=content_filter' : '响应无 choices'}，补全 ${j.usage?.completion_tokens ?? 0} token）`);
+      err.contentFiltered = true;
+      throw err;
+    }
 
     // 截断要与"模型乱回"区分开：前者应缩短输入重试，后者是提示词问题
     if (choice?.finish_reason === 'length')

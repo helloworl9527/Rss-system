@@ -61,7 +61,7 @@ console.log('\n发报时刻须与窗口配置一致：\n');
     .map(w => w.end_hour).sort((a, b) => a - b);
   ok('timer 时刻 = rules.yaml 的窗口结束时刻',
      JSON.stringify(hours) === JSON.stringify(rule), `timer[${hours}] rules[${rule}]`);
-  ok('三个发报时刻', hours.length === 3, String(hours));
+  ok('每日一个发报时刻（08:00）', hours.length === 1 && hours[0] === 8, String(hours));
 }
 
 console.log('\n沙箱与运行账户：\n');

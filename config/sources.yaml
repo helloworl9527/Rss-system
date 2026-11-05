@@ -11,8 +11,8 @@
 # ============================================================
 
 meta:
-  source_version: 13
-  updated_at: "2026-09-30"
+  source_version: 14
+  updated_at: "2026-10-22"
   probe_baseline_date: "2026-08-23"
   probe_from_ip: "52.141.58.148"
 
@@ -129,6 +129,9 @@ sources:
   - id: supertechfans_cn
     name: SuperTechFans HackerNews 每日摘要
     display_name: SuperTechFans
+    vendor: supertechfans
+    official: false
+    role: context                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://www.supertechfans.com/cn/"
     category: tech
     source_group: unclassified
@@ -144,6 +147,9 @@ sources:
     name: LINUX DO 热门话题
     harvest_tier: ranking_feed          # 20 分钟 —— 榜单型，热度轮转
     display_name: LINUX DO
+    vendor: linuxdo
+    official: false
+    role: context                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://linux.do"          # 人类可访问的主页，邮件里渠道名指向此处
     category: forum
     enabled: true
@@ -161,6 +167,9 @@ sources:
     name: 即刻「一觉醒来发生了什么」
     harvest_tier: standard          # 60 分钟 —— 跨度 216h
     display_name: 即刻
+    vendor: jike
+    official: false
+    role: politics                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://web.okjike.com/topic/553870e8e4b0cafb0a1bef68"          # 人类可访问的主页，邮件里渠道名指向此处
     category: society
     enabled: true
@@ -179,6 +188,9 @@ sources:
     name: V2EX 最热主题
     harvest_tier: ranking_feed          # 20 分钟 —— 榜单型 + 跨度仅 11.1h，16 源中唯一低于 24h
     display_name: V2EX
+    vendor: v2ex
+    official: false
+    role: context                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://www.v2ex.com/?tab=hot"          # 人类可访问的主页，邮件里渠道名指向此处
     category: forum
     enabled: true
@@ -201,9 +213,12 @@ sources:
     name: Telegram @TossiPhoneX
     harvest_tier: standard          # 60 分钟 —— 跨度 696h
     display_name: "@TossiPhoneX"
+    vendor: telegram
+    official: false
+    role: context                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://t.me/TossiPhoneX"          # 人类可访问的主页，邮件里渠道名指向此处
     category: tech
-    enabled: true
+    enabled: false                   # 2026-10-22 用户要求停用 Telegram 频道来源（历史保留）
     priority: 4
     host_group: rsshub
     endpoints:
@@ -219,9 +234,12 @@ sources:
     name: Telegram @zaihuapd
     harvest_tier: standard          # 60 分钟 —— 跨度 37.9h
     display_name: "@zaihuapd"
+    vendor: telegram
+    official: false
+    role: context                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://t.me/zaihuapd"          # 人类可访问的主页，邮件里渠道名指向此处
     category: tech
-    enabled: true
+    enabled: false                   # 2026-10-22 用户要求停用 Telegram 频道来源（历史保留）
     priority: 4
     host_group: rsshub
     verify_major_news: true
@@ -238,9 +256,12 @@ sources:
     name: Telegram @durov
     harvest_tier: standard          # 60 分钟 —— 跨度 1678h
     display_name: "@durov"
+    vendor: telegram
+    official: false
+    role: context                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://t.me/durov"          # 人类可访问的主页，邮件里渠道名指向此处
     category: tech
-    enabled: true
+    enabled: false                   # 2026-10-22 用户要求停用 Telegram 频道来源（历史保留）
     priority: 5
     host_group: rsshub
     endpoints:
@@ -256,9 +277,12 @@ sources:
     name: Telegram @karlshareChannel
     harvest_tier: standard          # 60 分钟 —— 跨度 970h
     display_name: "@karlshareChannel"
+    vendor: telegram
+    official: false
+    role: context                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://t.me/karlshareChannel"          # 人类可访问的主页，邮件里渠道名指向此处
     category: tech
-    enabled: true
+    enabled: false                   # 2026-10-22 用户要求停用 Telegram 频道来源（历史保留）
     priority: 5
     host_group: rsshub
     rumor_disclosure: true           # 传闻需标注来源限制（PRD 4.1）
@@ -275,6 +299,9 @@ sources:
     name: X @Weixin_WeChat
     harvest_tier: standard          # 60 分钟 —— 跨度 1150h
     display_name: "@Weixin_WeChat"
+    vendor: wechat
+    official: false
+    role: context                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://x.com/Weixin_WeChat"          # 人类可访问的主页，邮件里渠道名指向此处
     category: tech
     enabled: true
@@ -288,13 +315,15 @@ sources:
     name: DeepSeek 官方更新日志
     harvest_tier: official_changelog          # 120 分钟 —— 官方更新日志，低频
     display_name: DeepSeek 更新日志
+    vendor: deepseek
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://api-docs.deepseek.com/zh-cn/updates/"          # 人类可访问的主页，邮件里渠道名指向此处
     category: ai
     source_group: deepseek
     enabled: true
     priority: 2
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://api-docs.deepseek.com/zh-cn/updates/", parser: deepseek_page, priority: 1 }
     # 只有日期无时分 → 以首次发现时间归入当前窗口（PRD 5.4）
@@ -308,6 +337,9 @@ sources:
   - id: openai_news
     name: OpenAI News
     display_name: OpenAI News
+    vendor: openai
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://openai.com/news/"
     category: ai
     source_group: openai
@@ -315,13 +347,15 @@ sources:
     enabled: true
     priority: 1
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://openai.com/news/rss.xml", parser: rss, priority: 1 }
 
   - id: openai_release_notes
     name: OpenAI 产品更新日志
     display_name: OpenAI Release Notes
+    vendor: openai
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://openai.com/products/release-notes/"
     category: ai
     source_group: openai
@@ -329,7 +363,6 @@ sources:
     enabled: true
     priority: 1
     host_group: rsshub
-    official: true
     endpoints:
       # OpenAI 官网在本机出口对 release-notes 页面和 RSS 触发 Cloudflare challenge。
       # RSSHub 实例抓取同一官方 ChatGPT Release Notes 页面；Codex 使用 OpenAI 官方开发者 RSS。
@@ -341,6 +374,9 @@ sources:
   - id: anthropic_news_rsshub
     name: Anthropic News（RSSHub）
     display_name: Anthropic News · RSSHub
+    vendor: anthropic
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://www.anthropic.com/news"
     category: ai
     source_group: claude
@@ -348,7 +384,6 @@ sources:
     enabled: true
     priority: 2
     host_group: rsshub
-    official: true
     endpoints:
       - { url: "https://rsshub.bestblogs.dev/anthropic/news", parser: rss, priority: 1 }
       - { url: "https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_news_rss.xml", parser: rss, priority: 2 }
@@ -358,6 +393,9 @@ sources:
   - id: anthropic_engineering_rsshub
     name: Anthropic Engineering（RSSHub）
     display_name: Anthropic Engineering · RSSHub
+    vendor: anthropic
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://www.anthropic.com/engineering"
     category: ai
     source_group: claude
@@ -365,7 +403,6 @@ sources:
     enabled: true
     priority: 2
     host_group: rsshub
-    official: true
     endpoints:
       - { url: "https://rsshub.bestblogs.dev/anthropic/engineering", parser: rss, priority: 1 }
       - { url: "https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_engineering_rss.xml", parser: rss, priority: 2 }
@@ -375,6 +412,9 @@ sources:
   - id: anthropic_community_rss
     name: Anthropic RSS（社区维护）
     display_name: Anthropic News · Community RSS
+    vendor: anthropic
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://www.anthropic.com/"
     category: ai
     source_group: claude
@@ -388,6 +428,9 @@ sources:
   - id: claude_code_changelog
     name: Claude Code Changelog
     display_name: Claude Code Changelog
+    vendor: anthropic
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://code.claude.com/docs/en/changelog"
     category: ai
     source_group: claude
@@ -395,13 +438,15 @@ sources:
     enabled: true
     priority: 1
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://code.claude.com/docs/en/changelog/rss.xml", parser: rss, priority: 1 }
 
   - id: google_ai_blog
     name: Google AI Blog
     display_name: Google AI Blog
+    vendor: google
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://blog.google/innovation-and-ai/technology/ai/"
     category: ai
     source_group: google
@@ -409,13 +454,15 @@ sources:
     enabled: true
     priority: 1
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://blog.google/innovation-and-ai/technology/ai/rss/", parser: rss, priority: 1 }
 
   - id: google_deepmind_blog
     name: Google DeepMind Blog
     display_name: Google DeepMind Blog
+    vendor: google
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://deepmind.google/blog/"
     category: ai
     source_group: google
@@ -423,13 +470,15 @@ sources:
     enabled: true
     priority: 1
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://deepmind.google/blog/rss.xml", parser: rss, priority: 1 }
 
   - id: google_research_blog
     name: Google Research Blog
     display_name: Google Research Blog
+    vendor: google
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://research.google/blog/"
     category: ai
     source_group: google
@@ -437,13 +486,15 @@ sources:
     enabled: true
     priority: 1
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://research.google/blog/rss/", parser: rss, priority: 1 }
 
   - id: google_blog_all
     name: Google Blog 全站
     display_name: Google Blog 全站
+    vendor: google
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://blog.google/feed/"
     category: tech
     source_group: google
@@ -451,7 +502,6 @@ sources:
     enabled: true
     priority: 1
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://blog.google/rss/", parser: rss, priority: 1 }
     note: "用户提供的 /feed/ 是 HTML 列表页；使用官网公布的 /rss/ 全站订阅。"
@@ -459,6 +509,9 @@ sources:
   - id: google_search_central_blog
     name: Google Search Central Blog
     display_name: Google Search Central Blog
+    vendor: google
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://developers.google.com/search/blog/"
     category: developer
     source_group: google
@@ -466,7 +519,6 @@ sources:
     enabled: true
     priority: 1
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://feeds.feedburner.com/blogspot/amDG", parser: rss, priority: 1 }
     probe: { date: "2026-09-20", status: 200, content_type: "text/xml; charset=utf-8" }
@@ -474,6 +526,9 @@ sources:
   - id: google_chrome_blog
     name: Chrome Blog
     display_name: Chrome Blog
+    vendor: google
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://blog.google/products/chrome/"
     category: tech
     source_group: google
@@ -481,13 +536,15 @@ sources:
     enabled: true
     priority: 1
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://blog.google/products/chrome/rss/", parser: rss, priority: 1 }
 
   - id: google_chrome_developers
     name: Chrome for Developers
     display_name: Chrome for Developers
+    vendor: google
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://developer.chrome.com/"
     category: developer
     source_group: google
@@ -495,7 +552,6 @@ sources:
     enabled: true
     priority: 1
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://developer.chrome.com/static/blog/feed.xml", parser: rss, priority: 1 }
     note: "官网 /feeds 页面链接的实际 RSS XML 端点。"
@@ -503,6 +559,9 @@ sources:
   - id: yicai_latest_rsshub
     name: 一财
     display_name: 一财 · RSSHub
+    vendor: yicai
+    official: false
+    role: politics                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://www.yicai.com/"
     category: article
     source_group: unclassified
@@ -510,7 +569,6 @@ sources:
     enabled: true
     priority: 5
     host_group: rsshub
-    official: false
     endpoints:
       - { url: "https://rsshub.app/yicai/latest", parser: rss, priority: 1 }
       - { url: "https://rsshub.rssforever.com/yicai/latest", parser: rss, priority: 2 }
@@ -520,6 +578,9 @@ sources:
   - id: cloudflare_blog_zh
     name: Cloudflare 中文博客
     display_name: Cloudflare 中文博客
+    vendor: cloudflare
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://blog.cloudflare.com/zh-cn/"
     category: tech
     source_group: cloudflare
@@ -527,13 +588,15 @@ sources:
     enabled: true
     priority: 1
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://blog.cloudflare.com/zh-cn/rss", parser: rss, priority: 1 }
 
   - id: hermes_agent_releases
     name: Hermes Agent Releases
     display_name: Hermes Agent
+    vendor: hermes
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://github.com/NousResearch/hermes-agent/releases"
     category: ai
     source_group: hermes
@@ -541,7 +604,6 @@ sources:
     enabled: true
     priority: 2
     host_group: direct
-    official: true
     endpoints:
       - { url: "https://github.com/NousResearch/hermes-agent/releases.atom", parser: atom, priority: 1 }
     probe: { date: "2026-09-06", status: 200, items: 10, content_type: "application/atom+xml" }
@@ -550,12 +612,14 @@ sources:
     name: X @OpenAI
     harvest_tier: standard          # 60 分钟 —— 跨度 107h
     display_name: "@OpenAI"
+    vendor: openai
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://x.com/OpenAI"          # 人类可访问的主页，邮件里渠道名指向此处
     category: ai
     enabled: true
     priority: 1
     host_group: github_x_rss
-    official: true
     endpoints:
       - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/openai.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 5, span_hours: 107.0, latency_s: 0.30 }
@@ -564,13 +628,15 @@ sources:
     name: X @GitHub
     harvest_tier: standard          # 60 分钟 —— 跨度 234h
     display_name: "@GitHub"
+    vendor: github
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://x.com/GitHub"          # 人类可访问的主页，邮件里渠道名指向此处
     category: developer
     source_group: github
     enabled: true
     priority: 2
     host_group: github_x_rss
-    official: true
     endpoints:
       - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/github.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 13, span_hours: 234.1, latency_s: 0.27 }
@@ -579,13 +645,15 @@ sources:
     name: X @ClaudeAI
     harvest_tier: standard          # 60 分钟 —— 跨度 281h
     display_name: "@ClaudeAI"
+    vendor: anthropic
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://x.com/ClaudeAI"          # 人类可访问的主页，邮件里渠道名指向此处
     category: ai
     source_group: claude
     enabled: true
     priority: 1
     host_group: github_x_rss
-    official: true
     endpoints:
       - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/claudeai.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 4, span_hours: 281.0, latency_s: 0.28 }
@@ -594,6 +662,9 @@ sources:
     name: X @elonmusk
     harvest_tier: standard          # 60 分钟 —— 跨度 61.5h
     display_name: "@elonmusk"
+    vendor: elonmusk
+    official: false
+    role: context                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://x.com/elonmusk"          # 人类可访问的主页，邮件里渠道名指向此处
     category: society
     enabled: true
@@ -609,6 +680,9 @@ sources:
     name: X @bbchinesd
     harvest_tier: standard          # 60 分钟 —— 跨度 42.2h
     display_name: "@bbchinesd"
+    vendor: bbc_chinese
+    official: false
+    role: politics                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://x.com/bbchinesd"          # 人类可访问的主页，邮件里渠道名指向此处
     category: society
     enabled: true
@@ -624,6 +698,9 @@ sources:
     name: Elsewhere News
     harvest_tier: slow          # 240 分钟 —— 跨度 2034h，50 条覆盖 85 天
     display_name: Elsewhere News
+    vendor: elsewhere
+    official: false
+    role: context                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
     site_url: "https://elsewhere.news"          # 人类可访问的主页，邮件里渠道名指向此处
     category: article
     enabled: true
@@ -639,6 +716,10 @@ sources:
     name: X @thsottiaux
     harvest_tier: standard          # 60 分钟 —— 跨度 129h
     display_name: "@thsottiaux"
+    vendor: openai
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
+    official_note: "OpenAI 员工（Codex 负责人），按准官方 OpenAI 处理"
     site_url: "https://x.com/thsottiaux"          # 人类可访问的主页，邮件里渠道名指向此处
     category: ai
     enabled: true
@@ -647,3 +728,125 @@ sources:
     endpoints:
       - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/thsottiaux.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 19, span_hours: 129.2, latency_s: 0.26 }
+
+  # ---- 2026-10-22 新增官方 X 账号（需 x-rss-feed 仓库生成对应 feed 后再启用）----
+
+  - id: x_antigravity
+    name: X @antigravity
+    display_name: "@antigravity"
+    vendor: google
+    official: true
+    role: official
+    site_url: "https://x.com/antigravity"
+    category: ai
+    harvest_tier: standard
+    enabled: true
+    priority: 2
+    host_group: github_x_rss
+    endpoints:
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/antigravity.xml", parser: rss, priority: 1 }
+
+  - id: x_anthropicai
+    name: X @AnthropicAI
+    display_name: "@AnthropicAI"
+    vendor: anthropic
+    official: true
+    role: official
+    site_url: "https://x.com/AnthropicAI"
+    category: ai
+    harvest_tier: standard
+    enabled: true
+    priority: 2
+    host_group: github_x_rss
+    endpoints:
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/anthropicai.xml", parser: rss, priority: 1 }
+
+  - id: x_googlegemma
+    name: X @googlegemma
+    display_name: "@googlegemma"
+    vendor: google
+    official: true
+    role: official
+    site_url: "https://x.com/googlegemma"
+    category: ai
+    harvest_tier: standard
+    enabled: true
+    priority: 2
+    host_group: github_x_rss
+    endpoints:
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/googlegemma.xml", parser: rss, priority: 1 }
+
+  - id: x_z_lib_official
+    name: X @Z_Lib_official
+    display_name: "@Z_Lib_official"
+    vendor: zlibrary
+    official: true
+    role: official
+    site_url: "https://x.com/Z_Lib_official"
+    category: tech
+    harvest_tier: standard
+    enabled: true
+    priority: 2
+    host_group: github_x_rss
+    endpoints:
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/z_lib_official.xml", parser: rss, priority: 1 }
+
+  - id: x_notionhq
+    name: X @NotionHQ
+    display_name: "@NotionHQ"
+    vendor: notion
+    official: true
+    role: official
+    site_url: "https://x.com/NotionHQ"
+    category: tech
+    harvest_tier: standard
+    enabled: true
+    priority: 2
+    host_group: github_x_rss
+    endpoints:
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/notionhq.xml", parser: rss, priority: 1 }
+
+  - id: x_google
+    name: X @Google
+    display_name: "@Google"
+    vendor: google
+    official: true
+    role: official
+    site_url: "https://x.com/Google"
+    category: ai
+    harvest_tier: standard
+    enabled: true
+    priority: 2
+    host_group: github_x_rss
+    endpoints:
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/google.xml", parser: rss, priority: 1 }
+
+  - id: x_naval
+    name: X @naval
+    display_name: "@naval"
+    vendor: naval
+    official: true
+    role: official
+    site_url: "https://x.com/naval"
+    category: tech
+    harvest_tier: standard
+    enabled: true
+    priority: 2
+    host_group: github_x_rss
+    endpoints:
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/naval.xml", parser: rss, priority: 1 }
+
+  - id: x_ssamat
+    name: X @ssamat
+    display_name: "@ssamat"
+    vendor: ssamat
+    official: true
+    role: official
+    site_url: "https://x.com/ssamat"
+    category: tech
+    harvest_tier: standard
+    enabled: true
+    priority: 2
+    host_group: github_x_rss
+    endpoints:
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/ssamat.xml", parser: rss, priority: 1 }

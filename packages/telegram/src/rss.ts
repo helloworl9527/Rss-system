@@ -75,7 +75,7 @@ export function digestRss(db: TelegramDB, token: string, baseUrl: string): strin
     ORDER BY window_end DESC LIMIT 100`).all(new Date().toISOString()) as any[];
   const items: FeedItem[] = rows.map(r => {
     let points: any[] = [];
-    try { points = JSON.parse(r.summary_json ?? '{}').points ?? []; } catch { /* 无结构化要点 */ }
+    try { const j = JSON.parse(r.summary_json ?? '{}'); points = j.format === 'daily_v2' ? j.categories.flatMap((c: any) => c.items) : j.points ?? []; } catch { /* 无结构化要点 */ }
     return { title: `📌 Telegram 要点 · ${monthDay(r.window_end, setting.timezone)} ${slot(r.window_end, setting.timezone)}`,
       link: `${baseUrl}/telegram?tab=digests`, guid: `telegram-digest:${r.window_end}`, pubDate: r.window_end,
       html: withoutVagueLeadIns(digestHtml(db, r)), author: 'Telegram 跨频道要点',
@@ -91,7 +91,7 @@ export function digestsForBriefFeed(db: TelegramDB, since: string): Map<string, 
     AND (expires_at IS NULL OR expires_at>?)`).all(since, new Date().toISOString()) as any[];
   return new Map(rows.map(r => {
     let points: any[] = [];
-    try { points = JSON.parse(r.summary_json ?? '{}').points ?? []; } catch { /* 无结构化要点 */ }
+    try { const j = JSON.parse(r.summary_json ?? '{}'); points = j.format === 'daily_v2' ? j.categories.flatMap((c: any) => c.items) : j.points ?? []; } catch { /* 无结构化要点 */ }
     return [new Date(r.window_end).toISOString(), { html: withoutVagueLeadIns(digestHtml(db, r)),
       texts: points.map(p => String(p.text ?? '')).filter(Boolean) }];
   }));

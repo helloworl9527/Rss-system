@@ -100,6 +100,24 @@ console.log('\n多供应商装配：\n');
 }
 
 {
+  // 上游内容过滤：HTTP 200 + choices 为空 → 带 contentFiltered 标记；有内容的空文本仍是普通 bad_request
+  const originalFetch=globalThis.fetch;
+  const p=new OpenAICompatProvider({provider:'openai_compatible',model:'m',apiKey:'k',baseUrl:'https://example.test/v1'});
+  const respond=(body:any)=>{globalThis.fetch=async()=>new Response(JSON.stringify(body),{status:200,headers:{'content-type':'application/json'}})};
+  try {
+    respond({id:'x',choices:[],usage:{prompt_tokens:10,completion_tokens:0}});
+    let e1:any; try { await p.complete(req) } catch (e) { e1=e }
+    ok('空 choices → contentFiltered 且不可重试', e1 instanceof ProviderError && e1.contentFiltered===true && e1.retryable===false && e1.kind==='bad_request');
+    respond({id:'x',choices:[{message:{content:''},finish_reason:'content_filter'}],usage:{prompt_tokens:10,completion_tokens:0}});
+    let e2:any; try { await p.complete(req) } catch (e) { e2=e }
+    ok('finish_reason=content_filter → contentFiltered', e2?.contentFiltered===true);
+    respond({id:'x',choices:[{message:{content:''},finish_reason:'stop'}],usage:{prompt_tokens:10,completion_tokens:0}});
+    let e3:any; try { await p.complete(req) } catch (e) { e3=e }
+    ok('有 choice 但正文为空仍按原错误处理（非过滤）', e3 instanceof ProviderError && !e3.contentFiltered && /响应体为空/.test(e3.message));
+  } finally { globalThis.fetch=originalFetch; }
+}
+
+{
   const value = { results: [{ candidate_id: 'c1', decision: 'normal', note: '含 } 与 ] 字符' }] };
   const raw = JSON.stringify(value);
   ok('OpenAI 兼容响应接受纯 JSON', JSON.stringify(parseJsonResponse(raw)) === raw);
