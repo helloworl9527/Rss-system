@@ -11,8 +11,8 @@
 # ============================================================
 
 meta:
-  source_version: 14
-  updated_at: "2026-10-22"
+  source_version: 15
+  updated_at: "2026-11-06"
   probe_baseline_date: "2026-08-23"
   probe_from_ip: "52.141.58.148"
 
@@ -657,6 +657,22 @@ sources:
     endpoints:
       - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/claudeai.xml", parser: rss, priority: 1 }
     probe: { date: "2026-08-23", status: 200, items: 4, span_hours: 281.0, latency_s: 0.28 }
+
+  - id: x_muse
+    name: X @Muse
+    harvest_tier: standard          # 60 分钟 —— 跨度 1395h（含 9 月上线帖）
+    display_name: "@Muse"
+    vendor: meta
+    official: true
+    role: official                     # official=官方动态 / politics=时政速览 / context=仅开源项目提取与转载比对
+    site_url: "https://x.com/Muse"          # 人类可访问的主页，邮件里渠道名指向此处
+    category: ai
+    enabled: true
+    priority: 1
+    host_group: github_x_rss
+    endpoints:
+      - { url: "https://helloworl9527.github.io/x-rss-feed/feeds/muse.xml", parser: rss, priority: 1 }
+    probe: { date: "2026-11-06", status: 200, items: 5, span_hours: 1395.0, latency_s: 0.44 }
 
   - id: x_elonmusk
     name: X @elonmusk
