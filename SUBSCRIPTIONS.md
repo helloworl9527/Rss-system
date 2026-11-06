@@ -21,6 +21,7 @@
 | OpenAI Release Notes | ai | openai | <https://openai.com/products/release-notes/> | <https://hub.slarker.me/openai/chatgpt/release-notes><br><https://developers.openai.com/codex/changelog/rss.xml> |
 | V2EX | forum | unclassified | <https://www.v2ex.com/?tab=hot> | <https://www.v2ex.com/api/topics/hot.json><br><https://www.v2ex.com/index.xml> |
 | @ClaudeAI | ai | claude | <https://x.com/ClaudeAI> | <https://helloworl9527.github.io/x-rss-feed/feeds/claudeai.xml> |
+| @Muse | ai | unclassified | <https://x.com/Muse> | <https://helloworl9527.github.io/x-rss-feed/feeds/muse.xml> |
 | @OpenAI | ai | unclassified | <https://x.com/OpenAI> | <https://helloworl9527.github.io/x-rss-feed/feeds/openai.xml> |
 | Anthropic News · Community RSS | ai | claude | <https://www.anthropic.com/> | <https://tim-hilde.github.io/anthropic-rss/rss.xml> |
 | Anthropic Engineering · RSSHub | ai | claude | <https://www.anthropic.com/engineering> | <https://rsshub.bestblogs.dev/anthropic/engineering><br><https://raw.githubusercontent.com/taobojlen/anthropic-rss-feed/main/anthropic_engineering_rss.xml> |
@@ -44,7 +45,7 @@
 | 一财 · RSSHub | article | unclassified | <https://www.yicai.com/> | <https://rsshub.app/yicai/latest><br><https://rsshub.rssforever.com/yicai/latest><br><https://rsshub.bestblogs.dev/yicai/latest> |
 | @elonmusk | society | unclassified | <https://x.com/elonmusk> | <https://helloworl9527.github.io/x-rss-feed/feeds/elonmusk.xml> |
 
-共 36 个启用的日报来源。
+共 37 个启用的日报来源。
 
 ## Telegram 订阅频道
 
