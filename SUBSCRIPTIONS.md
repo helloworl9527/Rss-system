@@ -65,7 +65,7 @@
 | 互联网精英（禁广告） | 普通总结 | 启用 |
 | 🇬🇧 giffgaff 交流群 | 普通总结 | 启用 |
 | 卡尔菜爱玩Group | 普通总结 | 启用 |
-| 折腾频道VIP群 | 普通总结 | 启用 |
+| 折腾频道VIP群 | 普通总结 | 未启用（error） |
 | Digital Immigrants丨Want Want Group | 普通总结 | 未启用（disabled） |
 
 共 17 个 Telegram 订阅。
