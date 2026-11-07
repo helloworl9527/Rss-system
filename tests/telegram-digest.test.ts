@@ -58,7 +58,20 @@ console.log('等待所有频道就绪：\n');
   db.prepare('UPDATE telegram_sync_state SET last_window_end=? WHERE source_id IN (?,?)').run(W, a, b);
   db.prepare('UPDATE telegram_sync_state SET last_window_end=? WHERE source_id=?').run(W0, c);
   ok('有频道还没推进到该时刻时不生成', await runDueDigests(db, cfg, provider, now) === 0 && calls === 0);
-  ok('超过宽限期后不再等落后的频道', await runDueDigests(db, cfg, provider, new Date('2026-10-09T15:30:00Z')) === 1);
+  // 2026-11-07：采集器停摆，重启后补采还没轮到的频道也被当成"坏来源"跳过，汇总缺了 17% 的消息
+  db.prepare('UPDATE telegram_sources SET updated_at=? WHERE id=?').run('2026-10-09T13:00:00Z', c);   // 改名等操作会更新 updated_at，不能当作同步过
+  const attempt = (at: string | null, okv: number | null) => db.prepare(`INSERT INTO telegram_sync_progress(source_id,last_attempt_at,last_attempt_ok) VALUES(?,?,?)
+    ON CONFLICT(source_id) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,last_attempt_ok=excluded.last_attempt_ok`).run(c, at, okv);
+  attempt(null, null);
+  ok('超过宽限期但落后频道在时段结束后从未同步过：继续等待补采', await runDueDigests(db, cfg, provider, new Date('2026-10-09T15:30:00Z')) === 0 && calls === 0);
+  ok('时段结束 24 小时后无论是否追上都生成', await runDueDigests(db, cfg, provider, new Date('2026-10-10T12:30:00Z')) === 1);
+  db.prepare('DELETE FROM telegram_digests').run(); calls = 0;
+  attempt('2026-10-09T13:00:00Z', 1);
+  ok('落后频道在时段结束后同步成功但覆盖水位未越过时段：继续等待', await runDueDigests(db, cfg, provider, new Date('2026-10-09T15:30:00Z')) === 0 && calls === 0);
+  attempt('2026-10-09T14:00:00Z', null);
+  ok('上一轮失败后本轮正在重新补采（进行中）：继续等待，不当成故障来源', await runDueDigests(db, cfg, provider, new Date('2026-10-09T15:30:00Z')) === 0 && calls === 0);
+  attempt('2026-10-09T13:00:00Z', 0);
+  ok('落后频道在时段结束后已同步过但出错（来源自身故障）：超过宽限后不再等它', await runDueDigests(db, cfg, provider, new Date('2026-10-09T15:30:00Z')) === 1);
   db.prepare('DELETE FROM telegram_digests').run(); calls = 0;
   db.prepare('UPDATE telegram_sync_state SET last_window_end=? WHERE source_id=?').run(W, c);
   const pending = db.prepare(`INSERT INTO telegram_summary_jobs(source_id,window_start,window_end,input_hash,provider,model,prompt_version,status,created_at,updated_at)
@@ -140,6 +153,15 @@ console.log('\n补采未覆盖的窗口不推进：\n');
   db.prepare('UPDATE telegram_sources SET last_success_at=? WHERE id=?').run(T('2026-10-09T12:30:00Z'), d);
   ensureDueJobs(db, now);
   ok('采集覆盖后为补回的消息建总结任务', jobs().length === 1 && jobs()[0].window_end === W && cursor() === W);
+  // 覆盖水位优先于同步完成时间：扫描 11:50 开始、12:30 才结束，12:00 的时段不能算覆盖
+  db.prepare('DELETE FROM telegram_summary_jobs WHERE source_id=?').run(d);
+  db.prepare('UPDATE telegram_sync_state SET last_window_end=? WHERE source_id=?').run(T('2026-10-09T00:00:00Z'), d);
+  db.prepare('INSERT OR REPLACE INTO telegram_sync_progress(source_id,covered_until) VALUES(?,?)').run(d, T('2026-10-09T11:50:00Z'));
+  ensureDueJobs(db, now);
+  ok('覆盖水位（扫描开始时刻）未越过边界时不推进，即使同步完成时间已越过', jobs().length === 0 && cursor() === T('2026-10-09T00:00:00Z'), cursor());
+  db.prepare('UPDATE telegram_sync_progress SET covered_until=? WHERE source_id=?').run(T('2026-10-09T12:05:00Z'), d);
+  ensureDueJobs(db, now);
+  ok('覆盖水位越过边界后推进', jobs().length === 1 && cursor() === W);
 }
 
 console.log('\n过滤群管理机器人消息：\n');

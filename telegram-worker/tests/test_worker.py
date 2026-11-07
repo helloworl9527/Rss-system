@@ -234,3 +234,206 @@ def test_live_events_do_not_skip_restart_gap(tmp_path: Path):
     assert saved == [101, 102, 103, 104, 105]
     assert store.db.execute("SELECT count(*) FROM telegram_messages WHERE message_id=105").fetchone()[0] == 1
     assert store.db.execute("SELECT last_message_id FROM telegram_sync_state WHERE source_id=?", (source_id,)).fetchone()[0] == 105
+
+
+class InterruptingClient(FakeClient):
+    """首次同步读到第 stop_after 条后抛错，模拟被看门狗终止或断线。"""
+    def __init__(self, messages, stop_after: int):
+        super().__init__(messages)
+        self.stop_after = stop_after
+
+    async def iter_messages(self, entity, **options):
+        n = 0
+        async for message in super().iter_messages(entity, **options):
+            if n == self.stop_after:
+                raise ConnectionError("connection lost")
+            n += 1
+            yield message
+
+
+def test_interrupted_first_sync_does_not_skip_older_messages(tmp_path: Path):
+    # 首次同步按时间倒序：若逐条推进游标，中断后从已存最大 ID 正序续读，更早的消息永久漏采
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    store.db.execute("UPDATE telegram_settings SET keep_messages_forever=1 WHERE singleton=1")
+    source_id = _active_source(store, -1009, "@first")
+    now = datetime.now(UTC)
+    messages = [_text(i, now - timedelta(hours=10 - i)) for i in range(1, 6)]
+    row = store.db.execute("SELECT * FROM telegram_sources WHERE id=?", (source_id,)).fetchone()
+    worker = Worker(store, InterruptingClient(messages, stop_after=2), tmp_path / "s.sock")
+    try:
+        asyncio.run(worker.backfill_source(row, SimpleNamespace(id=-1009)))
+    except ConnectionError:
+        pass
+    assert store.db.execute("SELECT last_message_id FROM telegram_sync_state WHERE source_id=?", (source_id,)).fetchone()[0] == 0
+    worker = Worker(store, FakeClient(messages), tmp_path / "s.sock")
+    asyncio.run(worker.backfill_source(row, SimpleNamespace(id=-1009)))
+    saved = [r[0] for r in store.db.execute("SELECT message_id FROM telegram_messages WHERE source_id=? ORDER BY message_id", (source_id,))]
+    assert saved == [1, 2, 3, 4, 5]
+    assert store.db.execute("SELECT last_message_id FROM telegram_sync_state WHERE source_id=?", (source_id,)).fetchone()[0] == 5
+
+
+def test_progress_signal_written_and_silent_without_fd(tmp_path: Path, monkeypatch):
+    import os
+
+    import briefing_telegram.worker as w
+    monkeypatch.delenv("TELEGRAM_PROGRESS_FD", raising=False)
+    w._progress_fd = None
+    w.init_progress()
+    w.progress()  # 没有 fd 时不报错
+    r, wr = os.pipe()
+    monkeypatch.setenv("TELEGRAM_PROGRESS_FD", str(wr))
+    w.init_progress()
+    w._progress_at = 0.0
+    w.progress()
+    w.progress()  # 一秒内节流
+    os.close(wr)
+    assert os.read(r, 10) == b"."
+    os.close(r)
+    w._progress_fd = None
+    w.progress()
+
+
+def test_backfill_reports_progress(tmp_path: Path, monkeypatch):
+    import briefing_telegram.worker as w
+    calls: list[int] = []
+    monkeypatch.setattr(w, "progress", lambda: calls.append(1))
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    source_id = _active_source(store, -1010, "@prog")
+    now = datetime.now(UTC)
+    row = store.db.execute("SELECT * FROM telegram_sources WHERE id=?", (source_id,)).fetchone()
+    asyncio.run(Worker(store, FakeClient([_text(1, now), _text(2, now)]), tmp_path / "s.sock").backfill_source(row, SimpleNamespace(id=-1010)))
+    assert len(calls) >= 2
+
+
+def test_coverage_watermark_and_attempt_recorded(tmp_path: Path):
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    source_id = _active_source(store, -1011, "@cov")
+    now = datetime.now(UTC)
+    row = store.db.execute("SELECT * FROM telegram_sources WHERE id=?", (source_id,)).fetchone()
+    before = datetime.now(UTC).isoformat()
+    asyncio.run(Worker(store, FakeClient([_text(1, now)]), tmp_path / "s.sock").backfill_source(row, SimpleNamespace(id=-1011)))
+    covered, at, ok = store.db.execute("SELECT covered_until,last_attempt_at,last_attempt_ok FROM telegram_sync_progress WHERE source_id=?", (source_id,)).fetchone()
+    assert covered and covered >= before[:19] and ok == 1 and at >= covered
+
+
+def test_failed_attempt_recorded_without_moving_coverage(tmp_path: Path):
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    source_id = _active_source(store, -1012, "@fail")
+    store.db.execute("UPDATE telegram_sync_state SET last_message_id=5 WHERE source_id=?", (source_id,))
+    store.db.execute("INSERT INTO telegram_sync_progress(source_id,covered_until) VALUES(?,'2026-01-01T00:00:00.000Z')", (source_id,))
+    store.db.commit()
+    worker = Worker(store, InterruptingClient([_text(6, datetime.now(UTC)), _text(7, datetime.now(UTC))], stop_after=1), tmp_path / "s.sock")
+    worker.entities = {-1012: SimpleNamespace(id=-1012)}
+
+    async def no_reload():
+        return None
+    worker.reload = no_reload  # type: ignore[method-assign]
+    worker.validate_pending = no_reload  # type: ignore[method-assign]
+    asyncio.run(worker.reconcile())
+    covered, ok = store.db.execute("SELECT covered_until,last_attempt_ok FROM telegram_sync_progress WHERE source_id=?", (source_id,)).fetchone()
+    assert covered == "2026-01-01T00:00:00.000Z" and ok == 0
+
+
+def test_retention_recheck_does_not_advance_cursor(tmp_path: Path):
+    # 主补采读到 101，实时事件存了 103、漏了 102；复查只看库里已有的 ID，若推进游标到 103，102 将永久漏采
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    source_id = _active_source(store, -1013, "@recheck")
+    store.db.execute("UPDATE telegram_sync_state SET last_message_id=100 WHERE source_id=?", (source_id,))
+    store.db.commit()
+    now = datetime.now(UTC)
+    m101, m102, m103 = _text(101, now), _text(102, now), _text(103, now)
+    row = store.db.execute("SELECT * FROM telegram_sources WHERE id=?", (source_id,)).fetchone()
+    worker = Worker(store, FakeClient([m101, m103]), tmp_path / "s.sock")
+    asyncio.run(worker.on_message(SimpleNamespace(chat_id=-1013, message=m103)))
+    client = FakeClient([m101, m103])
+    client.messages = [m101]          # 连续历史只读到 101
+    client_get = FakeClient([m101, m103])
+    client.get_messages = client_get.get_messages  # type: ignore[method-assign]
+    asyncio.run(Worker(store, client, tmp_path / "s.sock").backfill_source(row, SimpleNamespace(id=-1013)))
+    assert store.db.execute("SELECT last_message_id FROM telegram_sync_state WHERE source_id=?", (source_id,)).fetchone()[0] == 101
+    asyncio.run(Worker(store, FakeClient([m101, m102, m103]), tmp_path / "s.sock").backfill_source(row, SimpleNamespace(id=-1013)))
+    saved = [r[0] for r in store.db.execute("SELECT message_id FROM telegram_messages WHERE source_id=? ORDER BY message_id", (source_id,))]
+    assert saved == [101, 102, 103]
+
+
+def test_coverage_not_published_when_retention_recheck_fails(tmp_path: Path):
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    source_id = _active_source(store, -1014, "@late")
+    now = datetime.now(UTC)
+    client = FakeClient([_text(1, now)])
+
+    async def broken(entity, ids):
+        raise ConnectionError("lost during recheck")
+    client.get_messages = broken  # type: ignore[method-assign]
+    row = store.db.execute("SELECT * FROM telegram_sources WHERE id=?", (source_id,)).fetchone()
+    try:
+        asyncio.run(Worker(store, client, tmp_path / "s.sock").backfill_source(row, SimpleNamespace(id=-1014)))
+    except ConnectionError:
+        pass
+    covered, ok = store.db.execute("SELECT covered_until,last_attempt_ok FROM telegram_sync_progress WHERE source_id=?", (source_id,)).fetchone()
+    assert covered is None and ok is None, "复查失败：不发布覆盖水位，状态保持「进行中」直到 reconcile 记为失败"
+
+
+def test_new_attempt_clears_stale_failure(tmp_path: Path):
+    # 上一轮失败留下 ok=0；本轮开始补采时必须先置为进行中，否则汇总会在恢复期间把它当成故障来源跳过
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    source_id = _active_source(store, -1015, "@retry")
+    store.db.execute("INSERT INTO telegram_sync_progress(source_id,last_attempt_at,last_attempt_ok) VALUES(?,'2026-01-01T00:00:00.000Z',0)", (source_id,))
+    store.db.commit()
+    row = store.db.execute("SELECT * FROM telegram_sources WHERE id=?", (source_id,)).fetchone()
+    now = datetime.now(UTC)
+    try:
+        asyncio.run(Worker(store, InterruptingClient([_text(1, now), _text(2, now)], stop_after=1), tmp_path / "s.sock").backfill_source(row, SimpleNamespace(id=-1015)))
+    except ConnectionError:
+        pass
+    assert store.db.execute("SELECT last_attempt_ok FROM telegram_sync_progress WHERE source_id=?", (source_id,)).fetchone()[0] is None
+
+
+def test_skipping_expired_history_reports_progress_and_advances_cursor(tmp_path: Path, monkeypatch):
+    import briefing_telegram.worker as w
+    calls: list[int] = []
+    monkeypatch.setattr(w, "progress", lambda: calls.append(1))
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    store.db.execute("UPDATE telegram_settings SET keep_messages_forever=0, raw_retention_days=6 WHERE singleton=1")
+    source_id = _active_source(store, -1016, "@old")
+    store.db.execute("UPDATE telegram_sync_state SET last_message_id=10 WHERE source_id=?", (source_id,))
+    store.db.commit()
+    old = datetime.now(UTC) - timedelta(days=30)
+    messages = [_text(i, old) for i in range(11, 1212)]
+
+    class Stop(FakeClient):
+        async def iter_messages(self, entity, **options):
+            n = 0
+            async for m in super().iter_messages(entity, **options):
+                if n == 1100:
+                    raise ConnectionError("killed")
+                n += 1
+                yield m
+    row = store.db.execute("SELECT * FROM telegram_sources WHERE id=?", (source_id,)).fetchone()
+    try:
+        asyncio.run(Worker(store, Stop(messages), tmp_path / "s.sock").backfill_source(row, SimpleNamespace(id=-1016)))
+    except ConnectionError:
+        pass
+    assert len(calls) >= 1000, "扫过过期历史时每条都报告进度"
+    assert store.db.execute("SELECT last_message_id FROM telegram_sync_state WHERE source_id=?", (source_id,)).fetchone()[0] >= 1010, "中断后游标停在已跳过的位置附近，不会从头重扫"
+
+
+def test_migration_006_is_rerunnable(tmp_path: Path):
+    # 迁移中途被中断或 Node/Python 同时执行导致重复执行时，不能让后续启动失败
+    from pathlib import Path as P
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    sql = (P(__file__).parents[1] / "migrations" / "006_sync_coverage.sql").read_text(encoding="utf8")
+    store.db.executescript(sql)
+    store.db.execute("DELETE FROM telegram_schema_migrations WHERE name='006_sync_coverage.sql'")
+    store.db.commit()
+    store.initialize()
+    assert store.db.execute("SELECT count(*) FROM telegram_schema_migrations WHERE name='006_sync_coverage.sql'").fetchone()[0] == 1

@@ -17,6 +17,8 @@ export const channelName = (name: unknown) => String(name ?? '') === RENTAL_COMM
 
 /** 某个频道迟迟同步不到该时刻时，最多等这么久，之后不再等它，免得一个坏来源让整个时段缺席。 */
 const LAGGING_SOURCE_GRACE_MS = 3 * 3600_000;
+/** 无论来源是否追上，时段结束 24 小时后都生成汇总（仅对已有单群总结的时段生效：runDueDigests 从总结表枚举时段）。 */
+const MAX_WAIT_MS = 24 * 3600_000;
 const MAX_AI_ATTEMPTS = 3;
 /** 窗口结束后超过这么久，不再因为某个频道的总结任务 pending/待重试而阻塞跨频道要点（要点直接读原始消息，不依赖单频道总结）。 */
 const UNFINISHED_JOB_GRACE_MS = 40 * 60_000;
@@ -120,14 +122,22 @@ function partsFor(db: TelegramDB, windowEnd: string): Part[] {
 
 /** 该时刻的所有频道是否都已就绪：每个启用频道的窗口游标都越过该时刻，且没有还会重试的任务。 */
 function windowReady(db: TelegramDB, windowEnd: string, now: Date): boolean {
+  const end = Date.parse(windowEnd);
   const unfinished = (db.prepare(`SELECT count(*) n FROM telegram_summary_jobs WHERE window_end=? AND
     (status IN ('pending','running') OR (status='failed' AND next_attempt_at IS NOT NULL))`).get(windowEnd) as any).n;
-  if (unfinished && now.getTime() < Date.parse(windowEnd) + UNFINISHED_JOB_GRACE_MS) return false;
-  if (now.getTime() >= Date.parse(windowEnd) + LAGGING_SOURCE_GRACE_MS) return true;
-  const lagging = (db.prepare(`SELECT count(*) n FROM telegram_sources s LEFT JOIN telegram_sync_state ss ON ss.source_id=s.id
+  if (unfinished && now.getTime() < end + UNFINISHED_JOB_GRACE_MS) return false;
+  // 兜底：采集器长期停摆时也不能永不出汇总
+  if (now.getTime() >= end + MAX_WAIT_MS) return true;
+  const lagging = db.prepare(`SELECT p.last_attempt_at, p.last_attempt_ok FROM telegram_sources s LEFT JOIN telegram_sync_state ss ON ss.source_id=s.id
+    LEFT JOIN telegram_sync_progress p ON p.source_id=s.id
     WHERE s.enabled=1 AND s.status='active' AND s.source_type='normal'
-      AND (ss.last_window_end IS NULL OR ss.last_window_end<?)`).get(windowEnd) as any).n;
-  return lagging === 0;
+      AND (ss.last_window_end IS NULL OR ss.last_window_end<?)`).all(windowEnd) as Array<{ last_attempt_at: string | null; last_attempt_ok: number | null }>;
+  if (!lagging.length) return true;
+  if (now.getTime() < end + LAGGING_SOURCE_GRACE_MS) return false;
+  // 超过宽限：只跳过「时段结束后明确完成了一次失败的同步尝试」的来源（来源自身故障）；
+  // 还有来源在时段结束后没有失败记录（采集器停摆、补采还没轮到、本轮正在进行（ok 为 NULL）、扫描成功但覆盖水位尚未越过时段）时继续等待。
+  // 2026-11-07：采集器停摆 10.5 小时，重启后补采进行中汇总就按 3 小时宽限生成，缺了 17% 的消息且之后不再重建。
+  return lagging.every(s => s.last_attempt_ok === 0 && !!s.last_attempt_at && s.last_attempt_at > windowEnd);
 }
 
 export async function buildDigest(db: TelegramDB, windowEnd: string, cfg: ProviderConfig & { summaryRetentionDays: number },
