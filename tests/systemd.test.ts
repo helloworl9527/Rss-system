@@ -95,14 +95,17 @@ console.log('\n定时器完整性：\n');
      Number(longRun.match(/^TimeoutStartSec=(\d+)/m)?.[1] ?? 0) >= 900,
      longRun.match(/^TimeoutStartSec=.*/m)?.[0] ?? '未设置');
   ok('brief-run 失败后自动重试', /^Restart=on-failure$/m.test(longRun));
+  ok('brief-run 以定时触发身份运行（推迟发布的两小时截止只对定时运行生效）', /^ExecStart=\/usr\/bin\/node apps\/worker\/src\/run\.ts --trigger timer$/m.test(longRun));
+  ok('brief-run 放弃发布（退出码 3）后不再重启', /^RestartPreventExitStatus=3$/m.test(longRun));
+  ok('brief-run 超时覆盖两小时重试窗口', Number(longRun.match(/^TimeoutStartSec=(\d+)/m)?.[1] ?? 0) >= 9000);
   ok('brief-run 重试间隔不少于 5 分钟',
      /^RestartSec=(?:5min|300s)$/m.test(longRun),
      longRun.match(/^RestartSec=.*/m)?.[0] ?? '未设置');
   ok('brief-run 最多重试 3 次（首次 + 3 次）',
      /^StartLimitBurst=4$/m.test(longRun),
      longRun.match(/^StartLimitBurst=.*/m)?.[0] ?? '未设置');
-  ok('brief-run 重试计数窗口覆盖最坏运行时长',
-     /^StartLimitIntervalSec=3h$/m.test(longRun),
+  ok('brief-run 重试计数窗口覆盖最坏运行时长（每次最长 3 小时 × 4 次）',
+     /^StartLimitIntervalSec=12h$/m.test(longRun),
      longRun.match(/^StartLimitIntervalSec=.*/m)?.[0] ?? '未设置');
 }
 

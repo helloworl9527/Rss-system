@@ -378,7 +378,39 @@ const KEY_LABEL: Record<string, string> = {
   OPENAI_API_KEY: 'OpenAI', OPENAI_COMPAT_API_KEY: 'OpenAI 兼容格式', DEEPSEEK_API_KEY: 'DeepSeek', DASHSCOPE_API_KEY: 'Qwen / DashScope',
   ALLNET_API_KEY: '全网热点', ANTHROPIC_API_KEY: 'Anthropic', GEMINI_API_KEY: 'Gemini', SOURCE_PROFILER_API_KEY: 'Source Profiler 独立密钥',
   TELEGRAM_API_ID: 'Telegram API ID', TELEGRAM_API_HASH: 'Telegram API Hash', TELEGRAM_PHONE: 'Telegram 登录手机号',
+  EMBEDDING_API_KEY: '向量模型（语义去重）',
 };
+
+function renderEmbeddingSettings(csrf: string, vaultOk: boolean, e: NonNullable<Parameters<typeof renderSettings>[0]['embedding']>): string {
+  const c = e.config;
+  const ov = (env: string) => e.envOverridden.includes(env) ? ' <span class="muted">（被环境变量覆盖）</span>' : '';
+  const status = !c.enabled ? '<span class="muted">未启用：本期只合并网址完全相同的条目</span>'
+    : e.errors.length ? `<span class="bad">已启用但配置无效：${e.errors.map(esc).join('；')}</span>` : '<span class="ok">已启用，配置有效</span>';
+  return `
+  <h2 id="embedding">向量模型（语义去重）</h2>
+  <p class="sub">新版日报用它判断两条消息是否在说同一件事：AI 先写结构化摘要，再转成向量比较相似度。相似度达到「直接合并」阈值且关键事实不冲突时直接合并，介于两个阈值之间的交给 L2 确认。接口需兼容 OpenAI <code>/embeddings</code>。未启用或不可用时只合并网址完全相同的条目，不影响日报发布。</p>
+  <p>当前状态：${status}</p>
+  <form method="post" action="/settings/embedding">
+    <input type="hidden" name="csrf" value="${esc(csrf)}">
+    <table>
+      <tr><td>启用${ov('EMBEDDING_ENABLED')}</td><td><label><input type="checkbox" name="enabled" value="on"${c.enabled ? ' checked' : ''}> 使用向量合并</label></td></tr>
+      <tr><td>Base URL${ov('EMBEDDING_BASE_URL')}</td><td><input name="base_url" value="${esc(c.baseUrl)}" placeholder="https://api.openai.com/v1" style="width:320px">
+        <div class="muted">必须是 https；http 只允许本机地址。不要把密钥写进地址。</div></td></tr>
+      <tr><td>模型 ID${ov('EMBEDDING_MODEL')}</td><td><input name="model" value="${esc(c.model)}" placeholder="text-embedding-3-small" style="width:240px"></td></tr>
+      <tr><td>维度${ov('EMBEDDING_DIMENSIONS')}</td><td><input name="dimensions" value="${c.dimensions ? esc(String(c.dimensions)) : ''}" placeholder="留空 = 模型默认" style="width:120px">
+        <div class="muted">只有支持 dimensions 参数的模型才填写。更换模型或维度后会重新计算向量。</div></td></tr>
+      <tr><td>直接合并阈值${ov('DEDUP_SIM_HIGH')}</td><td><input name="sim_high" value="${esc(String(c.simHigh))}" style="width:80px"></td></tr>
+      <tr><td>待确认阈值${ov('DEDUP_SIM_LOW')}</td><td><input name="sim_low" value="${esc(String(c.simLow))}" style="width:80px">
+        <div class="muted">需满足 0 &lt; 待确认阈值 &lt; 直接合并阈值 ≤ 1。阈值与模型强相关，换模型后建议用 preview 对比几期再调整。</div></td></tr>
+      <tr><td>API Key${ov('EMBEDDING_API_KEY')}</td><td>${e.keySet ? '<span class="ok">已设置</span>' : '<span class="muted">未设置</span>'} <span class="muted">在下方「API Key」表中设置 EMBEDDING_API_KEY</span></td></tr>
+    </table>
+    <p><button class="primary" ${vaultOk ? '' : 'disabled'}>保存向量模型设置</button></p>
+  </form>
+  <form method="post" action="/settings/embedding/test">
+    <input type="hidden" name="csrf" value="${esc(csrf)}">
+    <p><button>测试连通性</button> <span class="muted">用当前生效的配置请求一次固定文本，显示返回维度与耗时</span></p>
+  </form>`;
+}
 
 export function renderSettings(o: {
   csrf: string;
@@ -388,6 +420,8 @@ export function renderSettings(o: {
   envOverrides: string[];
   /** Telegram 模块渲染的分组（总结、图片识别、数据保留），追加在页面末尾 */
   telegram?: string;
+  /** 向量模型的当前生效配置（resolveEmbeddingConfig），不含密钥值 */
+  embedding?: { config: { enabled: boolean; baseUrl: string; model: string; dimensions: number; simHigh: number; simLow: number }; errors: string[]; envOverridden: string[]; keySet: boolean };
   saved?: string; error?: string;
 }): string {
   const cur = o.settings.l1Provider ?? o.settings.aiProvider ?? 'mock';
@@ -413,7 +447,7 @@ export function renderSettings(o: {
     ${o.envOverrides.map(esc).join('、')}</div>` : ''}
 
   <div class="page-h"><h1>设置</h1><span>按模块分组</span></div>
-  <nav class="tabs" aria-label="设置分组"><a href="#ai">日报 AI 模型</a><a href="#keys">API Key</a><a href="#profiler">来源画像</a><a href="#allnet">全网热点</a>${o.telegram ? '<a href="#telegram">Telegram 总结</a><a href="#vision">图片识别</a><a href="#retention">数据保留</a>' : ''}</nav>
+  <nav class="tabs" aria-label="设置分组"><a href="#ai">日报 AI 模型</a><a href="#embedding">向量模型</a><a href="#keys">API Key</a><a href="#profiler">来源画像</a><a href="#allnet">全网热点</a>${o.telegram ? '<a href="#telegram">Telegram 总结</a><a href="#vision">图片识别</a><a href="#retention">数据保留</a>' : ''}</nav>
   <h2 id="ai">日报 AI 模型与 API 地址</h2>
   <p class="sub">每个层级的 Base URL 都可以直接编辑。留空使用所选厂商的官方默认地址；“OpenAI 兼容格式”没有默认地址，必须填写 API 根地址（通常以 /v1 结尾）。</p>
   <form method="post" action="/settings/ai">
@@ -424,11 +458,11 @@ export function renderSettings(o: {
         <td><select name="l1_provider">${providerOpts(cur)}</select></td>
         <td><input name="l1_model" value="${esc(o.settings.l1Model ?? '')}" placeholder="模型 ID" style="width:180px"></td>
         <td><input name="l1_base_url" list="base-url-defaults" value="${esc(o.settings.l1BaseUrl ?? '')}" placeholder="留空 = 厂商默认地址" style="width:300px"></td></tr>
-      <tr><td>L2</td><td class="muted">复核，单期最多 5 条</td>
+      <tr><td>L2</td><td class="muted">复判：L1 失败、低置信度、被拦截的条目，以及「是否同一件事」的确认</td>
         <td><select name="l2_provider"><option value="">同 L1</option>${providerOpts(o.settings.l2Provider ?? '')}</select></td>
         <td><input name="l2_model" value="${esc(o.settings.l2Model ?? '')}" placeholder="留空则同 L1" style="width:180px"></td>
         <td><input name="l2_base_url" list="base-url-defaults" value="${esc(o.settings.l2BaseUrl ?? '')}" placeholder="留空 = 厂商默认地址" style="width:300px"></td></tr>
-      <tr><td>L3</td><td class="muted">高风险，单期最多 2 条</td>
+      <tr><td>L3</td><td class="muted">仅旧版格式（legacy）使用；新版日报不再有 L3 与人工复核</td>
         <td><select name="l3_provider"><option value="">同 L1</option>${providerOpts(o.settings.l3Provider ?? '')}</select></td>
         <td><input name="l3_model" value="${esc(o.settings.l3Model ?? '')}" placeholder="留空则同 L1" style="width:180px"></td>
         <td><input name="l3_base_url" list="base-url-defaults" value="${esc(o.settings.l3BaseUrl ?? '')}" placeholder="留空 = 厂商默认地址" style="width:300px"></td></tr>
@@ -436,6 +470,8 @@ export function renderSettings(o: {
     <p class="muted">默认地址：${BASE_URL_DEFAULTS.map(([name, url]) => `${esc(name)} = ${esc(url)}`).join(' ｜ ')}</p>
     <p><button class="primary" ${o.vaultOk ? '' : 'disabled'}>保存供应商设置</button></p>
   </form>
+
+  ${o.embedding ? renderEmbeddingSettings(o.csrf, o.vaultOk, o.embedding) : ''}
 
   <h2 id="keys">API Key</h2>
   <p class="muted">加密存于 /var/lib/briefing/secrets.enc（0600），主密钥在 root 控制的
@@ -640,10 +676,23 @@ const DECISION: Record<string, [string, string]> = {
   retain: ['必选保留', 'ok'], normal: ['入选', 'ok'], escalate: ['待复核', 'warn'], filter: ['过滤', 'idle'] };
 const STAGE: Record<string, string> = { luna: 'L1', terra: 'L2', sol: 'L3', compose: '组装' };
 
+function renderRetry(t: NonNullable<Parameters<typeof renderRunDetail>[0]['retry']>): string {
+  const time = (s: string | null) => s ? new Date(s).toLocaleString('zh-CN', { timeZone: 'Asia/Taipei', hour12: false }) : '—';
+  const OUT: Record<string, string> = { published: '已发布', waiting_ai: '有未判定，推迟发布' };
+  return `<h2>AI 判定与推迟发布</h2>
+  <p class="muted">截止时间 ${esc(time(t.deadline_at))} · 下次重试 ${esc(time(t.next_attempt_at))} · 未判定 ${t.unresolved} 条${t.last_error_kind ? ` · 最后错误类型 ${esc(t.last_error_kind)}` : ''}</p>
+  ${t.attempts.length ? `<div class="tw"><table><tr><th>触发</th><th>开始</th><th>结束</th><th>结果</th><th>未判定</th><th>错误类型</th></tr>${t.attempts.map(a =>
+    `<tr><td>${a.trigger === 'timer' ? '定时' : '手动'}</td><td>${esc(time(a.started_at))}</td><td>${esc(time(a.finished_at))}</td><td>${esc(OUT[a.outcome ?? ''] ?? a.outcome ?? '进行中或中断')}</td><td>${a.unresolved ?? '—'}</td><td>${esc(a.error_kind ?? '')}</td></tr>`).join('')}</table></div>` : ''}
+  ${t.refused.length ? `<h3>模型拒绝处理、按排除计 · ${t.refused.length} 条</h3><ul>${t.refused.map(x => `<li>${esc(x.task)}：${esc(x.label)}</li>`).join('')}</ul>` : ''}`;
+}
+
 export function renderRunDetail(o: { csrf: string; run: RunRow; queued: boolean; notice?: string;
   deliveries: Array<{ delivery_type: string; resend_sequence: number; status: string; sent_at: string | null; created_at: string; error: string | null }>;
   candidates: Array<{ id: number; title: string; source_id: string; canonical_url: string | null; decision: string; mandatory_class: string | null;
-    section: string | null; filter_reason: string | null; stage: string | null; confidence: number | null; ai_reason: string | null; overridden: number }> }): string {
+    section: string | null; filter_reason: string | null; stage: string | null; confidence: number | null; ai_reason: string | null; overridden: number }>;
+  /** 新流程：推迟发布状态、构建尝试与模型拒绝处理的条目 */
+  retry?: { deadline_at: string | null; next_attempt_at: string | null; unresolved: number; last_error_kind: string | null;
+    refused: Array<{ task: string; label: string }>; attempts: Array<{ trigger: string; started_at: string; finished_at: string | null; outcome: string | null; unresolved: number | null; error_kind: string | null }> } }): string {
   const r = o.run;
   const csrf = `<input type="hidden" name="csrf" value="${esc(o.csrf)}">`;
   const actions = [
@@ -674,6 +723,7 @@ export function renderRunDetail(o: { csrf: string; run: RunRow; queued: boolean;
   ${r.error ? `<div class="err">${esc(r.error)}</div>` : ''}
   ${actions ? `<div class="stack" style="grid-auto-flow:column;justify-content:start">${actions}</div>
   <p class="sub">${r.status !== 'succeeded' ? '重新运行会走完整流程：已完成的 AI 判定会复用，只补做未完成的部分。' : ''}${r.brief_id ? '重新发送会把这一期再发一次到收件邮箱。' : ''}</p>` : ''}
+  ${o.retry ? renderRetry(o.retry) : ''}
   ${o.deliveries.length ? `<h2>投递记录</h2><div class="tw"><table><tr><th>类型</th><th>状态</th><th>时间</th><th>错误</th></tr>${o.deliveries.map(d =>
     `<tr><td>${d.delivery_type === 'primary' ? '首次投递' : d.delivery_type === 'resend' ? `补发 #${d.resend_sequence}` : esc(d.delivery_type)}</td>
      <td>${d.status === 'sent' ? '<span class="pill ok">已送达</span>' : `<span class="pill bad">${esc(d.status)}</span>`}</td>

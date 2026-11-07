@@ -122,19 +122,24 @@ export class OpenAICompatProvider implements Provider {
 
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), this.#timeout);
+    const signal = req.signal ? AbortSignal.any([ac.signal, req.signal]) : ac.signal;
     let r: Response;
+    let j: any;
+    // 计时覆盖连接、响应头与响应体读取；不跟随重定向，避免密钥随跳转发往其他主机
     try {
       r = await fetch(`${this.#base}/chat/completions`, {
-        method: 'POST', signal: ac.signal,
+        method: 'POST', signal, redirect: 'error',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${this.#key}` },
         body: JSON.stringify(body),
       });
+      if (!r.ok) throw toError(r.status, await r.text().catch(() => ''), r.headers.get('retry-after'));
+      j = await r.json();
     } catch (e: any) {
+      if (e instanceof ProviderError) throw e;
+      if (req.signal?.aborted) { const err = new ProviderError('timeout', '已到截止时间，请求取消'); err.budgetExhausted = true; throw err; }
       throw new ProviderError(e?.name === 'AbortError' ? 'timeout' : 'network', String(e?.message ?? e));
     } finally { clearTimeout(timer); }
 
-    if (!r.ok) throw toError(r.status, await r.text().catch(() => ''));
-    const j: any = await r.json();
     const choice = j.choices?.[0];
     const text = choice?.message?.content ?? '';
 
@@ -174,9 +179,14 @@ export class OpenAICompatProvider implements Provider {
   }
 }
 
-export function toError(status: number, body: string): ProviderError {
+export function toError(status: number, body: string, retryAfter?: string | null): ProviderError {
   const msg = body.slice(0, 300);
-  if (status === 429) return new ProviderError('rate_limited', `HTTP 429 ${msg}`, status);
+  if (status === 429) {
+    const e = new ProviderError('rate_limited', `HTTP 429 ${msg}`, status);
+    const sec = Number(retryAfter);
+    if (retryAfter && Number.isFinite(sec) && sec >= 0) e.retryAfterSec = sec;
+    return e;
+  }
   // 408：上游流在完成前断开，属于瞬时故障，应走重试而不是当作请求错误
   if (status === 408) return new ProviderError('timeout', `HTTP 408 ${msg}`, status);
   if (status === 401 || status === 403) return new ProviderError('auth', `HTTP ${status} ${msg}`, status);

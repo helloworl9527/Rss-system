@@ -238,14 +238,16 @@ console.log('\nTelegram 显示名：\n');
 console.log('\n后台操作请求队列：\n');
 {
   const rq = join(dir, 'requests');
-  ok('只接受合法的时段键', parseRequest({ type: 'rerun', window: '2026-10-09:noon' }) !== null &&
-    parseRequest({ type: 'rerun', window: '2026-10-09:noon; rm -rf /' }) === null && parseRequest({ type: 'rerun', window: '--shadow' }) === null);
+  // 时段键按当前 rules.yaml 的窗口配置校验（生产为每日一期 daily；2026-11-05 修复：旧正则拒绝 daily，后台重跑不可用）
+  ok('只接受合法的时段键', parseRequest({ type: 'rerun', window: '2026-10-09:daily' }) !== null &&
+    parseRequest({ type: 'rerun', window: '2026-10-09:noon' }) === null &&
+    parseRequest({ type: 'rerun', window: '2026-10-09:daily; rm -rf /' }) === null && parseRequest({ type: 'rerun', window: '--shadow' }) === null);
   ok('补发只接受正整数 ID', parseRequest({ type: 'resend', briefId: 63 }) !== null && parseRequest({ type: 'resend', briefId: '63' }) === null && parseRequest({ type: 'other' }) === null);
-  queueRequest(rq, { type: 'rerun', window: '2026-10-09:noon' });
-  queueRequest(rq, { type: 'rerun', window: '2026-10-09:noon' });
+  queueRequest(rq, { type: 'rerun', window: '2026-10-09:daily' });
+  queueRequest(rq, { type: 'rerun', window: '2026-10-09:daily' });
   queueRequest(rq, { type: 'resend', briefId: 63 });
   ok('同一操作排队中不重复写入', pendingRequests(rq).length === 2);
-  ok('按先后顺序取出并删除', (takeRequest(rq) as any).window === '2026-10-09:noon' && pendingRequests(rq).length === 1);
+  ok('按先后顺序取出并删除', (takeRequest(rq) as any).window === '2026-10-09:daily' && pendingRequests(rq).length === 1);
   writeFileSync(join(rq, '0000-bad.json'), '{"type":"rerun","window":"../../etc"}');
   ok('格式无效的文件被丢弃', takeRequest(rq) === 'invalid' && (takeRequest(rq) as any).briefId === 63 && takeRequest(rq) === null);
 }

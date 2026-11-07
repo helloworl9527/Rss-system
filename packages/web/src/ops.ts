@@ -81,7 +81,9 @@ export type Alert = { level: 'bad' | 'warn'; area: 'today' | 'telegram' | 'syste
 export type AlertInput = {
   now: number;
   units: UnitStatus[];
-  runs: Array<{ window_key: string; window_label: string; scheduled_at: string; status: string; error: string | null; finished_at: string | null }>;
+  runs: Array<{ window_key: string; window_label: string; scheduled_at: string; status: string; error: string | null; finished_at: string | null;
+    /** 新流程推迟发布状态（迁移 018 之后才有） */
+    next_attempt_at?: string | null; unresolved?: number | null; last_error_kind?: string | null; refused_count?: number | null }>;
   sources: Array<{ id: string; display_name: string; health: string; enabled: number; consecutive_failures: number }>;
   telegram: {
     authorized: boolean; heartbeatAt: string | null;
@@ -106,6 +108,13 @@ export function computeAlerts(i: AlertInput): Alert[] {
     if (r.status === 'partial' || r.status === 'failed')
       out.push({ level: 'bad', area: 'today', title: `${r.window_label}未完成（${r.window_key.slice(5, 10)}）`,
         detail: (r.error ?? '运行未成功').slice(0, 160), href: '/runs?status=failed' });
+    else if (r.status === 'waiting_ai')
+      out.push({ level: 'warn', area: 'today', title: `${r.window_label}等待 AI 恢复后发布（${r.window_key.slice(5, 10)}）`,
+        detail: `未判定 ${r.unresolved ?? '?'} 条，最后错误类型 ${r.last_error_kind ?? '未知'}${r.next_attempt_at ? `，下次重试 ${hm(Date.parse(r.next_attempt_at))}` : ''}`,
+        href: '/runs?status=failed' });
+    if (r.refused_count)
+      out.push({ level: 'warn', area: 'today', title: `${r.window_label}有 ${r.refused_count} 条被模型拒绝处理、按排除计`,
+        detail: '内容触发了模型的内容安全限制，已在运行详情中列出', href: '/runs' });
   }
   const run = i.units.find(u => u.id === 'brief-run');
   for (const u of i.units) {

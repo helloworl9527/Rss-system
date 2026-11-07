@@ -16,11 +16,89 @@ import type { DigestData } from '../../../packages/digest/src/core.ts';
 import { checkEmail } from '../../../packages/templates/src/email.ts';
 import { deliver } from '../../../packages/templates/src/delivery.ts';
 import { mailerFromEnv } from '../../../packages/templates/src/mailer.ts';
+import { ProviderError, type Provider } from '../../../packages/ai/src/types.ts';
+import { resolveEmbeddingConfig } from '../../../packages/web/src/secrets.ts';
+import { AiCache } from '../../../packages/digest/src/cache.ts';
+import { createTierEnv } from '../../../packages/digest/src/tiered.ts';
+import { buildDigestSemantic, type SemanticBuild } from '../../../packages/digest/src/build-semantic.ts';
+import { DEFAULT_EXCLUSIVE_ACTIONS } from '../../../packages/digest/src/semantic.ts';
+import {
+  acquireLease, budgetScope, finishAttempt, hasRunStateTables, setRetryState, startAttempt, takeBudget, type Lease, type Trigger,
+} from '../../../packages/db/src/runstate.ts';
 
-export async function runDigestBrief(o: {
+/** 有未判定条目、本期推迟发布（由 run.ts 按固定时刻表重试）。 */
+export const EXIT_WAITING_AI = 75;
+/** 另一个尝试正持有本期租约：本次没有构建，结果未知（定时循环应继续按时刻表检查，而不是当作成功结束）。 */
+export const EXIT_LEASE_BUSY = 76;
+
+class DeadlinePassed extends Error {}
+
+type Opts = {
   db: DB; run: any; win: { key: string; label: string; start: Date; end: Date }; rules: any;
   noSend: boolean; shadow: boolean; regenerate: boolean; outDir: string;
-}): Promise<number> {
+  /** 新流程：本次尝试的触发来源与绝对截止时间（毫秒时间戳；手动重跑为 null） */
+  trigger?: Trigger; deadlineMs?: number | null;
+};
+
+export async function runDigestBrief(o: Opts): Promise<number> {
+  if (!o.rules.brief?.semantic_dedup?.enabled) return compose(o, null);
+  // 新流程：同一期同一时刻只允许一个构建/发布尝试（定时、手动、直接 CLI 共用）
+  if (!hasRunStateTables(o.db)) { console.error('❌ 缺少迁移 018 的运行状态表，请先运行 npm run migrate'); return 1; }
+  const lease = acquireLease(o.db, o.run.id);
+  if (!lease) { console.log('另一个构建尝试正在进行，本次不重复构建'); return EXIT_LEASE_BUSY; }
+  try { return await compose(o, lease); } finally { lease.release(); }
+}
+
+/** 新流程的一次构建尝试。有未判定条目时不持久化，记录推迟状态并返回 EXIT_WAITING_AI。 */
+async function buildSemantic(o: Opts): Promise<number | { built: SemanticBuild; provider: Provider | null; attemptId: number }> {
+  const { db, run } = o;
+  const trigger = o.trigger ?? 'manual';
+  const attemptId = startAttempt(db, run.id, trigger);
+  const scope = budgetScope(trigger, attemptId);
+  const cfg = o.rules.brief.semantic_dedup;
+  const cap = Number(cfg.max_requests ?? 600);
+  const deadline = o.deadlineMs ?? null;
+  const stop = (why: string) => { const e = new ProviderError('timeout', why); e.budgetExhausted = true; return e; };
+  const onDispatch = () => {
+    if (deadline && Date.now() >= deadline) throw stop('已到截止时间');
+    if (!takeBudget(db, run.id, scope, cap)) throw stop('本期 AI 请求预算已用尽');
+  };
+  const cache = new AiCache(db);
+  const env = await createTierEnv({
+    l1: providerFromEnv('L1'), l2: providerFromEnv('L2'), promptVersion: 'sem1', cache, onDispatch,
+    signal: deadline ? AbortSignal.timeout(Math.max(1, deadline - Date.now())) : undefined,
+    l2Items: Number(cfg.l2_max_items ?? 80), l2Gray: Number(cfg.l2_max_gray ?? 60), log: s => console.log(s),
+  });
+  for (const s of [env.l1, env.l2]) if (s.dead) console.log(`  ⚠️ ${s.tier} 供应商不可用（${s.deadReason}）`);
+  const emb = resolveEmbeddingConfig();
+  const embedding = emb.config.enabled && !emb.errors.length ? emb.config : null;
+  const tgEnabled = !!o.rules.brief?.telegram_daily?.enabled;
+  const built = await buildDigestSemantic(db, o.win, env, {
+    cache, embedding, embeddingNote: !emb.config.enabled ? '后台未启用向量模型' : emb.errors.join('；'),
+    exclusiveActions: Array.isArray(cfg.exclusive_actions) ? cfg.exclusive_actions : DEFAULT_EXCLUSIVE_ACTIONS,
+    telegramPath: tgEnabled ? (process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3') : null,
+  });
+  built.log.forEach(l => console.log(l));
+  built.warnings.forEach(w => console.log(`⚠️ ${w}`));
+  if (cache.note) console.log(`⚠️ ${cache.note}`);
+  const refused = JSON.stringify(built.gate.refused.slice(0, 50));
+  if (built.gate.refused.length) console.log(`模型拒绝处理、按排除计：${built.gate.refused.length} 条`);
+  const n = built.gate.unresolved.length;
+  if (n) {
+    const kind = env.lastErrorKind ?? env.stopReason ?? 'unknown';
+    const tasks = [...new Set(built.gate.unresolved.map(u => u.task))].join('、');
+    console.log(`⏸ 有 ${n} 条未判定（${tasks}；最后错误类型 ${kind}），本期推迟发布`);
+    finishAttempt(db, attemptId, 'waiting_ai', n, kind);
+    setRetryState(db, run.id, { unresolved: n, last_error_kind: kind, refused_json: refused });
+    db.prepare(`UPDATE runs SET status='waiting_ai', stage='composing', error=? WHERE id=?`)
+      .run(`AI 判定未完成：${n} 条未判定（${tasks}），最后错误类型 ${kind}`, run.id);
+    return EXIT_WAITING_AI;
+  }
+  setRetryState(db, run.id, { unresolved: 0, next_attempt_at: null, last_error_kind: null, refused_json: refused });
+  return { built, provider: env.l1.provider, attemptId };
+}
+
+async function compose(o: Opts, lease: Lease | null): Promise<number> {
   const { db, run } = o;
   const to = process.env.MAIL_TO ?? '';
   const deliveryType = o.shadow ? 'shadow' : o.regenerate ? 'resend' : 'primary';
@@ -35,15 +113,22 @@ export async function runDigestBrief(o: {
     data = JSON.parse(existing.digest_json);
     console.log(`复用已生成的新版简报 #${briefId}（v${existing.version}）`);
   } else {
-    const provider = await createProvider(providerFromEnv('L1'));
-    const tgEnabled = !!o.rules.brief?.telegram_daily?.enabled;
-    const built = await buildDigest(db, o.win, provider, { telegramPath: tgEnabled ? (process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3') : null });
-    built.log.forEach(l => console.log(l));
+    let provider: Provider | null, built: { data: DigestData; log: string[] }, attemptId: number | null = null;
+    if (lease) {
+      const r = await buildSemantic(o);
+      if (typeof r === 'number') return r;
+      ({ built, provider, attemptId } = r);
+    } else {
+      provider = await createProvider(providerFromEnv('L1'));
+      const tgEnabled = !!o.rules.brief?.telegram_daily?.enabled;
+      built = await buildDigest(db, o.win, provider, { telegramPath: tgEnabled ? (process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3') : null });
+      built.log.forEach(l => console.log(l));
+    }
     data = built.data;
     const tg = o.rules.brief?.telegram_daily;
     if (tg?.enabled) {
       data.telegram = await loadTelegramDaily(o.win.end, { waitMinutes: o.noSend ? 0 : Number(process.env.BRIEF_TELEGRAM_WAIT_MINUTES ?? tg.wait_minutes ?? 15), maxAgeHours: Number(tg.max_age_hours ?? 3), log: m => console.log(m) });
-      if (data.telegram.status === 'ready') {
+      if (data.telegram.status === 'ready' && provider) {
         const r = await stripDealsFromTelegram(provider, data.telegram, (data.tutorials ?? []).filter(t => t.category === 'deals'), built.log);
         data.telegram = r.tg;
         console.log(`Telegram 汇总去掉重复羊毛 ${r.removed.length} 条`);
@@ -56,7 +141,11 @@ export async function runDigestBrief(o: {
     if (errs.length) { console.error('❌ 邮件校验未通过，拒绝发送：\n  ' + errs.join('\n  ')); return 1; }
     const prevAny = db.prepare(`SELECT max(version) v FROM briefs WHERE run_id=?`).get(run.id) as any;
     const version = (prevAny?.v ?? 0) + 1;
-    briefId = Number(db.transaction(() => {
+    try { briefId = Number(db.transaction(() => {
+      // 新流程：发布前再确认租约仍归本尝试所有，防止过期后与另一尝试同时发布
+      if (lease && !lease.held()) throw new Error('运行租约已失效，放弃本次发布');
+      // 定时尝试：两小时截止之后不得发布（落库即发布）
+      if (lease && o.deadlineMs && Date.now() >= o.deadlineMs) throw new DeadlinePassed();
       const id = Number(db.prepare(`INSERT INTO briefs (run_id,version,subject,text_body,html_body,html_bytes,status,rule_version,created_at,digest_json)
         VALUES (?,?,?,?,?,?,'final',?,?,?)`).run(run.id, version, subject, text, html, Buffer.byteLength(html, 'utf8'),
         o.rules.meta.rule_version, nowIso(), JSON.stringify(data)).lastInsertRowid);
@@ -64,7 +153,14 @@ export async function runDigestBrief(o: {
       db.prepare(`INSERT INTO audit_events (run_id,entity_type,entity_id,action,payload_json,created_at) VALUES (?,?,?,?,?,?)`)
         .run(run.id, 'brief', String(id), 'brief_composed', JSON.stringify({ format: 'digest_v2', items: digestCount(data), version }), nowIso());
       return id;
-    })());
+    })()); } catch (e) {
+      if (!(e instanceof DeadlinePassed)) throw e;
+      console.log('⏸ 已过两小时截止时间，本期不发布');
+      if (attemptId !== null) finishAttempt(db, attemptId, 'deadline', 0, 'deadline');
+      setRetryState(db, run.id, { last_error_kind: 'deadline' });
+      return EXIT_WAITING_AI;
+    }
+    if (attemptId !== null) finishAttempt(db, attemptId, 'published', 0, null);
     console.log(`已保存新版简报 #${briefId} v${version}：官方事件 ${data.vendors.reduce((n, v) => n + v.events.length, 0)} 条 / 开源项目 ${data.projects.length} 个`);
   }
 

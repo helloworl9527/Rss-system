@@ -35,6 +35,10 @@ if (comparisonArg && comparisonArg !== '旧版' && comparisonArg !== '优化版'
   throw new Error('--comparison-label 仅接受“旧版”“优化版”或“优化修正版”');
 const COMPARISON_LABEL = comparisonArg as BriefData['comparisonLabel'];
 const runArg = argv.includes('--run') ? Number(argv[argv.indexOf('--run') + 1]) : null;
+// 新流程（semantic_dedup）：本次尝试的触发来源与绝对截止时间，由 run.ts 传入
+const triggerArg = argv.includes('--trigger') ? argv[argv.indexOf('--trigger') + 1] : 'manual';
+if (triggerArg !== 'timer' && triggerArg !== 'manual') throw new Error('--trigger 仅接受 timer 或 manual');
+const deadlineArg = argv.includes('--deadline') ? Date.parse(String(argv[argv.indexOf('--deadline') + 1])) : NaN;
 
 // 把后台设置的供应商与 API key 注入 env（环境变量优先）
 const vault = hydrateEnv();
@@ -67,7 +71,7 @@ const fmt = (d: Date) => new Intl.DateTimeFormat('sv-SE', {
 if (rules.brief?.format === 'digest_v2') {
   const { runDigestBrief } = await import('./brief-digest.ts');
   const code = await runDigestBrief({ db, run, win, rules, noSend: NO_SEND, shadow: SHADOW,
-    regenerate: REGENERATE, outDir: OUT_DIR });
+    regenerate: REGENERATE, outDir: OUT_DIR, trigger: triggerArg, deadlineMs: Number.isFinite(deadlineArg) ? deadlineArg : null });
   db.close(); process.exit(code);
 }
 

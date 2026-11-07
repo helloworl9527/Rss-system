@@ -10,9 +10,20 @@ import { withTransientRetry } from './retry.ts';
  * 真实供应商统一套上瞬时故障退避重试（见 retry.ts）；mock 不套，测试里模拟的故障不应真的等待。
  * 后台页面里的交互式调用传 { retry: false }：用户在等页面返回，失败应立即显示而不是转圈一分多钟。
  */
-export async function createProvider(cfg: ProviderConfig, opts: { retry?: boolean } = {}): Promise<Provider> {
-  const p = await createAdapter(cfg);
+export async function createProvider(cfg: ProviderConfig, opts: { retry?: boolean; onDispatch?: () => void } = {}): Promise<Provider> {
+  let p = await createAdapter(cfg);
+  // onDispatch 在每一次实际请求（含瞬时重试）之前调用，可抛错阻止派发（预算 / 截止时间）
+  if (opts.onDispatch) p = countingProvider(p, opts.onDispatch);
   return cfg.provider === 'mock' || opts.retry === false ? p : withTransientRetry(p);
+}
+
+function countingProvider(inner: Provider, onDispatch: () => void): Provider {
+  return {
+    get name() { return inner.name; },
+    get model() { return inner.model; },
+    get strictness() { return inner.strictness; },
+    complete(req) { onDispatch(); return inner.complete(req); },
+  };
 }
 
 async function createAdapter(cfg: ProviderConfig): Promise<Provider> {

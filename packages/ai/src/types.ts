@@ -36,6 +36,8 @@ export type CompleteRequest = {
   temperature?: number;
   /** 是否请求缓存稳定前缀。 */
   cachePrefix?: boolean;
+  /** 可选的取消信号（截止时间到达时中断在途请求与重试等待）。目前 openai_compatible 适配器透传。 */
+  signal?: AbortSignal;
   /** Optional trusted transport payload. The image itself remains untrusted model input. */
   images?: Array<{
     mimeType: string;
@@ -97,6 +99,10 @@ export class ProviderError extends Error {
   status?: number;
   /** 响应没有任何可用 choice（上游安全过滤）：重试和换小块都不会变，调用方应跳过而不是重试。 */
   contentFiltered?: boolean;
+  /** 429 响应头 Retry-After 的秒数（结构化传递，不再从消息正文里解析）。 */
+  retryAfterSec?: number;
+  /** 本期 AI 请求预算已用尽或已到截止时间：不是供应商错误，调用方应停止派发。 */
+  budgetExhausted?: boolean;
   retryable: boolean;
   constructor(kind: ProviderError['kind'], message: string, status?: number) {
     super(message);

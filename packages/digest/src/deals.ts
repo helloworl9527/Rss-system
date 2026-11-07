@@ -10,7 +10,7 @@ import Database from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import type { Provider } from '../../ai/src/types.ts';
 import { similarity, type DigestSourceItem, type DigestTutorial } from './core.ts';
-import { judgeDeals, mergeDeals, matchTelegramSummary } from './ai.ts';
+import { judgeDeals, mergeDeals, matchTelegramSummary, type DealVerdict } from './ai.ts';
 import { tutorialKey, cleanTutorialSummary } from './tutorials.ts';
 import type { DigestTelegram } from './core.ts';
 
@@ -42,7 +42,8 @@ export function loadTelegramMessages(path: string, start: string, end: string): 
   } finally { db.close(); }
 }
 
-export type DealPicked = { channel: 'telegram' | 'other'; title: string; summary: string; url: string; group?: string; sourceName?: string; raw: string; reason?: string };
+/** itemId：其他渠道（已采集条目）的条目编号，用于合并时检查是否已被判为不同事件；Telegram 群消息没有。 */
+export type DealPicked = { channel: 'telegram' | 'other'; title: string; summary: string; url: string; group?: string; sourceName?: string; raw: string; reason?: string; itemId?: number };
 export type DealsReport = {
   telegram: { enabled: boolean; messages: number; hinted: number; sentToModel: number; picked: number };
   other: { candidates: number; hinted: number; sentToModel: number; picked: number };
@@ -59,11 +60,13 @@ export type ExtraCtx = {
   forumSources: string[];                     // 已由 judgeTutorials 处理的论坛来源
   telegramPath: string | null; start: string; end: string;
   pushedUrls: Set<string>; pushedTitles: string[];
+  /** 新流程注入：分层判定（替代 judgeDeals） */
+  judge?: (items: Array<{ id: number; title: string; text: string }>) => Promise<{ results: Map<number, DealVerdict>; error?: string }>;
 };
 
 export async function collectExtraDeals(provider: Provider, c: ExtraCtx, log: string[] = []): Promise<{ extras: DealPicked[]; report: DealsReport }> {
   const report: DealsReport = { telegram: { enabled: !!c.telegramPath, messages: 0, hinted: 0, sentToModel: 0, picked: 0 }, other: { candidates: 0, hinted: 0, sentToModel: 0, picked: 0 }, extras: [], merged: [], dropped: [], rejected: [] };
-  type Src = { id: number; title: string; text: string; channel: 'telegram' | 'other'; url: string; group?: string; sourceName?: string };
+  type Src = { id: number; title: string; text: string; channel: 'telegram' | 'other'; url: string; group?: string; sourceName?: string; itemId?: number };
   const srcs: Src[] = [];
   let id = 0;
   // 其他渠道：非论坛、非时政、尚未出现在官方动态里的条目
@@ -72,7 +75,7 @@ export async function collectExtraDeals(provider: Provider, c: ExtraCtx, log: st
   for (const it of others) {
     const text = noise(it.text);
     if (`${it.title} ${text}`.length < MIN_TEXT || !DEAL_HINT.test(`${it.title} ${text}`)) continue;
-    srcs.push({ id: ++id, title: it.title, text, channel: 'other', url: it.url ?? '', sourceName: it.sourceName });
+    srcs.push({ id: ++id, title: it.title, text, channel: 'other', url: it.url ?? '', sourceName: it.sourceName, itemId: it.id });
     report.other.hinted++;
   }
   // Telegram 群消息
@@ -91,7 +94,7 @@ export async function collectExtraDeals(provider: Provider, c: ExtraCtx, log: st
   report.other.sentToModel = srcs.filter(s => s.channel === 'other').length;
   report.telegram.sentToModel = srcs.filter(s => s.channel === 'telegram').length;
   log.push(`羊毛资讯：其他渠道 ${report.other.candidates} 条（线索 ${report.other.hinted}），Telegram ${report.telegram.messages} 条消息（线索 ${report.telegram.hinted}）`);
-  const { results, error } = await judgeDeals(provider, srcs.map(s => ({ id: s.id, title: s.title, text: s.text })));
+  const { results, error } = await (c.judge ?? ((x: Parameters<typeof judgeDeals>[1]) => judgeDeals(provider, x)))(srcs.map(s => ({ id: s.id, title: s.title, text: s.text })));
   if (error) { report.modelError = error; log.push(`  ⚠️ 羊毛资讯模型判定失败（部分或全部）：${error}`); }
   const extras: DealPicked[] = [];
   for (const s of srcs) {
@@ -100,7 +103,7 @@ export async function collectExtraDeals(provider: Provider, c: ExtraCtx, log: st
     if (!r || !r.deal || !summary) { report.rejected.push({ channel: s.channel, gist: `${s.title} ${s.text}`.trim().replace(/\s+/g, ' ').slice(0, 110), reason: r ? (r.reason || '无摘要') : '模型未返回' }); continue; }
     const key = tutorialKey(s.url);
     if ((key && c.pushedUrls.has(key)) || c.pushedTitles.some(t => similarity(t, r.title) >= 0.6)) { report.dropped.push({ title: r.title, reason: '72h 内已推送' }); continue; }
-    extras.push({ channel: s.channel, title: r.title || summary.slice(0, 20), summary, url: s.url, group: s.group, sourceName: s.sourceName, raw: `${s.title} ${s.text}`.trim().slice(0, 500), reason: r.reason });
+    extras.push({ channel: s.channel, title: r.title || summary.slice(0, 20), summary, url: s.url, group: s.group, sourceName: s.sourceName, raw: `${s.title} ${s.text}`.trim().slice(0, 500), reason: r.reason, itemId: s.itemId });
     report.extras.push(extras[extras.length - 1]!);
     report[s.channel === 'telegram' ? 'telegram' : 'other'].picked++;
   }
@@ -108,14 +111,16 @@ export async function collectExtraDeals(provider: Provider, c: ExtraCtx, log: st
 }
 
 /** 把论坛判为 deals 的条目和其他渠道/Telegram 的羊毛条目合并成最终「羊毛资讯」列表（同平台同优惠合一）。 */
-export async function mergeAllDeals(provider: Provider, forum: DigestTutorial[], extras: DealPicked[], report: DealsReport, log: string[] = []): Promise<DigestTutorial[]> {
+export async function mergeAllDeals(provider: Provider, forum: DigestTutorial[], extras: DealPicked[], report: DealsReport, log: string[] = [],
+  merge?: (items: Array<{ id: number; title: string; summary: string }>, itemIdOf: Map<number, number>) => Promise<{ groups: Array<{ ids: number[]; summary: string }>; error?: string }>): Promise<DigestTutorial[]> {
   type M = { id: number; title: string; summary: string; url: string; channel: 'forum' | 'telegram' | 'other'; itemId: number };
   const all: M[] = [
     ...forum.map(t => ({ title: t.title, summary: t.summary, url: t.url, channel: 'forum' as const, itemId: t.itemId })),
-    ...extras.map(e => ({ title: e.title, summary: e.summary, url: e.url, channel: e.channel, itemId: 0 })),
+    ...extras.map(e => ({ title: e.title, summary: e.summary, url: e.url, channel: e.channel, itemId: e.itemId ?? 0 })),
   ].map((m, i) => ({ ...m, id: i + 1 }));
   if (!all.length) return [];
-  const mg = await mergeDeals(provider, all.map(m => ({ id: m.id, title: m.title, summary: m.summary })));
+  const mg = await (merge ?? ((x: Parameters<typeof mergeDeals>[1]) => mergeDeals(provider, x)))(all.map(m => ({ id: m.id, title: m.title, summary: m.summary })),
+    new Map(all.filter(m => m.itemId).map(m => [m.id, m.itemId])));
   if (mg.error) { report.modelError = report.modelError ?? mg.error; log.push(`  ⚠️ 羊毛资讯合并失败，按原样保留：${mg.error}`); }
   const rank = (m: M) => (m.channel === 'forum' ? 0 : m.channel === 'other' ? 1 : 2) * 2 + (m.url ? 0 : 1);
   const out: DigestTutorial[] = [];
