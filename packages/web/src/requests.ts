@@ -6,17 +6,23 @@
 import { mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
+import { windowFromKey } from '../../domain/src/normalize.ts';
 
 export type AdminRequest =
   | { type: 'rerun'; window: string; requestedAt: string }
   | { type: 'resend'; briefId: number; requestedAt: string };
 
-const WINDOW_KEY = /^\d{4}-\d{2}-\d{2}:(morning|noon|evening)$/;
+const WINDOW_KEY = /^\d{4}-\d{2}-\d{2}:[a-z_]{1,20}$/;
+/** 窗口键按当前 rules.yaml 的窗口配置校验（生产现为 daily；旧版为 morning/noon/evening）。 */
+function validWindow(key: string): boolean {
+  if (!WINDOW_KEY.test(key)) return false;
+  try { return windowFromKey(key).key === key; } catch { return false; }
+}
 
 /** 严格校验：请求文件来自同一用户可写的目录，执行前仍按白名单格式检查。 */
 export function parseRequest(raw: unknown): AdminRequest | null {
   const r = raw as any;
-  if (r?.type === 'rerun' && typeof r.window === 'string' && WINDOW_KEY.test(r.window))
+  if (r?.type === 'rerun' && typeof r.window === 'string' && validWindow(r.window))
     return { type: 'rerun', window: r.window, requestedAt: String(r.requestedAt ?? '') };
   if (r?.type === 'resend' && Number.isInteger(r.briefId) && r.briefId > 0)
     return { type: 'resend', briefId: r.briefId, requestedAt: String(r.requestedAt ?? '') };

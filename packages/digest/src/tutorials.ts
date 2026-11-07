@@ -7,7 +7,7 @@
 import type { Provider } from '../../ai/src/types.ts';
 import { extractSignals, prescreenMandatory } from '../../domain/src/signals.ts';
 import { classifyRepost, extractRepos, similarity, urlKey, type DigestSourceItem, type DigestTutorial, type TutorialCategory } from './core.ts';
-import { judgeReposts, judgeTutorials } from './ai.ts';
+import { judgeReposts, judgeTutorials, type TutorialVerdict } from './ai.ts';
 
 export const TUTORIAL_SOURCES = ['linuxdo', 'v2ex'];
 /** 与 rules.yaml mandatory_retention B 类 topic_scope 一致，另补常见表述。仅作为信号提示传给模型，不再作为硬性门槛。 */
@@ -70,6 +70,13 @@ export type TutorialCtx = {
   projectRepos: Set<string>;            // 本期「开源项目」板块已入选仓库
   pushedUrls: Set<string>;              // 72h 已推送教程 URL key
   pushedTitles: string[];               // 72h 已推送教程标题
+  /** 新流程注入：分层判定（替代 judgeTutorials） */
+  judge?: (items: Array<{ id: number; title: string; text: string; signals: string[] }>) => Promise<{ results: Map<number, TutorialVerdict>; error?: string }>;
+  /** 新流程注入：转载候选（链接或向量相似的官方条目）与分层转载判定；不再按相似度自动排除 */
+  repostCandidate?: (it: DigestSourceItem) => DigestSourceItem | null;
+  reposts?: (pairs: Array<{ id: number; item: DigestSourceItem; official: DigestSourceItem }>) => Promise<Map<number, boolean>>;
+  /** 新流程注入：两条是否已被语义聚类判为同一事件（替代标题/摘要相似度 0.6 的交叉发布判断） */
+  sameEvent?: (a: number, b: number) => boolean;
 };
 
 export async function buildTutorials(provider: Provider, items: DigestSourceItem[], ctx: TutorialCtx):
@@ -100,17 +107,22 @@ export async function buildTutorials(provider: Provider, items: DigestSourceItem
 
   // 2. 与官方厂商新闻重复的转载（沿用 classifyRepost）
   const reposts = new Set<number>(); const uncertain: Array<{ id: number; item: DigestSourceItem; official: DigestSourceItem }> = [];
-  for (const { it } of pass) {
-    const c = classifyRepost(it, ctx.officials);
-    if (c.verdict === 'repost') reposts.add(it.id);
-    else if (c.verdict === 'uncertain' && uncertain.length < 20) uncertain.push({ id: it.id, item: it, official: ctx.officials.find(o => o.id === c.officialId)! });
+  if (ctx.repostCandidate && ctx.reposts) {
+    for (const { it } of pass) { const o = ctx.repostCandidate(it); if (o && uncertain.length < 40) uncertain.push({ id: it.id, item: it, official: o }); }
+    for (const [id, yes] of await ctx.reposts(uncertain)) if (yes) reposts.add(id);
+  } else {
+    for (const { it } of pass) {
+      const c = classifyRepost(it, ctx.officials);
+      if (c.verdict === 'repost') reposts.add(it.id);
+      else if (c.verdict === 'uncertain' && uncertain.length < 20) uncertain.push({ id: it.id, item: it, official: ctx.officials.find(o => o.id === c.officialId)! });
+    }
+    for (const [id, yes] of await judgeReposts(provider, uncertain)) if (yes) reposts.add(id);
   }
-  for (const [id, yes] of await judgeReposts(provider, uncertain)) if (yes) reposts.add(id);
   const afterRepost = pass.filter(({ it }) => { if (reposts.has(it.id)) { exclude(it, '转载/改写官方厂商新闻，已有官方动态覆盖', 'repost'); return false; } return true; });
 
   // 3. 模型判定 + 概括
   report.sentToModel = afterRepost.length;
-  const { results, error } = await judgeTutorials(provider, afterRepost.map(({ it, signals }) => ({ id: it.id, title: it.title, text: stripNoise(it.text), signals })));
+  const { results, error } = await (ctx.judge ?? ((x: Parameters<typeof judgeTutorials>[1]) => judgeTutorials(provider, x)))(afterRepost.map(({ it, signals }) => ({ id: it.id, title: it.title, text: stripNoise(it.text), signals })));
   if (error) { report.modelError = error; log.push(`  ⚠️ 技术教程模型判定失败（部分或全部）：${error}`); }
   const picked: DigestTutorial[] = [];
   for (const { it } of afterRepost) {
@@ -120,7 +132,8 @@ export async function buildTutorials(provider: Provider, items: DigestSourceItem
     if (!r.tutorial || !summary) { exclude(it, r.reason || '模型判定不是可复现教程', 'model'); continue; }
     if (!it.url) { exclude(it, '无原帖链接', 'model'); continue; }
     // V2EX 与 LINUX DO 交叉发布同一内容：只保留先到的一条
-    const same = picked.find(p => similarity(p.title, it.title) >= 0.6 || similarity(p.summary, summary) >= 0.6);
+    const same = ctx.sameEvent ? picked.find(p => ctx.sameEvent!(p.itemId, it.id))
+      : picked.find(p => similarity(p.title, it.title) >= 0.6 || similarity(p.summary, summary) >= 0.6);
     if (same) { exclude(it, `与已入选条目重复（交叉发布）：${same.title.slice(0, 20)}`, 'dup'); continue; }
     const url = TUTORIAL_URL_OVERRIDES[tutorialKey(it.url) ?? ''] ?? it.url;
     picked.push({ title: it.title, summary, url, itemId: it.id, category: r.category });

@@ -15,11 +15,11 @@ import { collectExtraDeals, mergeAllDeals, type DealsReport } from './deals.ts';
 export type DigestWindow = { key: string; label: string; start: Date; end: Date };
 const H = 3600e3;
 const TZ = 'Asia/Shanghai';
-const fmt = (d: Date, o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('sv-SE', { timeZone: TZ, hour12: false, ...o }).format(d);
-const md = (d: Date) => fmt(d, { year: 'numeric', month: '2-digit', day: '2-digit' }).slice(5);   // MM-DD
-const hm = (d: Date) => fmt(d, { hour: '2-digit', minute: '2-digit' });
+export const fmt = (d: Date, o: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('sv-SE', { timeZone: TZ, hour12: false, ...o }).format(d);
+export const md = (d: Date) => fmt(d, { year: 'numeric', month: '2-digit', day: '2-digit' }).slice(5);   // MM-DD
+export const hm = (d: Date) => fmt(d, { hour: '2-digit', minute: '2-digit' });
 
-function loadItems(db: DB, from: string, to: string, lateFloor: string | null): DigestSourceItem[] {
+export function loadItems(db: DB, from: string, to: string, lateFloor: string | null): DigestSourceItem[] {
   const rows = db.prepare(`
     SELECT f.id, f.source_id, s.display_name, s.vendor, s.is_official, s.source_role,
            v.title, coalesce(v.fulltext_text, v.clean_text) text,
@@ -40,7 +40,7 @@ function loadItems(db: DB, from: string, to: string, lateFloor: string | null): 
 }
 
 /** 近 72 小时已推送的事件 URL / 标题与开源项目。旧版日报（brief_items、正文）一并纳入，避免切换当天重复。 */
-function pushedHistory(db: DB, before: Date) {
+export function pushedHistory(db: DB, before: Date) {
   const since = new Date(before.getTime() - 72 * H).toISOString();
   const urls = new Set<string>(); const titles = new Map<string, string[]>(); const repos = new Set<string>();
   const tutUrls = new Set<string>(); const tutTitles: string[] = [];

@@ -24,7 +24,9 @@ import { pendingRequests, queueRequest } from '../../../packages/web/src/request
 import { computeAlerts, readBackups, readDisk, readUnits, type Alert } from '../../../packages/web/src/ops.ts';
 import { briefFeedToken, briefsRss, rotateBriefFeedToken } from '../../../packages/web/src/briefs-rss.ts';
 import { maskedSecrets, setSecret, setSettings, resolveSettings, vaultHealthy,
-         resolveSecret, SECRET_NAMES, type SecretName } from '../../../packages/web/src/secrets.ts';
+         resolveSecret, SECRET_NAMES, type SecretName, resolveEmbeddingConfig } from '../../../packages/web/src/secrets.ts';
+import { getRetryState, hasRunStateTables } from '../../../packages/db/src/runstate.ts';
+import { EmbeddingError, parseEmbeddingFields, testEmbedding, validateEmbeddingConfig } from '../../../packages/ai/src/embeddings.ts';
 import { overrideCandidate, toggleSource, updateSourceGroup, updateSourceUrl, planResend, addSource, deleteSource,
          testSource, approveSourceProposal, rejectSourceProposal, ensureProfilerProfile, ActionError, RETIRED_HOST_GROUP } from '../../../packages/web/src/actions.ts';
 import { createProvider } from '../../../packages/ai/src/registry.ts';
@@ -245,7 +247,11 @@ function opsSnapshot() {
   const sources = q.sources() as any[];
   const alerts: Alert[] = computeAlerts({
     now, units: sys.units, disk: sys.disk, backups: sys.backups, backupSettings: readBackupSettings(), gdrive: readGdriveStatus(),
-    runs: db.prepare(`SELECT window_key,window_label,scheduled_at,status,error,finished_at FROM runs WHERE scheduled_at>=? ORDER BY scheduled_at`)
+    runs: (hasRunStateTables(db)
+      ? db.prepare(`SELECT r.window_key,r.window_label,r.scheduled_at,r.status,r.error,r.finished_at,
+          s.next_attempt_at, s.unresolved, s.last_error_kind, json_array_length(coalesce(s.refused_json,'[]')) refused_count
+          FROM runs r LEFT JOIN run_retry_state s ON s.run_id=r.id WHERE r.scheduled_at>=? ORDER BY r.scheduled_at`)
+      : db.prepare(`SELECT window_key,window_label,scheduled_at,status,error,finished_at FROM runs WHERE scheduled_at>=? ORDER BY scheduled_at`))
       .all(new Date(now - 864e5).toISOString()) as any[],
     sources,
     telegram: {
@@ -371,7 +377,18 @@ app.get<{ Params: { id: string }; Querystring: { notice?: string } }>('/runs/:id
       ORDER BY CASE x.stage WHEN 'sol' THEN 0 WHEN 'terra' THEN 1 ELSE 2 END, x.id DESC LIMIT 1)
     WHERE c.run_id=? ORDER BY c.score DESC, c.id`).all(run.id) as any[])
     .map(c => ({ ...c, ai_reason: (() => { try { const v = JSON.parse(c.ai_reason); return Array.isArray(v) ? v.join('；') : String(c.ai_reason ?? ''); } catch { return c.ai_reason; } })() }));
-  return reply.type('text/html; charset=utf-8').send(renderRunDetail({ csrf: s.csrf, run, deliveries, candidates,
+  let retry: Parameters<typeof renderRunDetail>[0]['retry'];
+  if (hasRunStateTables(db)) {
+    const st = getRetryState(db, run.id);
+    const attempts = db.prepare(`SELECT trigger,started_at,finished_at,outcome,unresolved,error_kind FROM run_attempts WHERE run_id=? ORDER BY id`).all(run.id) as any[];
+    if (st || attempts.length) {
+      let refused: Array<{ task: string; label: string }> = [];
+      try { refused = (JSON.parse(st?.refused_json ?? '[]') as any[]).map(x => ({ task: String(x.task ?? ''), label: String(x.label ?? '') })); } catch { /* 损坏时不展示 */ }
+      retry = { deadline_at: st?.deadline_at ?? null, next_attempt_at: st?.next_attempt_at ?? null, unresolved: st?.unresolved ?? 0,
+        last_error_kind: st?.last_error_kind ?? null, refused, attempts };
+    }
+  }
+  return reply.type('text/html; charset=utf-8').send(renderRunDetail({ csrf: s.csrf, run, deliveries, candidates, retry,
     queued: queuedWindows().includes(run.window_key), notice: NOTICES[String(req.query.notice ?? '')] }));
 });
 
@@ -766,6 +783,7 @@ function settingsPage(s: Session, extra: { saved?: string; error?: string } = {}
     secrets: maskedSecrets(), settings: resolveSettings() as any,
     envOverrides: envOverrides(),
     telegram: renderTelegramSettings({ csrf: s.csrf, settings: telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any }),
+    embedding: resolveEmbeddingConfig(),
     ...extra,
   });
 }
@@ -803,6 +821,51 @@ app.post('/settings/ai', async (req, reply) => {
   } catch (e: any) {
     return reply.code(500).type('text/html; charset=utf-8').send(settingsPage(s, { error: String(e?.message ?? e) }));
   }
+});
+
+// ---------- 向量模型（语义去重） ----------
+app.post('/settings/embedding', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  if (!requireWrite(req, reply, s)) return;
+  const b = (req.body ?? {}) as any;
+  const str = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
+  const fields = { enabled: b.enabled === 'on' ? 'true' : 'false', baseUrl: str(b.base_url, 300), model: str(b.model, 200),
+    dimensions: str(b.dimensions, 6), simHigh: str(b.sim_high, 10), simLow: str(b.sim_low, 10) };
+  const cfg = parseEmbeddingFields(fields, 'placeholder');
+  // 启用时必须校验通过；关闭时允许保存不完整的配置，但地址格式仍须合法（防止把密钥写进地址）
+  const errs = validateEmbeddingConfig(cfg).filter(e => cfg.enabled || /Base URL/.test(e) && fields.baseUrl);
+  if (errs.length) return reply.code(400).type('text/html; charset=utf-8').send(settingsPage(s, { error: `向量模型设置未保存：${errs.join('；')}` }));
+  try {
+    setSettings({ embeddingEnabled: fields.enabled, embeddingBaseUrl: cfg.baseUrl, embeddingModel: fields.model,
+      embeddingDimensions: fields.dimensions, dedupSimHigh: fields.simHigh || '0.9', dedupSimLow: fields.simLow || '0.8' });
+    db.prepare(`INSERT INTO audit_events (entity_type,entity_id,action,payload_json,created_at) VALUES ('settings','embedding','embedding_settings_updated',?,?)`)
+      .run(JSON.stringify({ enabled: cfg.enabled, model: fields.model, dimensions: cfg.dimensions, simHigh: cfg.simHigh, simLow: cfg.simLow,
+        baseUrlHost: cfg.baseUrl ? new URL(cfg.baseUrl).host : null, actor: 'owner' }), nowIso());
+    return reply.type('text/html; charset=utf-8').send(settingsPage(s, { saved: '向量模型设置已保存。worker 下次运行即生效。' }));
+  } catch (e: any) {
+    return reply.code(500).type('text/html; charset=utf-8').send(settingsPage(s, { error: '保存失败：' + String(e?.message ?? e).slice(0, 200) }));
+  }
+});
+
+// 连通性测试：测"当前生效"的配置（环境变量优先），限 10 秒一次、同时最多 1 个
+let embeddingTestAt = 0, embeddingTestRunning = false;
+app.post('/settings/embedding/test', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  if (!requireWrite(req, reply, s)) return;
+  if (embeddingTestRunning || Date.now() - embeddingTestAt < 10_000)
+    return reply.code(429).type('text/html; charset=utf-8').send(settingsPage(s, { error: '测试过于频繁，请 10 秒后再试' }));
+  const r = resolveEmbeddingConfig();
+  const cfgErrors = r.errors;
+  if (cfgErrors.length) return reply.code(400).type('text/html; charset=utf-8').send(settingsPage(s, { error: `无法测试：${cfgErrors.join('；')}` }));
+  embeddingTestRunning = true; embeddingTestAt = Date.now();
+  try {
+    const t = await testEmbedding(r.config);
+    return reply.type('text/html; charset=utf-8').send(settingsPage(s, { saved: `连通性测试通过：返回 ${t.dims} 维向量，耗时 ${t.ms} ms` }));
+  } catch (e: any) {
+    // 只展示结构化错误类型，不展示上游响应正文
+    const msg = e instanceof EmbeddingError ? e.message : 'embedding unknown';
+    return reply.code(502).type('text/html; charset=utf-8').send(settingsPage(s, { error: `连通性测试失败：${msg}` }));
+  } finally { embeddingTestRunning = false; }
 });
 
 app.post('/settings/source-profiler', async (req, reply) => {

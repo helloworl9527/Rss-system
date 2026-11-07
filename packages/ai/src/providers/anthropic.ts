@@ -41,6 +41,8 @@ export class AnthropicProvider implements Provider {
     const options: Record<string, unknown> = {};
     if (this.#cfg.apiKey) options.apiKey = this.#cfg.apiKey;
     if (this.#cfg.baseUrl) options.baseURL = this.#cfg.baseUrl.replace(/\/$/, '');
+    // 重试统一由 withTransientRetry 负责（每次实际请求都计入预算）；关闭 SDK 自带的重试，避免叠加与漏计
+    options.maxRetries = 0;
     this.#client = new Anthropic(options);
     return this.#client;
   }

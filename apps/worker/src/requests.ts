@@ -15,7 +15,7 @@ const DIR = process.env.REQUEST_DIR ?? '/var/lib/briefing/requests';
 const OUT_DIR = process.env.MAIL_OUT_DIR ?? './data/outbox';
 
 const runWindow = (key: string) => new Promise<number>(resolve => {
-  const p = spawn(process.execPath, ['apps/worker/src/run.ts', '--window', key], { stdio: 'inherit' });
+  const p = spawn(process.execPath, ['apps/worker/src/run.ts', '--window', key, '--trigger', 'manual'], { stdio: 'inherit' });
   p.on('close', code => resolve(code ?? 1));
   p.on('error', () => resolve(1));
 });

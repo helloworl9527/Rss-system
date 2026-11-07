@@ -144,7 +144,7 @@ const TUT_SCHEMA = {
     required: ['id', 'tutorial', 'category', 'reason', 'summary'], properties: {
       id: { type: 'integer' }, tutorial: { type: 'boolean' }, category: { type: 'string', enum: ['tech', 'deals', 'life', 'none'] }, reason: { type: 'string' }, summary: { type: 'string' } } } } },
 };
-const TUT_PROMPT = `你是中文技术日报编辑，负责「技术干货」板块（含「技术干货」「羊毛资讯」「生活经验」三个专栏）。输入是 LINUX DO / V2EX 论坛帖子（标题、正文片段，正文可能被截断，图片和链接已被去掉）及已抽取的确定性信号。
+export const TUT_PROMPT = `你是中文技术日报编辑，负责「技术干货」板块（含「技术干货」「羊毛资讯」「生活经验」三个专栏）。输入是 LINUX DO / V2EX 论坛帖子（标题、正文片段，正文可能被截断，图片和链接已被去掉）及已抽取的确定性信号。
 读者口径：偏好「作者亲自做过、亲身用过或认真想过，读完能学到一个做法、一套思路、一个有论据的观点」的帖子，篇幅通常不短。逐条判断是否收录（tutorial=true/false），收录的同时给出专栏 category：
 - tech 技术干货：技术教程、方案、工作流、AI 编程与副业做法、有论据的技术/行业观点和亲身使用对比；
 - deals 羊毛资讯：限时优惠、免费福利、薅羊毛信息、实用的限时活动，必须有具体的优惠内容或参与条件；
@@ -203,7 +203,7 @@ const DEAL_SCHEMA = {
     required: ['id', 'deal', 'title', 'reason', 'summary'], properties: {
       id: { type: 'integer' }, deal: { type: 'boolean' }, title: { type: 'string' }, reason: { type: 'string' }, summary: { type: 'string' } } } } },
 };
-const DEAL_PROMPT = `你是中文「羊毛资讯」编辑。输入是从 Telegram 群消息、RSS 或官方/社交账号采集到的单条消息（标题可能为空，文本可能含图片识别文字，已去掉链接）。逐条判断它是否是一条「有具体内容的羊毛/优惠/福利信息」。
+export const DEAL_PROMPT = `你是中文「羊毛资讯」编辑。输入是从 Telegram 群消息、RSS 或官方/社交账号采集到的单条消息（标题可能为空，文本可能含图片识别文字，已去掉链接）。逐条判断它是否是一条「有具体内容的羊毛/优惠/福利信息」。
 deal=true 的条件：必须同时写明 ① 平台或商家 ② 具体优惠内容（价格、折扣、额度、免费时长、赠品、可领取的权益）；并且 ③ 给出条件、领取方式、适用范围或截止时间中的至少一项。涵盖：限时优惠与秒杀、免费福利与会员、薅羊毛信息、实用的限时活动、可用的优惠码/兑换渠道。
 deal=false（reason 用 12 字以内中文）：
 - 闲聊、打听、求助（如「有没有羊毛」「求推荐优惠」「这个怎么领」）（「闲聊提问」）；
@@ -246,7 +246,7 @@ const DEAL_MERGE_SCHEMA = {
   properties: { groups: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['ids', 'summary'],
     properties: { ids: { type: 'array', items: { type: 'integer' } }, summary: { type: 'string' } } } } },
 };
-const DEAL_MERGE_PROMPT = `你是中文「羊毛资讯」编辑。输入是来自不同渠道（论坛、Telegram 多个群、RSS）的优惠条目，每条有 id、title、summary。
+export const DEAL_MERGE_PROMPT = `你是中文「羊毛资讯」编辑。输入是来自不同渠道（论坛、Telegram 多个群、RSS）的优惠条目，每条有 id、title、summary。
 任务：把说的是「同一个平台的同一个优惠」的条目归为一组，不同的优惠不得合并（同平台但优惠不同要分开）。每个 id 必须恰好出现在一组中。
 每组给出 summary：1–2 句中文（不超过 100 字），综合各条里最完整的平台、优惠内容、条件和截止时间，不要编造；单条一组时原样返回该条 summary。不要出现群名或来源名，不加 emoji。${GUARD}`;
 export async function mergeDeals(p: Provider, items: Array<{ id: number; title: string; summary: string }>): Promise<{ groups: Array<{ ids: number[]; summary: string }>; error?: string }> {

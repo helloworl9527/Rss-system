@@ -32,8 +32,20 @@ export function isTransient(e: unknown): e is ProviderError {
 
 /** 429 若带 Retry-After 秒数则按它等，否则按退避表；上限 2 分钟，避免单条调用卡死整轮。 */
 function waitFor(e: ProviderError, fallback: number): number {
+  if (e.kind === 'rate_limited' && e.retryAfterSec !== undefined) return Math.min(e.retryAfterSec * 1000, MAX_RETRY_AFTER_MS);
   const m = e.kind === 'rate_limited' ? /retry[-_ ]after["':\s]*(\d+)/i.exec(e.message) : null;
   return m ? Math.min(Number(m[1]) * 1000, MAX_RETRY_AFTER_MS) : fallback;
+}
+
+/** 可被取消的等待：截止时间到达时立即结束，不再空等退避。 */
+function abortableSleep(sleep: (ms: number) => Promise<void>, ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return sleep(ms);
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>(resolve => {
+    const done = () => { signal.removeEventListener('abort', done); resolve(); };
+    signal.addEventListener('abort', done, { once: true });
+    sleep(ms).then(done);
+  });
 }
 
 export function withTransientRetry(inner: Provider, opts: RetryOptions = {}): Provider {
@@ -54,7 +66,7 @@ export function withTransientRetry(inner: Provider, opts: RetryOptions = {}): Pr
           exhaustedInARow = 0;
           return res;
         } catch (e) {
-          if (!isTransient(e)) throw e;
+          if (!isTransient(e) || e.budgetExhausted || req.signal?.aborted) throw e;
           if (i >= budget.length) {
             exhaustedInARow++;
             if (exhaustedInARow === OUTAGE_THRESHOLD)
@@ -62,8 +74,10 @@ export function withTransientRetry(inner: Provider, opts: RetryOptions = {}): Pr
             throw e;
           }
           const ms = waitFor(e, budget[i]!);
-          log(`AI 调用瞬时失败（${e.kind}: ${e.message.slice(0, 120)}），${Math.round(ms / 1000)} 秒后第 ${i + 1}/${budget.length} 次重试`);
-          await sleep(ms);
+          // 只记录错误类型与状态码：上游响应正文可能回显请求内容或凭证
+          log(`AI 调用瞬时失败（${e.kind}${e.status ? ` HTTP ${e.status}` : ''}），${Math.round(ms / 1000)} 秒后第 ${i + 1}/${budget.length} 次重试`);
+          await abortableSleep(sleep, ms, req.signal);
+          if (req.signal?.aborted) throw e;
         }
       }
     },

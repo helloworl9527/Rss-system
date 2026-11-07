@@ -11,8 +11,8 @@
 # ============================================================
 
 meta:
-  rule_version: 22
-  updated_at: "2026-10-22"
+  rule_version: 23
+  updated_at: "2026-11-05"
   timezone: Asia/Taipei          # 全系统唯一时区基准（PRD 5.1）
   description: "初版：从 PRD V1.0 自然语言规则拆解而来，未经影子运行校准"
 
@@ -1215,6 +1215,29 @@ brief:
   delivery: rss_only
   # 末尾附 Telegram 群组每日要点（四、Telegram 群组要点）。未就绪时最多等待这么久，之后不附并注明生成中。
   telegram_daily: { enabled: true, wait_minutes: 5, max_age_hours: 3 }
+  # v23（2026-11-05）语义去重 + AI 分层判断（docs/semantic-dedup-design.md）：
+  # L1 结构化摘要 → 向量（后台「向量模型」配置）→ 只合并同一件事；判定走 L1/L2，无 L3、无人工。
+  # 有未判定条目时推迟发布：每 15 分钟重试，两小时后停止、本期不发布并在后台显示错误。
+  # 改为 false 即恢复 v22 行为（不调用摘要/向量、不读写新缓存表）。
+  semantic_dedup:
+    enabled: true
+    max_requests: 600       # 每期 AI 请求上限（含重试；定时运行多次尝试共用，手动重跑另计）
+    l2_max_items: 80        # 每次尝试送 L2 复判的条目上限
+    l2_max_gray: 60         # 每次尝试灰区「是否同一件事」确认上限
+    # 互斥动作：双方动作分属一对时不自动合并（交 L2 确认）
+    exclusive_actions:
+      - [发布, 下线]
+      - [上线, 下线]
+      - [推出, 停止]
+      - [故障, 恢复]
+      - [宕机, 恢复]
+      - [涨价, 降价]
+      - [提高, 降低]
+      - [上调, 下调]
+      - [批准, 否决]
+      - [开放, 关闭]
+      - [启动, 结束]
+      - [新增, 取消]
   digest_sections:
     - { id: official_updates, title: 一、官方动态 }
     - { id: open_source_projects, title: 二、开源项目 }

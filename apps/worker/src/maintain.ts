@@ -10,6 +10,7 @@ import { readyTelegramDb } from '../../../packages/telegram/src/db.ts';
 import { cleanupTelegram } from '../../../packages/telegram/src/maintenance.ts';
 import { gzipFile, pruneBackups, removeStaleTemps } from './backup-files.ts';
 import { readBackupSettings } from '../../../packages/web/src/backup-settings.ts';
+import { pruneAiCache } from '../../../packages/digest/src/cache.ts';
 
 const DB_PATH = process.env.DATABASE_PATH ?? './data/brief.db';
 const BACKUP_DIR = process.env.BACKUP_DIR ?? '/var/lib/briefing/backups';
@@ -66,6 +67,9 @@ prune(SNAP_DIR);
 console.log(`快照清理 ${gone} 个过期条目`);
 
 // ---- 4. WAL checkpoint，防止 -wal 文件无限增长 ----
+// AI 结果与向量缓存保留 30 天（可随时重建，迁移 018 之前跳过）
+const pruned = pruneAiCache(db, 30);
+if (pruned.notes || pruned.vectors) console.log(`清理 AI 缓存 ${pruned.notes} 条、向量缓存 ${pruned.vectors} 条`);
 db.pragma('wal_checkpoint(TRUNCATE)');
 const size = statSync(DB_PATH).size;
 console.log(`数据库 ${(size / 1024 / 1024).toFixed(1)} MB，WAL 已 checkpoint`);

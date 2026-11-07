@@ -13,7 +13,12 @@
 import Database from 'better-sqlite3';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
+import { hydrateEnv, resolveEmbeddingConfig } from '../../../packages/web/src/secrets.ts';
+import { AiCache } from '../../../packages/digest/src/cache.ts';
+import { createTierEnv } from '../../../packages/digest/src/tiered.ts';
+import { buildDigestSemantic } from '../../../packages/digest/src/build-semantic.ts';
+import { DEFAULT_EXCLUSIVE_ACTIONS } from '../../../packages/digest/src/semantic.ts';
+import { ProviderError } from '../../../packages/ai/src/types.ts';
 import { windowFromKey, windowToReport } from '../../../packages/domain/src/normalize.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
 import { buildDigest } from '../../../packages/digest/src/build.ts';
@@ -34,13 +39,36 @@ const win = arg('--from') && arg('--to')
   ? { key: `custom:${arg('--from')!.slice(0, 10)}`, label: arg('--label') ?? '预览', start: new Date(arg('--from')!), end: new Date(arg('--to')!) }
   : arg('--window') ? windowFromKey(arg('--window')!) : windowToReport();
 const out = arg('--out') ?? './data/preview';
-const provider = await createProvider(providerFromEnv('L1'));
+// 旧版供应商延迟创建：新流程预览在 L1 配置损坏时仍可使用 L2 与缓存
+let legacy: Awaited<ReturnType<typeof createProvider>> | null = null;
+const legacyProvider = async () => legacy ??= await createProvider(providerFromEnv('L1'));
 
-console.log(`预览 ${win.key} ${win.label} [${win.start.toISOString()} → ${win.end.toISOString()}) 模型 ${provider.name}/${provider.model}`);
+console.log(`预览 ${win.key} ${win.label} [${win.start.toISOString()} → ${win.end.toISOString()})`);
 const tgCfg = (loadRules() as any).brief?.telegram_daily;
 const withTelegram = !argv.includes('--no-telegram') && (!!arg('--telegram-json') || !!tgCfg?.enabled);
-const { data, log, tutorialReport, dealsReport } = await buildDigest(db as any, win, provider,
-  { telegramPath: withTelegram ? (process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3') : null });
+const sem = (loadRules() as any).brief?.semantic_dedup;
+const telegramPath = withTelegram ? (process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3') : null;
+let built;
+if (sem?.enabled && !argv.includes('--legacy')) {
+  // 新流程预览：数据库只读，缓存只读不写；未命中缓存的 AI/向量调用照常付费（预算按本进程计）
+  const cache = new AiCache(db as any);
+  if (cache.note) console.log(`⚠️ ${cache.note}`);
+  let used = 0; const cap = Number(sem.max_requests ?? 600);
+  const env = await createTierEnv({ l1: providerFromEnv('L1'), l2: providerFromEnv('L2'), promptVersion: 'sem1', cache,
+    onDispatch: () => { if (++used > cap) { const e = new ProviderError('timeout', '预览请求预算用尽'); e.budgetExhausted = true; throw e; } },
+    l2Items: Number(sem.l2_max_items ?? 80), l2Gray: Number(sem.l2_max_gray ?? 60), log: s => console.log(s) });
+  const emb = resolveEmbeddingConfig();
+  const b = await buildDigestSemantic(db as any, win, env, { cache, telegramPath,
+    embedding: emb.config.enabled && !emb.errors.length ? emb.config : null,
+    embeddingNote: !emb.config.enabled ? '后台未启用向量模型' : emb.errors.join('；'),
+    exclusiveActions: Array.isArray(sem.exclusive_actions) ? sem.exclusive_actions : DEFAULT_EXCLUSIVE_ACTIONS });
+  b.warnings.forEach(w => console.log(`⚠️ ${w}`));
+  console.log(`语义去重：${JSON.stringify(b.stats)}；AI 请求 ${used} 次`);
+  if (b.gate.unresolved.length) console.log(`⏸ 有 ${b.gate.unresolved.length} 条未判定：正式运行会推迟发布（预览照常输出已判定部分）`);
+  if (b.gate.refused.length) console.log(`模型拒绝处理、按排除计：${b.gate.refused.map(x => `${x.task}「${x.label}」`).join('；')}`);
+  built = b;
+} else built = await buildDigest(db as any, win, await legacyProvider(), { telegramPath });
+const { data, log, tutorialReport, dealsReport } = built;
 db.close();
 log.forEach(l => console.log(l));
 if (arg('--telegram-json')) {
@@ -54,7 +82,9 @@ if (arg('--telegram-json')) {
 // 已单独成条的羊毛资讯不再出现在 Telegram 汇总里（汇总其余内容不变）
 let tgRemoved: Array<{ category: string; text: string }> = [];
 if (data.telegram) {
-  const r = await stripDealsFromTelegram(provider, data.telegram, (data.tutorials ?? []).filter(t => t.category === 'deals'), log);
+  const p = await legacyProvider().catch(() => null);
+  if (!p) console.log('⚠️ L1 供应商不可用，跳过 Telegram 汇总去重');
+  const r = p ? await stripDealsFromTelegram(p, data.telegram, (data.tutorials ?? []).filter(t => t.category === 'deals'), log) : { tg: data.telegram, removed: [] };
   data.telegram = r.tg; tgRemoved = r.removed;
   console.log(`Telegram 汇总去掉重复羊毛 ${tgRemoved.length} 条`);
 }

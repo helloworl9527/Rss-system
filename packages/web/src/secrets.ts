@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { parseEmbeddingFields, validateEmbeddingConfig, type EmbeddingConfig } from '../../ai/src/embeddings.ts';
 
 /**
  * 加密密钥存储（PRD 19.2）。
@@ -18,12 +19,12 @@ import { dirname, join } from 'node:path';
 export type SecretName =
   | 'OPENAI_API_KEY' | 'OPENAI_COMPAT_API_KEY' | 'DEEPSEEK_API_KEY' | 'DASHSCOPE_API_KEY'
   | 'ANTHROPIC_API_KEY' | 'GEMINI_API_KEY' | 'SOURCE_PROFILER_API_KEY'
-  | 'TELEGRAM_API_ID' | 'TELEGRAM_API_HASH' | 'TELEGRAM_PHONE';
+  | 'TELEGRAM_API_ID' | 'TELEGRAM_API_HASH' | 'TELEGRAM_PHONE' | 'EMBEDDING_API_KEY';
 
 export const SECRET_NAMES: SecretName[] = [
   'OPENAI_API_KEY', 'OPENAI_COMPAT_API_KEY', 'DEEPSEEK_API_KEY', 'DASHSCOPE_API_KEY',
   'ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'SOURCE_PROFILER_API_KEY',
-  'TELEGRAM_API_ID', 'TELEGRAM_API_HASH', 'TELEGRAM_PHONE',
+  'TELEGRAM_API_ID', 'TELEGRAM_API_HASH', 'TELEGRAM_PHONE', 'EMBEDDING_API_KEY',
 ];
 
 /** 非密钥的普通设置，与密钥同文件但不加密语义（仍随文件一起加密落盘）。 */
@@ -41,7 +42,16 @@ export type Settings = {
   sourceProfilerTimeoutMs?: string; sourceProfilerRetryPolicy?: string;
   sourceProfilerFallbackProfile?: string; sourceProfilerEnabled?: string;
   telegramProvider?: string; telegramModel?: string; telegramBaseUrl?: string;
+  /** 向量模型（语义去重，OpenAI 兼容 /embeddings）。密钥单独存 EMBEDDING_API_KEY。 */
+  embeddingEnabled?: string; embeddingBaseUrl?: string; embeddingModel?: string;
+  embeddingDimensions?: string; dedupSimHigh?: string; dedupSimLow?: string;
 };
+
+/** 向量设置字段 ↔ 环境变量（环境变量优先，与其他设置一致）。 */
+export const EMBEDDING_ENV: Array<[keyof Settings, string]> = [
+  ['embeddingEnabled', 'EMBEDDING_ENABLED'], ['embeddingBaseUrl', 'EMBEDDING_BASE_URL'], ['embeddingModel', 'EMBEDDING_MODEL'],
+  ['embeddingDimensions', 'EMBEDDING_DIMENSIONS'], ['dedupSimHigh', 'DEDUP_SIM_HIGH'], ['dedupSimLow', 'DEDUP_SIM_LOW'],
+];
 
 export type Vault = { secrets: Partial<Record<SecretName, string>>; settings: Settings };
 
@@ -162,7 +172,23 @@ export function resolveSettings(path = vaultPath()): Settings {
     sourceProfilerRetryPolicy: process.env.SOURCE_PROFILER_RETRY_POLICY ?? s.sourceProfilerRetryPolicy ?? '1',
     sourceProfilerFallbackProfile: process.env.SOURCE_PROFILER_FALLBACK_PROFILE ?? s.sourceProfilerFallbackProfile,
     sourceProfilerEnabled: process.env.SOURCE_PROFILER_ENABLED ?? s.sourceProfilerEnabled ?? 'true',
+    ...Object.fromEntries(EMBEDDING_ENV.map(([k, env]) => [k, process.env[env] ?? s[k]])),
   };
+}
+
+/**
+ * 向量模型的唯一配置解析入口：后台显示、连通性测试、worker、preview 都用它，保证"测的就是跑的"。
+ * 环境变量优先，其次保管库；返回校验错误与被环境变量覆盖的字段（不含任何密钥值）。
+ */
+export function resolveEmbeddingConfig(path = vaultPath()): { config: EmbeddingConfig; errors: string[]; envOverridden: string[]; keySet: boolean } {
+  const s = resolveSettings(path);
+  const apiKey = resolveSecret('EMBEDDING_API_KEY', path);
+  const config = parseEmbeddingFields({ enabled: s.embeddingEnabled, baseUrl: s.embeddingBaseUrl, model: s.embeddingModel,
+    dimensions: s.embeddingDimensions, simHigh: s.dedupSimHigh, simLow: s.dedupSimLow }, apiKey);
+  const errors = validateEmbeddingConfig(config);
+  if (!apiKey) errors.push('未设置 EMBEDDING_API_KEY');
+  const envOverridden = [...EMBEDDING_ENV.map(([, env]) => env), 'EMBEDDING_API_KEY'].filter(env => !!process.env[env]);
+  return { config, errors, envOverridden, keySet: !!apiKey };
 }
 
 /** 供 CLI 在启动时把保管库内容注入 process.env，让下游代码无感。 */
@@ -192,6 +218,7 @@ export function hydrateEnv(path = vaultPath()): { loaded: string[]; error?: stri
       ['SOURCE_PROFILER_RETRY_POLICY', s.sourceProfilerRetryPolicy],
       ['SOURCE_PROFILER_FALLBACK_PROFILE', s.sourceProfilerFallbackProfile],
       ['SOURCE_PROFILER_ENABLED', s.sourceProfilerEnabled],
+      ...EMBEDDING_ENV.map(([k, env]): [string, string | undefined] => [env, s[k]]),
     ];
     for (const [k, val] of map)
       if (val && !process.env[k]) { process.env[k] = val; loaded.push(k); }
