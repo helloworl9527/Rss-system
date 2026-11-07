@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import sqlite3
+import time
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,6 +25,37 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 # 断线、超时、限流、Telegram 服务端错误都会自行恢复，不能据此停用来源。
 # 2026-09-29 一次断线让 reload() 把全部 17 个来源标成 error/enabled=0，采集静默停了 10 天。
 TRANSIENT_ERRORS = (ConnectionError, OSError, asyncio.TimeoutError, FloodWaitError, ServerError)
+
+
+# 进度信号：写给 supervisor 看门狗的管道（fd 由 TELEGRAM_PROGRESS_FD 指定）。
+# supervisor 长时间收不到进度就强制结束本进程，由 systemd 重启（2026-11-07 断线后请求永不返回，采集停摆 10.5 小时）。
+_progress_fd: int | None = None
+_progress_at = 0.0
+
+
+def init_progress() -> None:
+    global _progress_fd
+    raw = os.environ.get("TELEGRAM_PROGRESS_FD", "")
+    if not raw.isdigit():
+        return
+    try:
+        os.set_blocking(int(raw), False)
+        _progress_fd = int(raw)
+    except OSError:
+        _progress_fd = None
+
+
+def progress() -> None:
+    """报告"仍在推进"。节流到每秒一次；管道满或不存在时静默忽略，绝不阻塞采集。"""
+    global _progress_at
+    if _progress_fd is None:
+        return
+    now = time.monotonic()
+    if now - _progress_at < 1:
+        return
+    _progress_at = now
+    with suppress(OSError):
+        os.write(_progress_fd, b".")
 
 
 def image_metadata(message) -> tuple[str, str, int | None] | None:
@@ -175,6 +207,15 @@ class Store:
         except sqlite3.IntegrityError:
             self.db.rollback()
             self.failed(row["id"], "该 Telegram chat_id 已存在，不能重复添加")
+
+    def attempt(self, source_id: int, ok: bool | None, covered_until: str | None = None) -> None:
+        """记录同步尝试：ok=None 表示开始（进行中），True/False 为结束结果；成功时可同时发布覆盖水位。
+        汇总据此区分「来源自身故障」（明确失败）与「还没轮到 / 正在恢复」（进行中、从未尝试）。"""
+        okv = None if ok is None else (1 if ok else 0)
+        self.db.execute("""INSERT INTO telegram_sync_progress(source_id,covered_until,last_attempt_at,last_attempt_ok) VALUES(?,?,?,?)
+          ON CONFLICT(source_id) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,last_attempt_ok=excluded.last_attempt_ok,
+          covered_until=coalesce(excluded.covered_until,telegram_sync_progress.covered_until)""", (source_id, covered_until, utc_now(), okv))
+        self.db.commit()
 
     def transient_failure(self, source_id: int, message: str) -> None:
         """只记录错误，保持来源启用，下一轮 reconcile 自动重试。"""
@@ -421,6 +462,7 @@ class Worker:
                 batch.append(message)
                 last_id = int(message.id)
                 seen += 1
+                progress()
                 if len(batch) < 500:
                     continue
                 if row["source_type"] == "normal":
@@ -477,6 +519,7 @@ class Worker:
                     self.store.transient_failure(row["id"], f"校验暂时失败，下轮重试：{type(exc).__name__}")
                 else:
                     self.store.failed(row["id"], str(exc) or type(exc).__name__)
+            progress()
 
     async def reload(self) -> None:
         self.entities = {}
@@ -488,6 +531,7 @@ class Worker:
                     self.store.transient_failure(row["id"], f"来源解析暂时失败，下轮重试：{type(exc).__name__}")
                 else:
                     self.store.failed(row["id"], f"来源解析失败：{type(exc).__name__}")
+            progress()
 
     async def backfill_source(self, row: sqlite3.Row, entity) -> None:
         settings = self.store.db.execute("SELECT timezone,raw_retention_days,keep_messages_forever FROM telegram_settings WHERE singleton=1").fetchone()
@@ -498,18 +542,41 @@ class Worker:
         state = self.store.db.execute("SELECT last_message_id FROM telegram_sync_state WHERE source_id=?", (row["id"],)).fetchone()
         last_id = int(state[0]) if state else 0
         keep_forever = bool(settings["keep_messages_forever"])
+        # 首次同步按时间倒序读取：中途中断时若已逐条推进游标，下一轮会从已存最大 ID 正序续读，
+        # 更早的消息就永久漏采。因此首次同步期间不推进游标，整轮完成后一次性设置。
+        first_sync = not last_id
+        max_seen = 0
+        # 覆盖水位保守取本轮扫描开始时刻：扫描期间才到达的消息不一定都被读到
+        scan_started = utc_now()
+        # 标记本轮进行中：上一轮的失败记录失效，汇总不会把正在恢复的来源当成故障来源跳过
+        self.store.attempt(row["id"], None)
+        skipped_max = skipped = 0
         async for message in self.client.iter_messages(entity, **catchup_options(last_id, keep_forever, cutoff)):
+            progress()   # 在日期过滤之前报告：长时间扫过过期历史也算进度，避免被看门狗误杀
             date = message.date if message.date.tzinfo else message.date.replace(tzinfo=UTC)
             if date < cutoff and not (last_id and keep_forever):
                 # 正序补采时最早的消息先到，遇到旧消息只能跳过；原来的 break 会让断点超过保留期的来源一条都补不回来
                 if last_id:
+                    # 增量（正序）扫描跳过的过期消息本来就不保存，可以安全推进游标，避免每次重启都从同一处重扫
+                    skipped_max = max(skipped_max, int(message.id))
+                    skipped += 1
+                    if skipped % 500 == 0:
+                        self.store.db.execute("UPDATE telegram_sync_state SET last_message_id=max(last_message_id,?) WHERE source_id=?", (skipped_max, row["id"]))
+                        self.store.db.commit()
                     continue
                 break  # 首次同步按时间倒序，越过保留期即可停止
+            max_seen = max(max_seen, int(message.id))
             if row["source_type"] == "url":
-                self.store.save_urls(row, message)
+                self.store.save_urls(row, message, advance_cursor=not first_sync)
             else:
-                self.store.save_normal(row, message)
-                await self.capture_image(row, message)
+                self.store.save_normal(row, message, advance_cursor=not first_sync)
+                await self.capture_image(row, message, report=True)
+        if skipped_max:
+            self.store.db.execute("UPDATE telegram_sync_state SET last_message_id=max(last_message_id,?) WHERE source_id=?", (skipped_max, row["id"]))
+        if first_sync and max_seen:
+            self.store.db.execute("UPDATE telegram_sync_state SET last_message_id=max(last_message_id,?),last_synced_at=?,last_error=NULL WHERE source_id=?",
+                                  (max_seen, utc_now(), row["id"]))
+        self.store.db.commit()
         retry_ids = [int(item[0]) for item in self.store.db.execute("""SELECT message_id
           FROM telegram_media_tasks WHERE source_id=? AND
           (status='downloading' OR (status='failed' AND error_type='download_error'))
@@ -517,7 +584,8 @@ class Worker:
         if retry_ids:
             for message in await self.client.get_messages(entity, ids=retry_ids):
                 if message is not None:
-                    await self.capture_image(row, message)
+                    await self.capture_image(row, message, report=True)
+                    progress()
         if self.is_full_history(row):
             await self.backfill_all_history(row, entity)
         if row["source_type"] == "normal" and not self.is_full_history(row):
@@ -525,15 +593,21 @@ class Worker:
             for offset in range(0, len(retained), 500):
                 requested = retained[offset:offset + 500]
                 current = await self.client.get_messages(entity, ids=requested)
+                progress()
                 returned: set[int] = set()
                 for message in current:
                     if message is not None:
                         returned.add(int(message.id))
-                        self.store.save_normal(row, message)
-                        await self.capture_image(row, message)
+                        # 复查读的是库里已有的 ID，不是连续历史，不能推进补采游标（否则会跳过实时事件漏掉的消息）
+                        self.store.save_normal(row, message, advance_cursor=False)
+                        await self.capture_image(row, message, report=True)
+                        progress()
                 self.store.delete_normal(row["chat_id"], [item for item in requested if item not in returned])
         self.store.db.execute("UPDATE telegram_sources SET last_success_at=?,last_error=NULL,updated_at=? WHERE id=?",(utc_now(),utc_now(),row["id"]))
         self.store.db.commit()
+        # 连续历史扫描与保留期复查都成功之后才发布覆盖水位（ensureDueJobs 按它推进窗口）：
+        # 复查会刷新已存消息的编辑与删除，提前发布可能让总结读到旧内容
+        self.store.attempt(row["id"], True, covered_until=scan_started)
 
     async def reconcile(self) -> None:
         await self.validate_pending()
@@ -541,12 +615,15 @@ class Worker:
         for row in self.store.enabled():
             entity = self.entities.get(row["chat_id"])
             if entity is None:
+                self.store.attempt(row["id"], False)   # 本轮解析失败，没法同步
                 continue
             try:
                 await self.backfill_source(row, entity)
             except Exception as exc:  # noqa: BLE001 - one source must not block others
                 self.store.db.execute("UPDATE telegram_sources SET last_error=?,updated_at=? WHERE id=?",(f"同步失败：{type(exc).__name__}",utc_now(),row["id"]))
                 self.store.db.commit()
+                self.store.attempt(row["id"], False)
+            progress()
 
     async def on_message(self, event) -> None:
         source = self.store.db.execute("SELECT * FROM telegram_sources WHERE chat_id=? AND enabled=1 AND status='active'",(event.chat_id,)).fetchone()
@@ -560,7 +637,8 @@ class Worker:
                 self.store.save_normal(source, event.message, advance_cursor=False)
                 await self.capture_image(source, event.message)
 
-    async def capture_image(self, source: sqlite3.Row, message) -> None:
+    async def capture_image(self, source: sqlite3.Row, message, *, report: bool = False) -> None:
+        """report=True 只用于补采路径：下载过程中按进度报告给看门狗；实时事件路径不报告，以免掩盖补采卡死。"""
         metadata = image_metadata(message)
         if metadata is None:
             self.store.supersede_removed_media(source, message.id)
@@ -573,7 +651,7 @@ class Worker:
             return
         fingerprint, path = pending
         try:
-            await message.download_media(file=str(path))
+            await message.download_media(file=str(path), progress_callback=(lambda *_: progress()) if report else None)
             size = path.stat().st_size
             if size <= 0:
                 raise ValueError("empty image")
@@ -638,15 +716,18 @@ class Worker:
         self.client.add_event_handler(self.on_delete,events.MessageDeleted())
         try:
             while True:
+                progress()
                 if await self.client.is_user_authorized():
                     await self.reconcile()
                 self.store.heartbeat(await self.client.is_user_authorized())
+                progress()
                 await asyncio.sleep(300)
         finally:
             server.close(); await server.wait_closed(); self.socket_path.unlink(missing_ok=True); await self.client.disconnect()
 
 
 async def async_main() -> None:
+    init_progress()
     api_id = int(os.environ["TELEGRAM_API_ID"])
     api_hash = os.environ["TELEGRAM_API_HASH"]
     db_path = Path(os.environ.get("TELEGRAM_DATABASE_PATH", "./data/telegram.sqlite3"))

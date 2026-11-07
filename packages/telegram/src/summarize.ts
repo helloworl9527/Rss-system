@@ -205,12 +205,15 @@ export function ensureDueJobs(db: TelegramDB, now = new Date()): number {
   }
   boundaries.sort((a,b)=>a.getTime()-b.getTime());
   let made=0;
-  const sources=db.prepare("SELECT id,last_success_at FROM telegram_sources WHERE enabled=1 AND status='active' AND source_type='normal'").all() as any[];
+  const sources=db.prepare(`SELECT s.id, coalesce(p.covered_until, s.last_success_at) covered FROM telegram_sources s
+    LEFT JOIN telegram_sync_progress p ON p.source_id=s.id WHERE s.enabled=1 AND s.status='active' AND s.source_type='normal'`).all() as any[];
   for (const source of sources) {
     // 只处理采集已经覆盖到的窗口：补采还没跑到时窗口看起来是空的，若此时推进边界，
     // 补回来的消息就永远进不了总结（2026-10-09 补采后 10/02–10/09 的时段因此全部缺失）。
-    if (!source.last_success_at) continue;
-    const synced = Date.parse(source.last_success_at);
+    // 覆盖水位用最近一次成功历史扫描的开始时刻（covered_until），而不是同步完成时间：
+    // 扫描期间才到达、没被读到的消息不能让窗口被误判为完整。迁移前的旧数据退回 last_success_at。
+    if (!source.covered) continue;
+    const synced = Date.parse(source.covered);
     const old=db.prepare(`SELECT coalesce((SELECT last_window_end FROM telegram_sync_state WHERE source_id=?),
       (SELECT max(window_end) FROM telegram_summary_jobs WHERE source_id=?)) end`).get(source.id,source.id) as any;
     let start: Date | undefined = old?.end ? new Date(old.end) : boundaries.find(x=>x.getTime()>=now.getTime()-settings.raw_retention_days*86400_000);
