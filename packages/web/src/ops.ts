@@ -90,6 +90,9 @@ export type AlertInput = {
     failedSummaries: number;
   };
   backups: BackupStatus[];
+  /** 后台的备份开关；缺省视为全部开启 */
+  backupSettings?: { local: boolean; gdrive: boolean };
+  gdrive?: { state: 'OK' | 'FAIL' | 'SKIP' | 'UNKNOWN'; at: number | null; detail: string };
   disk: DiskStatus;
 };
 
@@ -151,8 +154,19 @@ export function computeAlerts(i: AlertInput): Alert[] {
     out.push({ level: 'warn', area: 'sources', title: `${failing.length} 个 RSS 来源连续失败`,
       detail: failing.slice(0, 4).map(s => `${s.display_name}（${s.consecutive_failures} 次）`).join('、'), href: '/sources' });
 
-  // 备份与磁盘
-  for (const b of i.backups) {
+  // 备份与磁盘（关闭的备份不再报「没有新备份」，两个都关闭时提醒一次）
+  const cfg = i.backupSettings ?? { local: true, gdrive: true };
+  if (!cfg.local && !cfg.gdrive)
+    out.push({ level: 'warn', area: 'system', title: '数据库备份已全部关闭', detail: '本机备份与 Google Drive 备份都已在后台关闭，出故障时将无法恢复数据', href: '/system#backups' });
+  if (cfg.gdrive && i.gdrive) {
+    if (i.gdrive.state === 'FAIL')
+      out.push({ level: 'bad', area: 'system', title: 'Google Drive 备份失败', detail: `${i.gdrive.at ? hm(i.gdrive.at) : ''} ${i.gdrive.detail}`.trim(), href: '/system#backups' });
+    else if (i.gdrive.state === 'UNKNOWN' && !cfg.local)
+      out.push({ level: 'warn', area: 'system', title: 'Google Drive 备份没有可核实的记录', detail: `本机备份已关闭，而 Google Drive 备份状态无法确认：${i.gdrive.detail}`, href: '/system#backups' });
+    else if (i.gdrive.state !== 'UNKNOWN' && (!i.gdrive.at || i.now - i.gdrive.at > 36 * H))
+      out.push({ level: 'warn', area: 'system', title: 'Google Drive 超过 36 小时没有成功备份', detail: i.gdrive.at ? `最近记录：${hm(i.gdrive.at)}（${i.gdrive.state}）` : '没有备份记录', href: '/system#backups' });
+  }
+  for (const b of cfg.local ? i.backups : []) {
     if (!b.mtime || i.now - b.mtime > 36 * H)
       out.push({ level: 'bad', area: 'system', title: `${b.label}超过 36 小时没有新备份`,
         detail: b.mtime ? `最近一份：${hm(b.mtime)}` : '备份目录里没有找到备份', href: '/system' });

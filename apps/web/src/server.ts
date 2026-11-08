@@ -8,6 +8,9 @@
  *   ADMIN_PASSWORD_HASH=... ADMIN_TOTP_SECRET=... node apps/web/src/server.ts
  *   未配置口令时以只读演示模式启动并明确告警。
  */
+import { windowDefs } from '../../../packages/domain/src/normalize.ts';
+import { readBackupSettings, readGdriveStatus, writeBackupSettings } from '../../../packages/web/src/backup-settings.ts';
+import { loadRules } from '../../../packages/domain/src/rules.ts';
 import { toggleAllnetCollection, allnetRequest, searchAllnet, subscribeAllnet, rotateAllnetToken, allnetRss, type Subscription } from '../../../packages/connectors/src/allnet.ts';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
@@ -212,7 +215,14 @@ const q = {
 // ---- 运行状况：今日页、系统运行页和侧栏计数共用 ----
 const BACKUP_DIR = process.env.BACKUP_DIR ?? '/var/lib/briefing/backups';
 const taipeiDate = (ms: number) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
-const SLOTS: Array<[string, string, string]> = [['morning', '早报', '08:00'], ['noon', '午报', '12:00'], ['evening', '晚报', '22:00']];
+// 今日时段按 rules.yaml 的窗口配置生成（2026-10-22 起为每日一期；写死早/午/晚报会让卡片永远对不上真实运行）
+const SLOTS = (): Array<[string, string, string]> => windowDefs().map(d => [d.id, d.label, `${String(d.end_hour).padStart(2, '0')}:00`]);
+const rssOnly = () => (loadRules() as any).brief?.delivery === 'rss_only';
+/** 一期定稿的条目数：新版日报记在 brief_composed 审计里（digestCount），旧版按 brief_items 统计。 */
+const BRIEF_ITEMS_SQL = (alias: string) => `coalesce(
+  (SELECT coalesce(json_extract(a.payload_json,'$.items'), json_extract(a.payload_json,'$.digestCount')) FROM audit_events a
+    WHERE a.entity_type='brief' AND a.entity_id=CAST(${alias}.id AS TEXT) AND a.action IN ('brief_composed','brief_telegram_refreshed') ORDER BY a.id DESC LIMIT 1),
+  (SELECT count(*) FROM brief_items i WHERE i.brief_id=${alias}.id))`;
 
 /** 每个 Telegram 来源的最近消息时间和 24 小时消息量；子查询都走 (source_id, sent_at) 索引。 */
 const telegramSources = (now = Date.now()) => telegramDb.prepare(`SELECT s.*,
@@ -235,7 +245,7 @@ function opsSnapshot() {
   const worker = telegramDb.prepare('SELECT * FROM telegram_worker_state WHERE singleton=1').get() as any;
   const sources = q.sources() as any[];
   const alerts: Alert[] = computeAlerts({
-    now, units: sys.units, disk: sys.disk, backups: sys.backups,
+    now, units: sys.units, disk: sys.disk, backups: sys.backups, backupSettings: readBackupSettings(), gdrive: readGdriveStatus(),
     runs: db.prepare(`SELECT window_key,window_label,scheduled_at,status,error,finished_at FROM runs WHERE scheduled_at>=? ORDER BY scheduled_at`)
       .all(new Date(now - 864e5).toISOString()) as any[],
     sources,
@@ -264,16 +274,18 @@ app.get('/', async (req, reply) => {
   const s = requireAuth(req, reply); if (!s) return;
   const { now, sys, alerts, sources, tgSources, worker } = opsSnapshot();
   const date = taipeiDate(now);
-  const slots: TodaySlot[] = SLOTS.map(([key, label, clock]) => {
+  const rss = rssOnly();
+  const slots: TodaySlot[] = SLOTS().map(([key, label, clock]) => {
     const run = db.prepare('SELECT * FROM runs WHERE window_key=?').get(`${date}:${key}`) as any;
-    const brief = run ? db.prepare(`SELECT b.id, (SELECT count(*) FROM brief_items i WHERE i.brief_id=b.id) items FROM briefs b
+    const brief = run ? db.prepare(`SELECT b.id, ${BRIEF_ITEMS_SQL('b')} items FROM briefs b
       WHERE b.run_id=? AND b.status='final' ORDER BY b.version DESC LIMIT 1`).get(run.id) as any : null;
     const delivery = brief ? db.prepare(`SELECT status,sent_at,error FROM deliveries WHERE brief_id=? AND delivery_type='primary' ORDER BY id DESC LIMIT 1`).get(brief.id) as any : null;
-    return { key, label, clock, scheduledAt: Date.parse(`${date}T${clock}:00+08:00`), run: run ?? null, items: brief?.items ?? null, delivery: delivery ?? null };
+    return { key, label, clock, scheduledAt: Date.parse(`${date}T${clock}:00+08:00`), run: run ?? null, items: brief?.items ?? null, delivery: delivery ?? null, rssOnly: rss };
   });
   const dayStart = new Date(Date.parse(`${date}T00:00:00+08:00`)).toISOString();
-  // usage_ledger 从未被写入；AI 判定的真实记录在 evaluations（每次 L1/L2/L3 判定或组装一行；token 字段未填）
-  const ai = db.prepare(`SELECT count(*) calls FROM evaluations WHERE created_at>=?`).get(dayStart) as any;
+  // AI 调用：旧版 L1/L2/L3 每次判定在 evaluations 记一行；新版日报（digest_v2）的调用次数记在 brief_composed 审计里
+  const ai = { calls: (db.prepare(`SELECT count(*) calls FROM evaluations WHERE created_at>=?`).get(dayStart) as any).calls
+    + Number((db.prepare(`SELECT coalesce(sum(json_extract(payload_json,'$.aiCalls')),0) n FROM audit_events WHERE action='brief_composed' AND created_at>=?`).get(dayStart) as any).n) };
   const lastH = (q.harvests() as any[])[0];
   const enabled = sources.filter(x => x.enabled && !x.allnet_json);
   const tgEnabled = tgSources.filter(t => t.enabled);
@@ -289,6 +301,21 @@ app.get('/', async (req, reply) => {
   }));
 });
 
+app.post('/system/backups', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s || !requireWrite(req, reply, s)) return;
+  const b = (req.body ?? {}) as any;
+  const before = readBackupSettings();
+  try {
+    const after = writeBackupSettings({ local: b.local === 'on', gdrive: b.gdrive === 'on' });
+    db.prepare(`INSERT INTO audit_events (entity_type,entity_id,action,payload_json,created_at) VALUES ('settings','backups','backup_settings_updated',?,?)`)
+      .run(JSON.stringify({ before: { local: before.local, gdrive: before.gdrive }, after: { local: after.local, gdrive: after.gdrive }, actor: 'owner' }), nowIso());
+    return reply.redirect('/system?saved=backups#backups');
+  } catch (e: any) {
+    req.log.error({ err: e }, '保存备份设置失败');
+    return reply.code(500).send({ error: '保存备份设置失败' });
+  }
+});
+
 app.get('/system', async (req, reply) => {
   const s = requireAuth(req, reply); if (!s) return;
   const now = Date.now(); const sys = systemState();
@@ -296,7 +323,12 @@ app.get('/system', async (req, reply) => {
   const byStage = (db.prepare(`SELECT stage, model, count(*) calls FROM evaluations WHERE created_at>=? GROUP BY stage, model
     ORDER BY CASE stage WHEN 'luna' THEN 0 WHEN 'terra' THEN 1 WHEN 'sol' THEN 2 ELSE 3 END, calls DESC`).all(since) as any[])
     .map(r => ({ stage: String(r.stage), model: String(r.model), calls: r.calls }));
+  // 新版日报的调用次数（brief_composed 审计）
+  for (const r of db.prepare(`SELECT coalesce(json_extract(payload_json,'$.model'),'') model, sum(json_extract(payload_json,'$.aiCalls')) calls
+    FROM audit_events WHERE action='brief_composed' AND created_at>=? AND json_extract(payload_json,'$.aiCalls') IS NOT NULL GROUP BY 1`).all(since) as any[])
+    if (r.calls) byStage.push({ stage: 'digest', model: String(r.model || '—'), calls: Number(r.calls) });
   return reply.type('text/html; charset=utf-8').send(renderSystem({ csrf: s.csrf, now, units: sys.units, backups: sys.backups, disk: sys.disk,
+    backupSettings: readBackupSettings(), gdrive: readGdriveStatus(), notice: (req.query as any)?.saved === 'backups' ? '备份设置已保存，下次备份时生效。' : undefined,
     ai24h: { calls: byStage.reduce((n, r) => n + r.calls, 0), byStage } }));
 });
 
@@ -304,7 +336,7 @@ app.get('/system', async (req, reply) => {
 const REQUEST_DIR = process.env.REQUEST_DIR ?? '/var/lib/briefing/requests';
 const RUN_ROWS = `SELECT r.id, r.window_key, r.window_label, r.scheduled_at, r.started_at, r.finished_at, r.status, r.stage, r.trigger, r.error,
     (SELECT count(*) FROM candidates c WHERE c.run_id=r.id) cands,
-    b.id brief_id, (SELECT count(*) FROM brief_items i WHERE i.brief_id=b.id) items,
+    b.id brief_id, ${BRIEF_ITEMS_SQL('b')} items,
     d.status delivery_status, d.sent_at,
     (SELECT count(*) FROM deliveries x WHERE x.brief_id=b.id AND x.delivery_type='resend' AND x.status='sent') resends
   FROM runs r
@@ -319,13 +351,16 @@ const queuedWindows = () => pendingRequests(REQUEST_DIR).flatMap(r => r.type ===
 app.get<{ Querystring: { status?: string } }>('/runs', async (req, reply) => {
   const s = requireAuth(req, reply); if (!s) return;
   const filter = req.query.status === 'failed' ? 'failed' : 'all';
-  const runs = db.prepare(`${RUN_ROWS} ${filter === 'failed' ? "WHERE r.status<>'succeeded'" : ''} ORDER BY r.scheduled_at DESC LIMIT 60`).all() as RunRow[];
+  const rss = rssOnly();
+  const runs = (db.prepare(`${RUN_ROWS} ${filter === 'failed' ? "WHERE r.status<>'succeeded'" : ''} ORDER BY r.scheduled_at DESC LIMIT 60`).all() as RunRow[])
+    .map(r => ({ ...r, rss_only: rss }));
   return reply.type('text/html; charset=utf-8').send(renderRuns({ csrf: s.csrf, runs, filter, queued: queuedWindows() }));
 });
 
 app.get<{ Params: { id: string }; Querystring: { notice?: string } }>('/runs/:id', async (req, reply) => {
   const s = requireAuth(req, reply); if (!s) return;
-  const run = db.prepare(`${RUN_ROWS} WHERE r.id=?`).get(Number(req.params.id)) as RunRow | undefined;
+  const found = db.prepare(`${RUN_ROWS} WHERE r.id=?`).get(Number(req.params.id)) as RunRow | undefined;
+  const run = found ? { ...found, rss_only: rssOnly() } : undefined;
   if (!run) return reply.code(404).type('text/html; charset=utf-8').send(renderRuns({ csrf: s.csrf, runs: [], filter: 'all', queued: [], notice: '找不到这次运行记录' }));
   const deliveries = run.brief_id ? db.prepare(`SELECT delivery_type,resend_sequence,status,sent_at,created_at,error FROM deliveries WHERE brief_id=? ORDER BY id`).all(run.brief_id) as any[] : [];
   const candidates = (db.prepare(`SELECT c.id, v.title, f.source_id, f.canonical_url, c.decision, c.mandatory_class, c.section, c.filter_reason,

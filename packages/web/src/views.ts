@@ -513,7 +513,9 @@ const num = (n: number) => Number(n ?? 0).toLocaleString('en-US');
 
 export type TodaySlot = { key: string; label: string; clock: string; scheduledAt: number;
   run?: { id?: number; status: string; error: string | null; started_at: string | null; finished_at: string | null } | null;
-  items?: number | null; delivery?: { status: string; sent_at: string | null; error: string | null } | null };
+  items?: number | null; delivery?: { status: string; sent_at: string | null; error: string | null } | null;
+  /** 投递方式为「只发 RSS」：定稿即发布，没有邮件投递记录也不算未投递 */
+  rssOnly?: boolean };
 
 function slotCard(s: TodaySlot, now: number): string {
   const r = s.run;
@@ -524,9 +526,10 @@ function slotCard(s: TodaySlot, now: number): string {
     else { pill = '<span class="pill bad">没有运行</span>'; detail = '到点后没有找到运行记录，请检查系统运行页'; }
   } else if (r.status === 'succeeded') {
     const sent = s.delivery?.status === 'sent';
-    pill = sent ? '<span class="pill ok">已投递</span>' : `<span class="pill warn">${esc(s.delivery?.status ?? '未投递')}</span>`;
+    const rss = !sent && !s.delivery && s.rssOnly && s.items != null;
+    pill = sent ? '<span class="pill ok">已投递</span>' : rss ? '<span class="pill ok">已发布（RSS）</span>' : `<span class="pill warn">${esc(s.delivery?.status ?? '未投递')}</span>`;
     const took = r.started_at && r.finished_at ? `用时 ${fmtDur(Date.parse(r.finished_at) - Date.parse(r.started_at))}` : '';
-    detail = [took, s.items != null ? `${s.items} 条` : '', sent ? `${fmtTime(Date.parse(s.delivery!.sent_at!))} 送达` : esc(s.delivery?.error ?? '')]
+    detail = [took, s.items != null ? `${s.items} 条` : '', sent ? `${fmtTime(Date.parse(s.delivery!.sent_at!))} 送达` : rss ? '' : esc(s.delivery?.error ?? '')]
       .filter(Boolean).join(' · ');
   } else if (r.status === 'partial' || r.status === 'failed') {
     pill = '<span class="pill bad">未发送</span>'; detail = esc((r.error ?? '运行未成功').slice(0, 120));
@@ -568,10 +571,33 @@ export function renderToday(o: {
   return layout('今日', body, o.csrf, 'today');
 }
 
-const STAGE_LABEL: Record<string, string> = { luna: 'L1 初筛', terra: 'L2 复核', sol: 'L3 复核', compose: '简报组装' };
+const STAGE_LABEL: Record<string, string> = { luna: 'L1 初筛', terra: 'L2 复核', sol: 'L3 复核', compose: '简报组装', digest: '新版日报（各版块 AI 判定与文案）' };
+
+const GDRIVE_STATE: Record<string, string> = { OK: '<span class="ok">成功</span>', FAIL: '<span class="bad">失败</span>', SKIP: '<span class="muted">已跳过（开关关闭）</span>', UNKNOWN: '<span class="muted">没有记录</span>' };
+
+function renderBackupSwitches(csrf: string, s: { local: boolean; gdrive: boolean; updatedAt: string | null; error?: string },
+  g?: { state: string; at: number | null; detail: string }): string {
+  // desc 为纯文本（会转义）；extraHtml 为本函数内拼好的可信标记（状态标签）
+  const sw = (name: string, on: boolean, label: string, desc: string, extraHtml = '') =>
+    `<label style="display:block;margin:6px 0"><input type="checkbox" name="${name}" value="on"${on ? ' checked' : ''}> <b>${esc(label)}</b> <span class="muted">${esc(desc)}</span>${extraHtml}</label>`;
+  return `<form method="post" action="/system/backups">
+    <input type="hidden" name="csrf" value="${esc(csrf)}">
+    ${sw('local', s.local, '本机每日备份', '每天维护时把日报库和 Telegram 库压缩保存到 /var/lib/briefing/backups（占用本机磁盘）')}
+    ${sw('gdrive', s.gdrive, 'Google Drive 备份', '每天 04:10（台北时间）把两个库和可阅读的聊天文本上传到 Google Drive；最近一次：',
+      `${GDRIVE_STATE[g?.state ?? 'UNKNOWN'] ?? ''}${g?.at ? ` <span class="muted">· ${esc(fmtTime(g.at, true))}</span>` : ''}`)}
+    ${!s.local && !s.gdrive ? '<p class="bad">两个备份都已关闭：出故障时将无法恢复数据。</p>' : ''}
+    ${s.error ? `<p class="warn">${esc(s.error)}</p>` : ''}
+    <p class="muted">关闭只会停止之后的新备份，已有备份不会被删除。${s.updatedAt ? `最近修改：${esc(fmtTime(Date.parse(s.updatedAt), true))}` : ''}</p>
+    <p><button class="primary">保存备份设置</button></p>
+  </form>`;
+}
 
 export function renderSystem(o: { csrf: string; now: number; units: UnitStatus[]; backups: BackupStatus[]; disk: DiskStatus;
-  ai24h: { calls: number; byStage: Array<{ stage: string; model: string; calls: number }> } }): string {
+  ai24h: { calls: number; byStage: Array<{ stage: string; model: string; calls: number }> };
+  /** 备份开关与 Google Drive 备份状态（缺省视为全部开启、状态未知） */
+  backupSettings?: { local: boolean; gdrive: boolean; updatedAt: string | null; error?: string };
+  gdrive?: { state: 'OK' | 'FAIL' | 'SKIP' | 'UNKNOWN'; at: number | null; detail: string };
+  notice?: string }): string {
   const unitRow = (u: UnitStatus) => {
     const running = u.active === 'activating' || (u.kind === 'daemon' && u.active === 'active');
     const pill = u.kind === 'daemon'
@@ -590,7 +616,9 @@ export function renderSystem(o: { csrf: string; now: number; units: UnitStatus[]
   <h2>定时任务</h2>
   ${o.units.length ? `<div class="tw"><table><tr><th>任务</th><th>上次结果</th><th>上次运行</th><th>下次运行</th></tr>${o.units.map(unitRow).join('')}</table></div>`
     : '<div class="err">无法读取 systemd 状态，请在服务器上执行 systemctl status brief-* 查看。</div>'}
-  <h2>备份与存储</h2>
+  <h2 id="backups">备份与存储</h2>
+  ${o.notice ? `<div class="note">${esc(o.notice)}</div>` : ''}
+  ${renderBackupSwitches(o.csrf, o.backupSettings ?? { local: true, gdrive: true, updatedAt: null }, o.gdrive)}
   <div class="cards">
     ${o.backups.map(b => `<div class="card"><span class="l">${esc(b.label)}备份</span><span class="n">${b.file ? mb(b.bytes) : '—'}</span>
       <span class="d">${b.mtime ? `${fmtTime(b.mtime, true)} · 只保留最新 1 份` : '<span class="bad">没有找到备份</span>'}</span></div>`).join('')}
@@ -598,7 +626,7 @@ export function renderSystem(o: { csrf: string; now: number; units: UnitStatus[]
       ${o.disk ? `<div class="bar"><i class="${pct >= .95 ? 'bad' : pct >= .85 ? 'warn' : ''}" style="width:${Math.round(pct * 100)}%"></i></div><span class="d">剩余 ${gb(o.disk.freeBytes)}</span>` : ''}</div>
   </div>
   <h2>AI 判定（最近 24 小时）</h2>
-  <p class="sub">日报候选共调用 ${num(o.ai24h.calls)} 次。Telegram 总结与图片识别的调用不在此表内。</p>
+  <p class="sub">日报共调用 ${num(o.ai24h.calls)} 次。Telegram 总结与图片识别的调用不在此表内。</p>
   ${o.ai24h.byStage.length ? `<div class="tw"><table><tr><th>环节</th><th>模型</th><th class="n">次数</th></tr>${o.ai24h.byStage.map(t =>
     `<tr><td>${esc(STAGE_LABEL[t.stage] ?? t.stage)}</td><td><code>${esc(t.model)}</code></td><td class="n">${num(t.calls)}</td></tr>`).join('')}</table></div>` : '<p class="muted">最近 24 小时没有调用。</p>'}`;
   return layout('系统运行', body, o.csrf, 'system');
@@ -608,11 +636,15 @@ export function renderSystem(o: { csrf: string; now: number; units: UnitStatus[]
 
 export type RunRow = { id: number; window_key: string; window_label: string; scheduled_at: string; started_at: string | null;
   finished_at: string | null; status: string; stage: string | null; trigger: string; error: string | null;
-  cands: number; items: number | null; brief_id: number | null; delivery_status: string | null; sent_at: string | null; resends: number };
+  cands: number; items: number | null; brief_id: number | null; delivery_status: string | null; sent_at: string | null; resends: number;
+  /** 投递方式为「只发 RSS」：有定稿即已发布 */
+  rss_only?: boolean };
 
-const runPill = (r: Pick<RunRow, 'status' | 'delivery_status'>, queued = false) =>
+const runPill = (r: Pick<RunRow, 'status' | 'delivery_status'> & Partial<Pick<RunRow, 'rss_only' | 'brief_id'>>, queued = false) =>
   queued ? '<span class="pill warn">排队中</span>'
-  : r.status === 'succeeded' ? (r.delivery_status === 'sent' ? '<span class="pill ok">已投递</span>' : `<span class="pill warn">${esc(r.delivery_status ?? '未投递')}</span>`)
+  : r.status === 'succeeded' ? (r.delivery_status === 'sent' ? '<span class="pill ok">已投递</span>'
+    : !r.delivery_status && r.rss_only && r.brief_id ? '<span class="pill ok">已发布（RSS）</span>'
+    : `<span class="pill warn">${esc(r.delivery_status ?? '未投递')}</span>`)
   : r.status === 'partial' || r.status === 'failed' ? '<span class="pill bad">未发送</span>'
   : '<span class="pill warn">进行中</span>';
 const runTitle = (r: Pick<RunRow, 'window_key' | 'window_label'>) => `${r.window_key.slice(5, 10)} ${r.window_label}`;
