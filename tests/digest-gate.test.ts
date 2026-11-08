@@ -58,8 +58,28 @@ try {
   db.prepare('UPDATE feed_items SET published_at=?, first_seen_at=?').run('2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z');
   assert.equal(await runDigestBrief({ ...opts, deadlineMs: Date.now() - 1 }), EXIT_WAITING_AI);
   assert.equal((db.prepare('SELECT count(*) n FROM briefs WHERE run_id=?').get(runId) as any).n, 0, '截止后不发布');
-  // 未过截止：正常发布
-  assert.equal(await runDigestBrief({ ...opts, deadlineMs: Date.now() + 3600e3 }), 0);
+  // 未过截止：正常发布。Telegram 要点已就绪，构建之后的去羊毛步骤再派发一次 AI 请求，审计次数必须把它算进去
+  const tgPath = join(dir, 'tg.sqlite3');
+  const { openTelegramDb, migrateTelegram } = await import('../packages/telegram/src/db.ts');
+  const tgdb = openTelegramDb(tgPath); migrateTelegram(tgdb);
+  tgdb.prepare(`INSERT INTO telegram_digests (window_start,window_end,status,source_ids,input_hash,summary_json,fallback,attempts,created_at,updated_at)
+    VALUES (?,?,'completed','[]','h',?,0,1,?,?)`).run('2026-11-04T00:00:00Z', '2026-11-04T23:00:00Z',
+    JSON.stringify({ format: 'daily_v2', categories: [{ name: '其他', items: [{ text: '某群讨论了某事', groups: ['某群'] }] }], groups: [] }), now, now);
+  tgdb.close();
+  process.env.TELEGRAM_DATABASE_PATH = tgPath;
+  const usedBefore = (db.prepare(`SELECT used FROM run_ai_budget WHERE run_id=? AND scope='timer'`).get(runId) as any).used;
+  let stripCalled = 0;
+  const stripDeals = async (p: any, tg: any) => {
+    stripCalled++;
+    await p.complete({ systemPrompt: 's', userContent: '{"candidates":[]}', schema: {}, schemaName: 'triage', maxOutputTokens: 50 }).catch(() => {});
+    return { tg, removed: [] };
+  };
+  assert.equal(await runDigestBrief({ ...opts, deadlineMs: Date.now() + 3600e3, stripDeals }), 0);
   assert.equal((db.prepare(`SELECT count(*) n FROM briefs WHERE run_id=? AND status='final'`).get(runId) as any).n, 1);
-  console.log('✅ 发布门禁：未判定不落库、推迟状态与尝试记录、截止后不再请求、租约互斥通过');
+  assert.equal(stripCalled, 1, 'Telegram 要点就绪时执行去羊毛');
+  const composed = JSON.parse((db.prepare(`SELECT payload_json FROM audit_events WHERE action='brief_composed' ORDER BY id DESC LIMIT 1`).get() as any).payload_json);
+  const usedAfter = (db.prepare(`SELECT used FROM run_ai_budget WHERE run_id=? AND scope='timer'`).get(runId) as any).used;
+  assert.ok(composed.aiCalls >= 1, `构建之后的 AI 调用也要计入审计（实际 ${composed.aiCalls}）`);
+  assert.equal(composed.aiCalls, usedAfter - usedBefore, '审计次数与本次尝试实际占用的预算一致');
+  console.log('✅ 发布门禁：未判定不落库、推迟状态与尝试记录、截止后不再请求、租约互斥、AI 调用计数含构建后步骤通过');
 } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }

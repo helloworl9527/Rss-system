@@ -97,6 +97,9 @@ function mapAnthropicError(e: any): ProviderError {
   const s = e?.status;
   if (s === 429) return new ProviderError('rate_limited', String(e?.message ?? e), s);
   if (s === 401 || s === 403) return new ProviderError('auth', String(e?.message ?? e), s);
+  // SDK 自带重试已关闭（maxRetries=0），它原本会重试的 408 / 409 要映射成瞬时故障，交给 withTransientRetry
+  if (s === 408) return new ProviderError('timeout', String(e?.message ?? e), s);
+  if (s === 409) return new ProviderError('server', String(e?.message ?? e), s);
   if (typeof s === 'number' && s >= 500) return new ProviderError('server', String(e?.message ?? e), s);
   if (typeof s === 'number') return new ProviderError('bad_request', String(e?.message ?? e), s);
   return new ProviderError('network', String(e?.message ?? e));

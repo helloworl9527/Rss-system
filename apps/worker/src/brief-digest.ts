@@ -38,6 +38,8 @@ type Opts = {
   noSend: boolean; shadow: boolean; regenerate: boolean; outDir: string;
   /** 新流程：本次尝试的触发来源与绝对截止时间（毫秒时间戳；手动重跑为 null） */
   trigger?: Trigger; deadlineMs?: number | null;
+  /** 仅供测试注入：替换 Telegram 汇总去羊毛步骤（验证构建之后的 AI 调用也计入审计次数） */
+  stripDeals?: typeof stripDealsFromTelegram;
 };
 
 export async function runDigestBrief(o: Opts): Promise<number> {
@@ -50,7 +52,7 @@ export async function runDigestBrief(o: Opts): Promise<number> {
 }
 
 /** 新流程的一次构建尝试。有未判定条目时不持久化，记录推迟状态并返回 EXIT_WAITING_AI。 */
-async function buildSemantic(o: Opts): Promise<number | { built: SemanticBuild; provider: Provider | null; attemptId: number; aiCalls: number }> {
+async function buildSemantic(o: Opts): Promise<number | { built: SemanticBuild; provider: Provider | null; attemptId: number; aiCalls: () => number }> {
   const { db, run } = o;
   const trigger = o.trigger ?? 'manual';
   const attemptId = startAttempt(db, run.id, trigger);
@@ -59,7 +61,7 @@ async function buildSemantic(o: Opts): Promise<number | { built: SemanticBuild; 
   const cap = Number(cfg.max_requests ?? 600);
   const deadline = o.deadlineMs ?? null;
   const stop = (why: string) => { const e = new ProviderError('timeout', why); e.budgetExhausted = true; return e; };
-  let dispatched = 0;   // 本次尝试实际派发的请求数（含向量请求与重试），记入 brief_composed 审计
+  let dispatched = 0;   // 本次尝试实际派发的请求数（含向量请求、重试与构建之后的 Telegram 去羊毛），记入 brief_composed 审计
   const onDispatch = () => {
     if (deadline && Date.now() >= deadline) throw stop('已到截止时间');
     if (!takeBudget(db, run.id, scope, cap)) throw stop('本期 AI 请求预算已用尽');
@@ -97,7 +99,8 @@ async function buildSemantic(o: Opts): Promise<number | { built: SemanticBuild; 
     return EXIT_WAITING_AI;
   }
   setRetryState(db, run.id, { unresolved: 0, next_attempt_at: null, last_error_kind: null, refused_json: refused });
-  return { built, provider: env.l1.provider, attemptId, aiCalls: dispatched };
+  // 返回读取函数而不是当前值：发布前还有 Telegram 去羊毛等调用，审计要在落库时再读
+  return { built, provider: env.l1.provider, attemptId, aiCalls: () => dispatched };
 }
 
 async function compose(o: Opts, lease: Lease | null): Promise<number> {
@@ -117,7 +120,8 @@ async function compose(o: Opts, lease: Lease | null): Promise<number> {
   } else {
     let provider: Provider | null, built: { data: DigestData; log: string[] }, attemptId: number | null = null;
     // 统计实际 AI 调用次数（新版日报不写 evaluations，后台的「AI 判定」靠这里的计数）
-    let aiCalls = 0, aiModel = '';
+    // 两条路径都给出读取函数，在写审计时才读取，构建之后（Telegram 去羊毛）的调用也算在内
+    let aiCalls: () => number, aiModel = '';
     if (lease) {
       const r = await buildSemantic(o);
       if (typeof r === 'number') return r;
@@ -126,8 +130,9 @@ async function compose(o: Opts, lease: Lease | null): Promise<number> {
     } else {
       const inner = await createProvider(providerFromEnv('L1'));
       aiModel = inner.model;
+      let legacyCalls = 0; aiCalls = () => legacyCalls;
       provider = { get name() { return inner.name; }, get model() { return inner.model; }, get strictness() { return inner.strictness; },
-        complete(req) { aiCalls++; return inner.complete(req); } };
+        complete(req) { legacyCalls++; return inner.complete(req); } };
       const tgEnabled = !!o.rules.brief?.telegram_daily?.enabled;
       built = await buildDigest(db, o.win, provider, { telegramPath: tgEnabled ? (process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3') : null });
       built.log.forEach(l => console.log(l));
@@ -137,7 +142,7 @@ async function compose(o: Opts, lease: Lease | null): Promise<number> {
     if (tg?.enabled) {
       data.telegram = await loadTelegramDaily(o.win.end, { waitMinutes: o.noSend ? 0 : Number(process.env.BRIEF_TELEGRAM_WAIT_MINUTES ?? tg.wait_minutes ?? 15), maxAgeHours: Number(tg.max_age_hours ?? 3), log: m => console.log(m) });
       if (data.telegram.status === 'ready' && provider) {
-        const r = await stripDealsFromTelegram(provider, data.telegram, (data.tutorials ?? []).filter(t => t.category === 'deals'), built.log);
+        const r = await (o.stripDeals ?? stripDealsFromTelegram)(provider, data.telegram, (data.tutorials ?? []).filter(t => t.category === 'deals'), built.log);
         data.telegram = r.tg;
         console.log(`Telegram 汇总去掉重复羊毛 ${r.removed.length} 条`);
       }
@@ -159,7 +164,7 @@ async function compose(o: Opts, lease: Lease | null): Promise<number> {
         o.rules.meta.rule_version, nowIso(), JSON.stringify(data)).lastInsertRowid);
       if (existing) db.prepare(`UPDATE briefs SET status='superseded' WHERE id=?`).run(existing.id);
       db.prepare(`INSERT INTO audit_events (run_id,entity_type,entity_id,action,payload_json,created_at) VALUES (?,?,?,?,?,?)`)
-        .run(run.id, 'brief', String(id), 'brief_composed', JSON.stringify({ format: 'digest_v2', items: digestCount(data), version, aiCalls, model: aiModel }), nowIso());
+        .run(run.id, 'brief', String(id), 'brief_composed', JSON.stringify({ format: 'digest_v2', items: digestCount(data), version, aiCalls: aiCalls(), model: aiModel }), nowIso());
       return id;
     })()); } catch (e) {
       if (!(e instanceof DeadlinePassed)) throw e;

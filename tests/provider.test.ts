@@ -187,5 +187,43 @@ console.log('\n环境变量分层配置：\n');
   ok('显式切换厂商且地址留空时不继承 L1 地址', l3Default.baseUrl === undefined);
 }
 
+console.log('\nAnthropic 瞬时故障（SDK 自带重试已关闭，统一由 withTransientRetry 负责）：\n');
+{
+  const { createServer } = await import('node:http');
+  const { withTransientRetry } = await import('../packages/ai/src/retry.ts');
+  const statuses = [408, 409, 200];
+  let hits = 0;
+  const srv = createServer((rq, rs) => {
+    rq.resume();
+    rq.on('end', () => {
+      const st = statuses[Math.min(hits, statuses.length - 1)]!; hits++;
+      rs.writeHead(st, { 'content-type': 'application/json' });
+      rs.end(st === 200
+        ? JSON.stringify({ id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-x', stop_reason: 'end_turn',
+            content: [{ type: 'text', text: '{"results":[]}' }], usage: { input_tokens: 3, output_tokens: 2 } })
+        : JSON.stringify({ type: 'error', error: { type: st === 408 ? 'timeout_error' : 'conflict', message: 'x' } }));
+    });
+  });
+  await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()));
+  const port = (srv.address() as any).port;
+  let dispatched = 0;
+  const cfg = { provider: 'anthropic', model: 'claude-x', apiKey: 'k', baseUrl: `http://127.0.0.1:${port}` } as any;
+  try {
+    // 单次调用：一次派发只对应一次 HTTP 请求（SDK 不在内部偷偷重试），408 / 409 归为可重试
+    const raw = await createProvider(cfg, { retry: false, onDispatch: () => { dispatched++; } });
+    const kinds: string[] = [];
+    for (let i = 0; i < 2; i++) { try { await raw.complete(req); } catch (e) { kinds.push((e as ProviderError).kind + '/' + String((e as ProviderError).retryable)); } }
+    ok('408 → timeout、409 → server，均可重试', kinds.join(',') === 'timeout/true,server/true', kinds.join(','));
+    ok('每次派发恰好一次 HTTP 请求', hits === 2 && dispatched === 2, `hits=${hits} dispatched=${dispatched}`);
+    // 套上重试：408 → 409 → 200，三次请求都计入预算
+    hits = 0; dispatched = 0;
+    const retrying = withTransientRetry(await createProvider(cfg, { retry: false, onDispatch: () => { dispatched++; } }),
+      { sleep: async () => {}, log: () => {} });
+    const r = await retrying.complete(req);
+    ok('408 / 409 后重试成功', JSON.stringify(r.data) === '{"results":[]}');
+    ok('重试的每次请求都计入预算', hits === 3 && dispatched === 3, `hits=${hits} dispatched=${dispatched}`);
+  } finally { srv.close(); }
+}
+
 console.log(fail ? `\n❌ ${fail} 项失败` : '\n✅ 全部通过');
 process.exit(fail ? 1 : 0);
