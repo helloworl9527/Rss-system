@@ -35,7 +35,11 @@ export async function runDigestBrief(o: {
     data = JSON.parse(existing.digest_json);
     console.log(`复用已生成的新版简报 #${briefId}（v${existing.version}）`);
   } else {
-    const provider = await createProvider(providerFromEnv('L1'));
+    // 统计实际 AI 调用次数（新版日报不写 evaluations，后台的「AI 判定」靠这里的计数）
+    const inner = await createProvider(providerFromEnv('L1'));
+    let aiCalls = 0;
+    const provider: typeof inner = { get name() { return inner.name; }, get model() { return inner.model; }, get strictness() { return inner.strictness; },
+      complete(req) { aiCalls++; return inner.complete(req); } };
     const tgEnabled = !!o.rules.brief?.telegram_daily?.enabled;
     const built = await buildDigest(db, o.win, provider, { telegramPath: tgEnabled ? (process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3') : null });
     built.log.forEach(l => console.log(l));
@@ -62,7 +66,7 @@ export async function runDigestBrief(o: {
         o.rules.meta.rule_version, nowIso(), JSON.stringify(data)).lastInsertRowid);
       if (existing) db.prepare(`UPDATE briefs SET status='superseded' WHERE id=?`).run(existing.id);
       db.prepare(`INSERT INTO audit_events (run_id,entity_type,entity_id,action,payload_json,created_at) VALUES (?,?,?,?,?,?)`)
-        .run(run.id, 'brief', String(id), 'brief_composed', JSON.stringify({ format: 'digest_v2', items: digestCount(data), version }), nowIso());
+        .run(run.id, 'brief', String(id), 'brief_composed', JSON.stringify({ format: 'digest_v2', items: digestCount(data), version, aiCalls, model: inner.model }), nowIso());
       return id;
     })());
     console.log(`已保存新版简报 #${briefId} v${version}：官方事件 ${data.vendors.reduce((n, v) => n + v.events.length, 0)} 条 / 开源项目 ${data.projects.length} 个`);

@@ -150,7 +150,7 @@ export type Win = { key: string; label: string; start: Date; end: Date };
 type WinDef = { id: string; label: string; end_hour: number };
 
 /** 从 rules.yaml 读窗口定义。三个窗口首尾相接、覆盖全天。 */
-function windowDefs(): WinDef[] {
+export function windowDefs(): WinDef[] {
   const w = loadRules().windows?.schedule as WinDef[] | undefined;
   const defs = (w?.length ? w : [
     { id: 'morning', label: '早报', end_hour: 8 },

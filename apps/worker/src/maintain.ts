@@ -9,6 +9,7 @@ import { openDb, nowIso } from '../../../packages/db/src/index.ts';
 import { readyTelegramDb } from '../../../packages/telegram/src/db.ts';
 import { cleanupTelegram } from '../../../packages/telegram/src/maintenance.ts';
 import { gzipFile, pruneBackups, removeStaleTemps } from './backup-files.ts';
+import { readBackupSettings } from '../../../packages/web/src/backup-settings.ts';
 
 const DB_PATH = process.env.DATABASE_PATH ?? './data/brief.db';
 const BACKUP_DIR = process.env.BACKUP_DIR ?? '/var/lib/briefing/backups';
@@ -23,16 +24,23 @@ for (const prefix of ['brief', 'telegram']) {
   if (stale.length) console.log(`清理中断残留: ${stale.join(', ')}`);
 }
 
-// ---- 1. 在线备份（不阻塞写入） ----
+// 后台「备份与存储」的本机备份开关；读不到开关文件时按开启处理
+const backupCfg = readBackupSettings();
+if (backupCfg.error) console.warn(`⚠️ ${backupCfg.error}`);
+const LOCAL_BACKUP = backupCfg.local;
 const stamp = new Date().toISOString().slice(0, 10);
-const tmp = join(BACKUP_DIR, `brief-${stamp}.db`);
-await db.backup(tmp);
-const gzBytes = await gzipFile(tmp);
-console.log(`备份: ${tmp}.gz (${(gzBytes / 1024).toFixed(0)} KB)`);
 
-// ---- 2. 备份保留：日备 KEEP_DAILY 份，每周一的另留 KEEP_WEEKLY 份 ----
-const removed = pruneBackups(BACKUP_DIR, 'brief', KEEP_DAILY, KEEP_WEEKLY);
-console.log(`备份保留 ${KEEP_DAILY} 日 + ${KEEP_WEEKLY} 周，清理 ${removed.length} 份`);
+// ---- 1. 在线备份（不阻塞写入） ----
+if (LOCAL_BACKUP) {
+  const tmp = join(BACKUP_DIR, `brief-${stamp}.db`);
+  await db.backup(tmp);
+  const gzBytes = await gzipFile(tmp);
+  console.log(`备份: ${tmp}.gz (${(gzBytes / 1024).toFixed(0)} KB)`);
+
+  // ---- 2. 备份保留：日备 KEEP_DAILY 份，每周一的另留 KEEP_WEEKLY 份 ----
+  const removed = pruneBackups(BACKUP_DIR, 'brief', KEEP_DAILY, KEEP_WEEKLY);
+  console.log(`备份保留 ${KEEP_DAILY} 日 + ${KEEP_WEEKLY} 周，清理 ${removed.length} 份`);
+} else console.log('本机备份已在后台关闭：跳过日报库与 Telegram 库备份（已有备份保留不动）');
 
 // ---- 3. 快照过期清理（PRD 13.3：压缩保留 30 天） ----
 const expired = db.prepare('SELECT id, storage_path FROM raw_snapshots WHERE expires_at < ?')
@@ -67,11 +75,15 @@ db.close();
 // 消息库永久保留全部历史，最新一份备份已包含之前所有备份的内容，所以 KEEP_DAILY=1 即「每日压缩并合并为一份」。
 const telegramPath = process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3';
 const telegramDb = readyTelegramDb(telegramPath);
-const telegramTmp = join(BACKUP_DIR, `telegram-${stamp}.db`);
-await telegramDb.backup(telegramTmp);
-const telegramGzBytes = await gzipFile(telegramTmp);
-pruneBackups(BACKUP_DIR, 'telegram', KEEP_DAILY, KEEP_WEEKLY);
+let telegramBackupNote = '本机备份已关闭';
+if (LOCAL_BACKUP) {
+  const telegramTmp = join(BACKUP_DIR, `telegram-${stamp}.db`);
+  await telegramDb.backup(telegramTmp);
+  const telegramGzBytes = await gzipFile(telegramTmp);
+  pruneBackups(BACKUP_DIR, 'telegram', KEEP_DAILY, KEEP_WEEKLY);
+  telegramBackupNote = `${telegramTmp}.gz (${(telegramGzBytes / 1024 / 1024).toFixed(0)} MB)`;
+}
 const telegramCleaned = cleanupTelegram(telegramDb);
 telegramDb.pragma('wal_checkpoint(TRUNCATE)');
-console.log(`Telegram 备份: ${telegramTmp}.gz (${(telegramGzBytes / 1024 / 1024).toFixed(0)} MB)；清理消息 ${telegramCleaned.messages}、URL ${telegramCleaned.urls}、总结 ${telegramCleaned.summaries}`);
+console.log(`Telegram 备份: ${telegramBackupNote}；清理消息 ${telegramCleaned.messages}、URL ${telegramCleaned.urls}、总结 ${telegramCleaned.summaries}`);
 telegramDb.close();

@@ -259,6 +259,16 @@ console.log('\n日报记录页：\n');
   const list = renderRuns({ csrf: 'c', runs: [ok1, base], filter: 'all', queued: ['2026-10-09:noon'] });
   ok('列表显示已投递与补发次数', list.includes('已投递') && list.includes('补发 1 次'));
   ok('排队中的时段显示排队', list.includes('排队中'));
+  // 2026-10-22 起投递方式为只发 RSS：定稿即发布，没有邮件记录不能显示成「未投递」
+  const rssRun: RunRow = { ...ok1, id: 9, window_key: '2026-11-07:daily', window_label: '日报', delivery_status: null, sent_at: null, resends: 0, rss_only: true };
+  const rssList = renderRuns({ csrf: 'c', runs: [rssRun], filter: 'all', queued: [] });
+  ok('只发 RSS 的成功期次显示已发布（RSS）', rssList.includes('已发布（RSS）') && !rssList.includes('未投递'));
+  ok('非只发 RSS 时没有邮件记录仍显示未投递', renderRuns({ csrf: 'c', runs: [{ ...rssRun, rss_only: false }], filter: 'all', queued: [] }).includes('未投递'));
+  const rssToday = renderToday({ csrf: 'c', now: Date.parse('2026-11-07T04:00:00Z'), dateLabel: '11月7日', alerts: [],
+    slots: [{ key: 'daily', label: '日报', clock: '08:00', scheduledAt: Date.parse('2026-11-07T00:00:00Z'),
+      run: { status: 'succeeded', error: null, started_at: '2026-11-07T00:01:00.000Z', finished_at: '2026-11-07T00:11:00.000Z' }, items: 116, delivery: null, rssOnly: true }],
+    rss: { healthy: 1, enabled: 1, lastHarvestAt: null, lastHarvestNew: null }, telegram: { active: 1, enabled: 1, messages24h: 1, authorized: true }, ai: { calls: 40 } } as any);
+  ok('今日页每日一期：显示已发布（RSS）与条目数', rssToday.includes('已发布（RSS）') && rssToday.includes('116 条') && !rssToday.includes('午报'));
   ok('侧栏高亮日报记录', list.includes('<a href="/runs" class="on" aria-current="page">日报记录'));
   const detail = renderRunDetail({ csrf: 'c', run: base, queued: false, deliveries: [], candidates: [
     { id: 1, title: '<b>标题</b>', source_id: 'v2ex', canonical_url: 'https://e.com/1', decision: 'escalate', mandatory_class: 'none', section: null, filter_reason: null, stage: 'luna', confidence: 0.62, ai_reason: '需要复核', overridden: 0 },
