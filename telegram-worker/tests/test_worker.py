@@ -361,7 +361,7 @@ def test_retention_recheck_does_not_advance_cursor(tmp_path: Path):
     assert saved == [101, 102, 103]
 
 
-def test_coverage_not_published_when_retention_recheck_fails(tmp_path: Path):
+def test_coverage_published_before_retention_recheck(tmp_path: Path):
     store = Store(tmp_path / "telegram.db")
     store.initialize()
     source_id = _active_source(store, -1014, "@late")
@@ -377,7 +377,8 @@ def test_coverage_not_published_when_retention_recheck_fails(tmp_path: Path):
     except ConnectionError:
         pass
     covered, ok = store.db.execute("SELECT covered_until,last_attempt_ok FROM telegram_sync_progress WHERE source_id=?", (source_id,)).fetchone()
-    assert covered is None and ok is None, "复查失败：不发布覆盖水位，状态保持「进行中」直到 reconcile 记为失败"
+    # 2026-11-08：复查慢或失败都不能挡住总结——新消息读完就发布覆盖水位；尝试结果保持「进行中」直到 reconcile 记为失败
+    assert covered is not None and ok is None
 
 
 def test_new_attempt_clears_stale_failure(tmp_path: Path):
@@ -437,3 +438,33 @@ def test_migration_006_is_rerunnable(tmp_path: Path):
     store.db.commit()
     store.initialize()
     assert store.db.execute("SELECT count(*) FROM telegram_schema_migrations WHERE name='006_sync_coverage.sql'").fetchone()[0] == 1
+
+
+def test_recheck_recent_only_after_full_recheck(tmp_path: Path):
+    store = Store(tmp_path / "telegram.db")
+    store.initialize()
+    store.db.execute("UPDATE telegram_settings SET raw_retention_days=6 WHERE singleton=1")
+    source_id = _active_source(store, -1017, "@big")
+    store.db.execute("UPDATE telegram_sync_state SET last_message_id=2 WHERE source_id=?", (source_id,))
+    store.db.commit()
+    now = datetime.now(UTC)
+    old, recent = _text(1, now - timedelta(days=3)), _text(2, now - timedelta(hours=1))
+    row = store.db.execute("SELECT * FROM telegram_sources WHERE id=?", (source_id,)).fetchone()
+    client = FakeClient([old, recent])
+    asked: list[list[int]] = []
+    inner = client.get_messages
+
+    async def spy(entity, ids):
+        asked.append(list(ids))
+        return await inner(entity, ids)
+    client.get_messages = spy  # type: ignore[method-assign]
+    worker = Worker(store, client, tmp_path / "s.sock")
+    for m in (old, recent):
+        store.save_normal(row, m, advance_cursor=False)
+    asyncio.run(worker.backfill_source(row, SimpleNamespace(id=-1017)))
+    assert asked[-1] == [1, 2], "进程启动后第一轮做保留期全量复查"
+    asyncio.run(worker.backfill_source(row, SimpleNamespace(id=-1017)))
+    assert asked[-1] == [2], "之后每轮只复查最近 24 小时"
+    worker.full_recheck_at[source_id] -= 25 * 3600
+    asyncio.run(worker.backfill_source(row, SimpleNamespace(id=-1017)))
+    assert asked[-1] == [1, 2], "满 24 小时再做一次全量"

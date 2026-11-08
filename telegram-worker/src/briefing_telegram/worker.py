@@ -22,6 +22,8 @@ USERNAME = re.compile(r"[A-Za-z0-9_]{5,32}")
 URLISH = re.compile(r"https?://[^\s<>\"'，。；：！？、]+|(?<![@\w])(?:www\.)?[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})){1,}(?:/[^\s<>\"'，。；：！？、]*)?", re.IGNORECASE)
 BARE_HOST = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+(?:[A-Za-z]{2,63}|xn--[A-Za-z0-9-]{2,59})$", re.IGNORECASE)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+RECENT_RECHECK = timedelta(hours=24)
+FULL_RECHECK_SECONDS = 24 * 3600
 # 断线、超时、限流、Telegram 服务端错误都会自行恢复，不能据此停用来源。
 # 2026-09-29 一次断线让 reload() 把全部 17 个来源标成 error/enabled=0，采集静默停了 10 天。
 TRANSIENT_ERRORS = (ConnectionError, OSError, asyncio.TimeoutError, FloodWaitError, ServerError)
@@ -215,6 +217,12 @@ class Store:
         self.db.execute("""INSERT INTO telegram_sync_progress(source_id,covered_until,last_attempt_at,last_attempt_ok) VALUES(?,?,?,?)
           ON CONFLICT(source_id) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,last_attempt_ok=excluded.last_attempt_ok,
           covered_until=coalesce(excluded.covered_until,telegram_sync_progress.covered_until)""", (source_id, covered_until, utc_now(), okv))
+        self.db.commit()
+
+    def cover(self, source_id: int, covered_until: str) -> None:
+        """发布覆盖水位：covered_until 之前发出的消息都已采到（ensureDueJobs 按它推进窗口）。不改动尝试状态。"""
+        self.db.execute("""INSERT INTO telegram_sync_progress(source_id,covered_until) VALUES(?,?)
+          ON CONFLICT(source_id) DO UPDATE SET covered_until=excluded.covered_until""", (source_id, covered_until))
         self.db.commit()
 
     def transient_failure(self, source_id: int, message: str) -> None:
@@ -425,6 +433,8 @@ class Worker:
         self.store, self.client, self.socket_path = store, client, socket_path
         self.entities: dict[int, object] = {}
         self.phone = os.environ.get("TELEGRAM_PHONE", "")
+        # 每个来源上次完成「保留期全量复查」的时刻（单调时钟；进程重启后第一轮做一次全量）
+        self.full_recheck_at: dict[int, float] = {}
 
     @staticmethod
     def is_full_history(row: sqlite3.Row) -> bool:
@@ -577,6 +587,9 @@ class Worker:
             self.store.db.execute("UPDATE telegram_sync_state SET last_message_id=max(last_message_id,?),last_synced_at=?,last_error=NULL WHERE source_id=?",
                                   (max_seen, utc_now(), row["id"]))
         self.store.db.commit()
+        # 新消息读完即发布覆盖水位：此前发出的消息都已入库。保留期复查只负责同步之后的编辑，不能挡住总结
+        # （2026-11-08：大群每轮全量复查 3 万条要一个多小时，覆盖水位等复查结束才发布，Telegram 总结赶不上 08:00 日报）。
+        self.store.cover(row["id"], scan_started)
         retry_ids = [int(item[0]) for item in self.store.db.execute("""SELECT message_id
           FROM telegram_media_tasks WHERE source_id=? AND
           (status='downloading' OR (status='failed' AND error_type='download_error'))
@@ -589,7 +602,10 @@ class Worker:
         if self.is_full_history(row):
             await self.backfill_all_history(row, entity)
         if row["source_type"] == "normal" and not self.is_full_history(row):
-            retained = [int(item[0]) for item in self.store.db.execute("SELECT message_id FROM telegram_messages WHERE source_id=? AND sent_at>=? AND deleted_at IS NULL ORDER BY message_id", (row["id"], utc(cutoff))).fetchall()]
+            # 每轮只复查最近 24 小时；保留期全量复查每 24 小时一次（大群全量复查每轮要数十次请求）
+            full_due = time.monotonic() - self.full_recheck_at.get(row["id"], float("-inf")) >= FULL_RECHECK_SECONDS
+            since = cutoff if full_due else max(cutoff, datetime.now(UTC) - RECENT_RECHECK)
+            retained = [int(item[0]) for item in self.store.db.execute("SELECT message_id FROM telegram_messages WHERE source_id=? AND sent_at>=? AND deleted_at IS NULL ORDER BY message_id", (row["id"], utc(since))).fetchall()]
             for offset in range(0, len(retained), 500):
                 requested = retained[offset:offset + 500]
                 current = await self.client.get_messages(entity, ids=requested)
@@ -603,11 +619,11 @@ class Worker:
                         await self.capture_image(row, message, report=True)
                         progress()
                 self.store.delete_normal(row["chat_id"], [item for item in requested if item not in returned])
+            if full_due:
+                self.full_recheck_at[row["id"]] = time.monotonic()
         self.store.db.execute("UPDATE telegram_sources SET last_success_at=?,last_error=NULL,updated_at=? WHERE id=?",(utc_now(),utc_now(),row["id"]))
         self.store.db.commit()
-        # 连续历史扫描与保留期复查都成功之后才发布覆盖水位（ensureDueJobs 按它推进窗口）：
-        # 复查会刷新已存消息的编辑与删除，提前发布可能让总结读到旧内容
-        self.store.attempt(row["id"], True, covered_until=scan_started)
+        self.store.attempt(row["id"], True)
 
     async def reconcile(self) -> None:
         await self.validate_pending()
