@@ -11,7 +11,6 @@
 import { windowDefs } from '../../../packages/domain/src/normalize.ts';
 import { readBackupSettings, readGdriveStatus, writeBackupSettings } from '../../../packages/web/src/backup-settings.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
-import { toggleAllnetCollection, allnetRequest, searchAllnet, subscribeAllnet, rotateAllnetToken, allnetRss, type Subscription } from '../../../packages/connectors/src/allnet.ts';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
@@ -19,7 +18,7 @@ import { openDb, migrate, nowIso, type DB } from '../../../packages/db/src/index
 import { join } from 'node:path';
 import { verifyPassword, verifyTotp, SessionStore, csrfOk, LoginLimiter, type Session }
   from '../../../packages/web/src/auth.ts';
-import { renderAllnet, renderLogin, renderSources, renderSettings, renderToday, renderSystem, renderRuns, renderRunDetail, renderFeeds, setNavBadges,
+import { renderLogin, renderSources, renderSettings, renderToday, renderSystem, renderRuns, renderRunDetail, renderFeeds, setNavBadges,
          type TodaySlot, type NavBadges, type RunRow, type FeedRow } from '../../../packages/web/src/views.ts';
 import { pendingRequests, queueRequest } from '../../../packages/web/src/requests.ts';
 import { computeAlerts, readBackups, readDisk, readUnits, type Alert } from '../../../packages/web/src/ops.ts';
@@ -27,7 +26,7 @@ import { briefFeedToken, briefsRss, rotateBriefFeedToken } from '../../../packag
 import { maskedSecrets, setSecret, setSettings, resolveSettings, vaultHealthy,
          resolveSecret, SECRET_NAMES, type SecretName } from '../../../packages/web/src/secrets.ts';
 import { overrideCandidate, toggleSource, updateSourceGroup, updateSourceUrl, planResend, addSource, deleteSource,
-         testSource, approveSourceProposal, rejectSourceProposal, ensureProfilerProfile, ActionError } from '../../../packages/web/src/actions.ts';
+         testSource, approveSourceProposal, rejectSourceProposal, ensureProfilerProfile, ActionError, RETIRED_HOST_GROUP } from '../../../packages/web/src/actions.ts';
 import { createProvider } from '../../../packages/ai/src/registry.ts';
 import { runSourceProfiler } from '../../../packages/ai/src/source-profiler.ts';
 import { readyTelegramDb } from '../../../packages/telegram/src/db.ts';
@@ -183,10 +182,10 @@ const back = (req: any, fallback: string): string => {
 const q = {
   sources: () => db.prepare(`SELECT id,display_name,category,source_group,health,harvest_tier,
     consecutive_failures,last_success_at,last_http_code,last_error,latest_item_at,enabled,managed_by,onboarding_status,observation_until,
-    (SELECT json_object('upstream_id',upstream_id,'item_limit',item_limit,'kind',kind,'token',token,'snapshot_at',snapshot_at,'collection_enabled',collection_enabled) FROM allnet_subscriptions a WHERE a.source_id=sources.id) allnet_json,
     (SELECT url FROM source_endpoints e WHERE e.source_id=sources.id AND e.priority=1) endpoint_url,
     (SELECT parser FROM source_endpoints e WHERE e.source_id=sources.id AND e.priority=1) endpoint_parser
-    FROM sources ORDER BY CASE health WHEN 'failing' THEN 0 WHEN 'degraded' THEN 1 ELSE 2 END, id`).all(),
+    FROM sources WHERE host_group <> '${RETIRED_HOST_GROUP}'
+    ORDER BY CASE health WHEN 'failing' THEN 0 WHEN 'degraded' THEN 1 ELSE 2 END, id`).all(),
   tests: () => db.prepare(`SELECT url,outcome,parsed_count,error,started_at
     FROM source_tests ORDER BY id DESC LIMIT 8`).all(),
   proposals: () => db.prepare(`SELECT p.*, s.onboarding_status FROM source_onboarding_proposals p
@@ -287,7 +286,7 @@ app.get('/', async (req, reply) => {
   const ai = { calls: (db.prepare(`SELECT count(*) calls FROM evaluations WHERE created_at>=?`).get(dayStart) as any).calls
     + Number((db.prepare(`SELECT coalesce(sum(json_extract(payload_json,'$.aiCalls')),0) n FROM audit_events WHERE action='brief_composed' AND created_at>=?`).get(dayStart) as any).n) };
   const lastH = (q.harvests() as any[])[0];
-  const enabled = sources.filter(x => x.enabled && !x.allnet_json);
+  const enabled = sources.filter(x => x.enabled);
   const tgEnabled = tgSources.filter(t => t.enabled);
   const weekday = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Taipei', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date(now));
   return reply.type('text/html; charset=utf-8').send(renderToday({
@@ -413,10 +412,6 @@ app.get('/feeds', async (req, reply) => {
       FROM telegram_sources s WHERE s.source_type='normal' ORDER BY s.enabled DESC, s.id`).all() as any[]).map(t => ({
       group: 'Telegram 单个频道', name: t.name, note: `${t.reference}${t.enabled ? '' : ' · 已停用'}`,
       url: t.rss_token ? `${base}/rss/telegram/source/${t.rss_token}` : null, lastAt: t.last, action: `/telegram/sources/${t.id}/token` })),
-    ...(db.prepare(`SELECT a.source_id, a.token, a.snapshot_at, a.kind, a.item_limit, s.display_name FROM allnet_subscriptions a
-      JOIN sources s ON s.id=a.source_id ORDER BY s.display_name`).all() as any[]).map(a => ({
-      group: '全网热点', name: a.display_name, note: `前 ${a.item_limit} 条`, url: a.token ? `${base}/rss/allnet/${a.token}` : null,
-      lastAt: a.snapshot_at, action: `/allnet/${encodeURIComponent(a.source_id)}/token`, empty: '尚无成功快照' })),
   ];
   return reply.type('text/html; charset=utf-8').send(renderFeeds({ csrf: s.csrf, now: Date.now(), feeds }));
 });
@@ -542,62 +537,11 @@ const sourcesPage = (s: Session, extra: Record<string, unknown> = {}) =>
   renderSources({ csrf: s.csrf, sources: q.sources() as any, tests: q.tests() as any,
     proposals: q.proposals() as any, baseUrl: process.env.ADMIN_BASE_URL ?? '', ...extra });
 
-const allnetPage = (s:Session, extra:Record<string,unknown>={}) => renderAllnet({
-  csrf:s.csrf,sources:q.sources() as any,baseUrl:process.env.ADMIN_BASE_URL??'',...extra,
-});
-app.get('/allnet',async(req,reply)=>{
-  const session=requireAuth(req,reply);if(!session)return;
-  return reply.type('text/html; charset=utf-8').send(allnetPage(session));
-});
-app.post<{Params:{id:string}}>('/allnet/:id/toggle',async(req,reply)=>{
-  const session=requireAuth(req,reply);if(!session||!requireWrite(req,reply,session))return;
-  const enabled=(req.body as any)?.enabled;
-  if(!['true','false'].includes(enabled))return reply.code(400).send({error:'无效启停状态'});
-  try {toggleAllnetCollection(db,req.params.id,enabled==='true');return reply.redirect(back(req,'/allnet'));}
-  catch(e:any){return reply.code(e.status??500).send({error:e.message});}
-});
-
 app.get('/sources', async (req, reply) => {
   const s = requireAuth(req, reply); if (!s) return;
   return reply.type('text/html; charset=utf-8').send(sourcesPage(s));
 });
 
-
-app.get<{Params:{token:string}}>('/rss/allnet/:token', async(req,reply)=>{
-  if(!/^[a-f0-9]{64}$/.test(req.params.token)) return reply.code(404).send('订阅不存在');
-  const row=db.prepare(`SELECT a.*,s.display_name,s.last_error FROM allnet_subscriptions a JOIN sources s ON s.id=a.source_id WHERE a.token=?`).get(req.params.token) as (Subscription & {display_name:string;last_error:string})|undefined;
-  if(!row) return reply.code(404).send('订阅不存在');
-  if(!row.snapshot_at) return reply.code(503).send('尚无成功快照');
-  return reply.header('Referrer-Policy','no-referrer').type('application/rss+xml; charset=utf-8').send(allnetRss(row,row.display_name,row.last_error));
-});
-for(const path of ['/allnet/search','/sources/allnet/search']) app.post(path,async(req,reply)=>{
-  const session=requireAuth(req,reply);if(!session||!requireWrite(req,reply,session))return;
-  const name=String((req.body as any)?.name??'').trim();
-  try {
-    const rows=await searchAllnet(db,name);const exact=rows.filter(r=>r.title===name);
-    if(exact.length===1) {const id=await subscribeAllnet(db,exact[0]!.id,exact[0]!.title,String((req.body as any)?.origin??''));return reply.type('text/html').send(allnetPage(session,{saved:`已订阅：${id}`}));}
-    return reply.type('text/html').send(allnetPage(session,{allnetCandidates:rows,allnetQuery:name,...(!rows.length?{error:'未找到匹配来源；百度热搜暂不可用'}:{})}));
-  } catch(e:any) {return reply.code(e.status??502).type('text/html').send(allnetPage(session,{error:e.message}));}
-});
-for(const path of ['/allnet/add','/sources/allnet/add']) app.post(path,async(req,reply)=>{
-  const session=requireAuth(req,reply);if(!session||!requireWrite(req,reply,session))return;
-  try {
-    const b=req.body as any;const rows=await searchAllnet(db,String(b.name??''));const match=rows.find(r=>r.id===Number(b.upstream_id));
-    if(!match) return reply.code(400).send('来源不在搜索候选中');
-    const id=await subscribeAllnet(db,match.id,match.title,String(b.origin??''));
-    return reply.type('text/html').send(allnetPage(session,{saved:`已订阅：${id}`}));
-  } catch(e:any) {return reply.code(e.status??502).type('text/html').send(allnetPage(session,{error:e.message}));}
-});
-for(const path of ['/allnet/:id/token','/sources/:id/allnet/token']) app.post<{Params:{id:string}}>(path,async(req,reply)=>{
-  const session=requireAuth(req,reply);if(!session||!requireWrite(req,reply,session))return;
-  try {rotateAllnetToken(db,req.params.id,(req.body as any)?.action==='revoke');return reply.redirect(back(req,'/allnet'));}
-  catch(e:any) {return reply.code(e.status??502).send({error:e.message});}
-});
-app.post('/settings/allnet/test',async(req,reply)=>{
-  const session=requireAuth(req,reply);if(!session||!requireWrite(req,reply,session))return;
-  try {await allnetRequest(db,'/sources',{page:'1'},true);return reply.type('text/html').send(settingsPage(session,{saved:'全网热点连通性测试通过'}));}
-  catch(e:any) {return reply.code(e.status??502).type('text/html').send(settingsPage(session,{error:e.message}));}
-});
 
 /** 仅测试，不添加（FR-004：不写入正式简报，但保存诊断日志） */
 app.post('/sources/test', async (req, reply) => {
@@ -907,6 +851,9 @@ app.post('/settings/secret', async (req, reply) => {
     return reply.code(500).type('text/html; charset=utf-8').send(settingsPage(s, { error: String(e?.message ?? e) }));
   }
 });
+
+// 统一 404：不记录原始网址（默认处理会把完整 URL 写进日志，已下线的 /rss/allnet/<令牌> 等旧链接会因此泄露令牌）
+app.setNotFoundHandler((req, reply) => { reply.code(404).type('text/plain; charset=utf-8').send('Not Found'); });
 
 app.setErrorHandler((err, req, reply) => {
   // 敏感错误只进服务器日志，前端不暴露堆栈（PRD 14.2）

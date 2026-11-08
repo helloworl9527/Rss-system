@@ -130,13 +130,24 @@ export function permanentOverrideFor(db: DB, canonicalKey: string): { action: st
 
 // ---------- 来源启停（FR-001） ----------
 
+/**
+ * 已下线的全网热点来源（host_group='allnet'）：功能代码已删除，表与历史数据保留到阶段二统一删除
+ * （docs/remove-allnet-design.md）。期间不得在后台重新启用或改动，否则无端点的来源会持续采集失败、
+ * 历史内容重新获得日报资格。
+ */
+export const RETIRED_HOST_GROUP = 'allnet';
+function assertNotRetired(db: DB, id: string) {
+  const s = db.prepare('SELECT host_group FROM sources WHERE id=?').get(id) as any;
+  if (s?.host_group === RETIRED_HOST_GROUP) throw new ActionError(400, '全网热点已下线，该来源不能再启用或修改');
+}
+
 export function toggleSource(db: DB, id: string, enabled: boolean, reason: string, actor = 'owner') {
   const r = requireReason(reason);
   const s = db.prepare('SELECT id, enabled FROM sources WHERE id=?').get(id) as any;
   if (!s) throw new ActionError(404, '来源不存在');
+  assertNotRetired(db, id);
 
   db.transaction(() => {
-    if(enabled && !s.enabled) db.prepare('UPDATE allnet_subscriptions SET briefing_enabled_since=? WHERE source_id=?').run(nowIso(),id);
     db.prepare('UPDATE sources SET enabled=?, updated_at=? WHERE id=?')
       .run(enabled ? 1 : 0, nowIso(), id);
     db.prepare(`INSERT INTO manual_overrides
@@ -155,6 +166,7 @@ export function updateSourceGroup(db: DB, id: string, sourceGroup: string, reaso
   if (!SOURCE_GROUPS.includes(sourceGroup as any)) throw new ActionError(400, '未知来源分组');
   const s = db.prepare('SELECT id,source_group FROM sources WHERE id=?').get(id) as any;
   if (!s) throw new ActionError(404, '来源不存在');
+  assertNotRetired(db, id);
   if (s.source_group === sourceGroup) return { ok: true as const, sourceGroup };
   const now = nowIso();
   db.transaction(() => {
@@ -480,9 +492,8 @@ export function deleteSource(db: DB, id: string, reason: string, actor = 'owner'
   if (!s) throw new ActionError(404, '来源不存在');
   if (s.managed_by !== 'admin')
     throw new ActionError(400, '该来源来自 config/sources.yaml，请改配置文件后执行同步；后台只能删除自己新增的来源');
+  assertNotRetired(db, id);
 
-  if(db.prepare('SELECT 1 FROM allnet_subscriptions WHERE source_id=?').get(id))
-    throw new ActionError(400,'全网热点订阅请分别管理参与日报、采集和令牌，不支持从来源页删除');
   const items = (db.prepare('SELECT count(*) c FROM feed_items WHERE source_id=?').get(id) as any).c;
   db.transaction(() => {
     // 已抓到的内容不删 —— 审计要求可追溯（PRD 13.3）。只停用并标记。

@@ -170,7 +170,7 @@ const NAV: Array<[NavKey, string, string] | string> = [
   ['today', '/', '今日'], ['runs', '/runs', '日报记录'], ['sources', '/sources', '来源'], ['telegram', '/telegram', 'Telegram'], ['feeds', '/feeds', '订阅输出'],
   '系统', ['system', '/system', '系统运行'], ['settings', '/settings', '设置'],
 ];
-const NAV_BY_TITLE: Record<string, NavKey> = { '今日': 'today', '仪表盘': 'today', '日报记录': 'runs', '来源': 'sources', '全网热点': 'sources',
+const NAV_BY_TITLE: Record<string, NavKey> = { '今日': 'today', '仪表盘': 'today', '日报记录': 'runs', '来源': 'sources',
   'Telegram 订阅': 'telegram', 'Telegram': 'telegram', '订阅输出': 'feeds', '系统运行': 'system', '设置': 'settings' };
 
 export function layout(title: string, body: string, csrf: string, active: NavKey | undefined = NAV_BY_TITLE[title]): string {
@@ -213,7 +213,6 @@ const healthDot = (h: string) =>
 
 type Src = { id: string; display_name: string; category: string; health: string;
   source_group: string;
-  allnet_json?: string | null;
   harvest_tier: string; consecutive_failures: number; last_success_at: string | null;
   last_http_code: number | null; last_error: string | null; latest_item_at: string | null; enabled: number;
   onboarding_status?: string; observation_until?: string | null;
@@ -238,18 +237,17 @@ export function renderSources(o: {
   csrf: string; sources: Array<Src & { managed_by?: string }>;
   tests?: Array<{ url: string; outcome: string; parsed_count: number | null; error: string | null; started_at: string }>;
   proposals?: any[];
-  allnetCandidates?: Array<{id:number;title:string;existing?:string}>; allnetQuery?: string; baseUrl?:string;
+  baseUrl?:string;
   form?: Record<string, string>; saved?: string; error?: string;
 }): string {
   const f = o.form ?? {};
   const admin = o.sources.filter(s => s.managed_by === 'admin');
 
-  const allnetConfig = (s:Src) => `<a href="/allnet#${esc(s.id)}">管理全网热点采集与 RSS</a><div class="muted">此页开关仅控制参与日报，独立采集状态见全网热点页。</div>`;
   const manageRow = (s: Src & { managed_by?: string }) => `<tr>
     <td>${esc(s.display_name)}<div class="muted">${esc(s.id)}
       ${s.managed_by === 'admin' ? '<span class="pill accent">后台新增</span>' : ''}</div></td>
     <td style="min-width:300px">
-      ${s.allnet_json ? allnetConfig(s) : s.endpoint_url ? `<form method="post" action="/sources/${esc(s.id)}/url">
+      ${s.endpoint_url ? `<form method="post" action="/sources/${esc(s.id)}/url">
         <input type="hidden" name="csrf" value="${esc(o.csrf)}">
         <input name="url" type="url" value="${esc(s.endpoint_url)}" required
           style="width:100%;min-width:280px" aria-label="${esc(s.display_name)}订阅 URL">
@@ -260,7 +258,7 @@ export function renderSources(o: {
         <div class="muted">解析器：${esc(s.endpoint_parser ?? '—')}</div>
       </form>` : '<span class="muted">无主订阅地址</span>'}
     </td>
-    <td>${healthDot(s.health)}${s.enabled ? '' : `<span class="pill">${s.allnet_json?'未参与日报':'已停用'}</span>`}<div class="muted">${esc(ago(s.last_success_at))}</div>
+    <td>${healthDot(s.health)}${s.enabled ? '' : `<span class="pill">已停用</span>`}<div class="muted">${esc(ago(s.last_success_at))}</div>
       <form method="post" action="/sources/${esc(s.id)}/group" class="inline" style="margin-top:6px">
         <input type="hidden" name="csrf" value="${esc(o.csrf)}">
         <select name="source_group">${opts(SOURCE_GROUPS, s.source_group)}</select>
@@ -272,9 +270,9 @@ export function renderSources(o: {
         <input type="hidden" name="enabled" value="${s.enabled ? 'false' : 'true'}">
         <input type="hidden" name="redirect" value="/sources">
         <input name="reason" placeholder="理由（必填）" required minlength="4">
-        <button>${s.allnet_json ? (s.enabled ? '停用参与日报' : '启用参与日报') : (s.enabled ? '停用' : '启用')}</button>
+        <button>${s.enabled ? '停用' : '启用'}</button>
       </form>
-      ${s.managed_by === 'admin' && !s.allnet_json ? `<form method="post" action="/sources/${esc(s.id)}/delete" class="inline" style="margin-top:5px">
+      ${s.managed_by === 'admin' ? `<form method="post" action="/sources/${esc(s.id)}/delete" class="inline" style="margin-top:5px">
         <input type="hidden" name="csrf" value="${esc(o.csrf)}">
         <input type="hidden" name="redirect" value="/sources">
         <input name="reason" placeholder="删除理由（必填）" required minlength="4">
@@ -306,7 +304,7 @@ export function renderSources(o: {
   const body = `
   ${o.saved ? `<div class="note">${esc(o.saved)}</div>` : ''}
   ${o.error ? `<div class="err">${esc(o.error)}</div>` : ''}
-  <div class="page-h"><h1>来源</h1><span></span></div><nav class="tabs" aria-label="来源类型"><a href="/sources" class="on" aria-current="page">RSS 来源</a><a href="/allnet">全网热点</a></nav>
+  <div class="page-h"><h1>来源</h1><span></span></div><nav class="tabs" aria-label="来源类型"><a href="/sources" class="on" aria-current="page">RSS 来源</a></nav>
   <p class="sub">共 ${o.sources.length} 个来源，其中后台新增 ${admin.length} 个。分组仅用于后台整理，不改变日报筛选。</p>
   ${groupedSources}
 
@@ -376,7 +374,7 @@ const BASE_URL_DEFAULTS = [
 ];
 const KEY_LABEL: Record<string, string> = {
   OPENAI_API_KEY: 'OpenAI', OPENAI_COMPAT_API_KEY: 'OpenAI 兼容格式', DEEPSEEK_API_KEY: 'DeepSeek', DASHSCOPE_API_KEY: 'Qwen / DashScope',
-  ALLNET_API_KEY: '全网热点', ANTHROPIC_API_KEY: 'Anthropic', GEMINI_API_KEY: 'Gemini', SOURCE_PROFILER_API_KEY: 'Source Profiler 独立密钥',
+  ANTHROPIC_API_KEY: 'Anthropic', GEMINI_API_KEY: 'Gemini', SOURCE_PROFILER_API_KEY: 'Source Profiler 独立密钥',
   TELEGRAM_API_ID: 'Telegram API ID', TELEGRAM_API_HASH: 'Telegram API Hash', TELEGRAM_PHONE: 'Telegram 登录手机号',
 };
 
@@ -413,7 +411,7 @@ export function renderSettings(o: {
     ${o.envOverrides.map(esc).join('、')}</div>` : ''}
 
   <div class="page-h"><h1>设置</h1><span>按模块分组</span></div>
-  <nav class="tabs" aria-label="设置分组"><a href="#ai">日报 AI 模型</a><a href="#keys">API Key</a><a href="#profiler">来源画像</a><a href="#allnet">全网热点</a>${o.telegram ? '<a href="#telegram">Telegram 总结</a><a href="#vision">图片识别</a><a href="#retention">数据保留</a>' : ''}</nav>
+  <nav class="tabs" aria-label="设置分组"><a href="#ai">日报 AI 模型</a><a href="#keys">API Key</a><a href="#profiler">来源画像</a>${o.telegram ? '<a href="#telegram">Telegram 总结</a><a href="#vision">图片识别</a><a href="#retention">数据保留</a>' : ''}</nav>
   <h2 id="ai">日报 AI 模型与 API 地址</h2>
   <p class="sub">每个层级的 Base URL 都可以直接编辑。留空使用所选厂商的官方默认地址；“OpenAI 兼容格式”没有默认地址，必须填写 API 根地址（通常以 /v1 结尾）。</p>
   <form method="post" action="/settings/ai">
@@ -457,40 +455,7 @@ export function renderSettings(o: {
       <tr><td>启用</td><td><select name="enabled"><option value="true"${o.settings.sourceProfilerEnabled !== 'false' ? ' selected' : ''}>启用</option><option value="false"${o.settings.sourceProfilerEnabled === 'false' ? ' selected' : ''}>停用</option></select></td><td class="muted">启用前后台会执行结构化输出测试</td></tr>
     </table><p><button class="primary" ${o.vaultOk ? '' : 'disabled'}>测试并保存配置版本</button></p>
   </form>`;
-  return layout('设置', body + `<h2 id="allnet">全网热点</h2><p>在上方密钥保管库保存或更新 ALLNET_API_KEY。订阅在“来源 → 全网热点”中按名称添加。</p><form method="post" action="/settings/allnet/test"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><button>测试连通性</button></form>` + (o.telegram ?? ''), o.csrf, 'settings');
-}
-
-export function renderAllnet(o: {
-  csrf:string; sources:Array<Src>; baseUrl?:string; saved?:string; error?:string;
-  allnetCandidates?:Array<{id:number;title:string;existing?:string}>; allnetQuery?:string;
-}):string {
-  const rows=o.sources.filter(s=>s.allnet_json).map(s=>{
-    const a=JSON.parse(s.allnet_json!);
-    const active=!!s.enabled || !!a.collection_enabled;
-    const url=a.token?`${o.baseUrl??''}/rss/allnet/${a.token}`:'';
-    return `<tr id="${esc(s.id)}"><td>${esc(s.display_name)}<div class="muted">上游 ID ${a.upstream_id}</div></td>
-      <td>${a.kind==='ranking'?'每轮前':'最新第一页，最多'} ${a.item_limit} 条<div>${a.kind==='ranking'?'20':'60'} 分钟</div></td>
-      <td>全网热点：${a.collection_enabled?'已启用':'已停用'}<br>参与日报：${s.enabled?'已启用':'已停用'}
-        <div>${active ? (!a.collection_enabled?'继续为日报采集':'正常采集') : '采集已停止，RSS 保留旧快照'}</div>
-        <form method="post" action="/allnet/${esc(s.id)}/toggle"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><input type="hidden" name="enabled" value="${a.collection_enabled?'false':'true'}"><button>${a.collection_enabled?'停用全网热点':'启用全网热点'}</button></form>
-        <a href="/sources">前往来源页管理参与日报</a></td>
-      <td>${healthDot(s.health)}<div>最近成功：${esc(a.snapshot_at??'尚无')}</div><div class="bad">${esc(s.last_error??'')}</div></td>
-      <td>${url?`<label>RSS URL（选中复制）<input readonly value="${esc(url)}" style="width:100%"></label>`:'RSS 令牌已撤销'}
-        <form method="post" action="/allnet/${esc(s.id)}/token"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><button name="action" value="reset">重置令牌</button><button name="action" value="revoke">撤销令牌</button></form></td></tr>`;
-  }).join('');
-  return layout('全网热点', `
-    <div class="page-h"><h1>来源</h1><span></span></div><nav class="tabs" aria-label="来源类型"><a href="/sources">RSS 来源</a><a href="/allnet" class="on" aria-current="page">全网热点</a></nav>
-    <h2>全网热点订阅管理</h2>
-    ${o.saved?`<div class="note">${esc(o.saved)}</div>`:''}${o.error?`<div class="err">${esc(o.error)}</div>`:''}
-    <p>任一页面启用就继续采集；是否进入日报由来源页单独控制。新增订阅默认仅供 RSS。</p>
-    <table><tr><th>来源</th><th>采集范围</th><th>启停状态</th><th>采集健康</th><th>RSS 与令牌</th></tr>${rows||'<tr><td colspan="5">暂无订阅</td></tr>'}</table>
-    <p class="muted">百度热搜：暂不可用，等待上游开放。</p>
-  <h2>按名称添加全网热点订阅</h2>
-  <form method="post" action="/allnet/search"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><input name="name" required maxlength="100" placeholder="网站已有的来源名称"><input name="origin" type="url" placeholder="原站 HTTPS 地址（仅相对链接需要）"><button>搜索并订阅</button></form>
-  <p class="sub">唯一精确匹配时测试后直接订阅；多个候选请选择。无需 AI 画像审批。新增后请到来源页单独启用参与日报。</p>
-  ${(o.allnetCandidates??[]).map(c=>`<form method="post" action="/allnet/add"><input type="hidden" name="csrf" value="${esc(o.csrf)}"><input type="hidden" name="name" value="${esc(o.allnetQuery??'')}"><input type="hidden" name="upstream_id" value="${c.id}"><span>${esc(c.title)}</span><input name="origin" type="url" placeholder="原站地址（如需要）"> ${c.existing?`<span>已订阅：${esc(c.existing)}</span>`:'<button>测试并订阅</button>'}</form>`).join('')}
-
-  `,o.csrf);
+  return layout('设置', body + (o.telegram ?? ''), o.csrf, 'settings');
 }
 
 // ---------------- 今日 / 系统运行（后台改版第一期） ----------------

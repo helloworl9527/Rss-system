@@ -24,12 +24,7 @@ const SELECT_IN_RANGE = `
   FROM feed_items f
   JOIN item_versions v ON v.id = f.current_version_id
   JOIN sources s ON s.id = f.source_id
-  WHERE ${itemEligibleSql()} AND (CASE WHEN f.published_at IS NULL AND f.timestamp_confidence='missing'
-    AND EXISTS(SELECT 1 FROM allnet_subscriptions a WHERE a.source_id=f.source_id)
-    THEN f.first_seen_at ELSE f.published_at END) >= ?
-    AND (CASE WHEN f.published_at IS NULL AND f.timestamp_confidence='missing'
-    AND EXISTS(SELECT 1 FROM allnet_subscriptions a WHERE a.source_id=f.source_id)
-    THEN f.first_seen_at ELSE f.published_at END) < ?`;
+  WHERE ${itemEligibleSql()} AND f.published_at >= ? AND f.published_at < ?`;
 
 /** 某窗口内发布的条目。 */
 export function itemsInWindow(db: DB, w: Win): ItemRow[] {
@@ -55,8 +50,7 @@ export type LateResult = {
  */
 export function findLateDiscoveries(db: DB, prev: Win[]): LateResult {
   const watched = db.prepare(`SELECT 1 FROM fetch_attempts
-    WHERE source_id = ? AND outcome IN ('ok','not_modified') AND started_at < ?
-      AND started_at>=coalesce((SELECT briefing_enabled_since FROM allnet_subscriptions WHERE source_id=fetch_attempts.source_id),'') LIMIT 1`);
+    WHERE source_id = ? AND outcome IN ('ok','not_modified') AND started_at < ? LIMIT 1`);
   const late: Array<ItemRow & { origin: Win }> = [];
   let backfill = 0;
 

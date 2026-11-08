@@ -7,8 +7,6 @@
  *   node apps/worker/src/harvest.ts --all      忽略 tier，全部采集
  *   node apps/worker/src/harvest.ts --source X 只采集指定来源
  */
-import { fetchAllnet, parseAllnet, type Subscription } from '../../../packages/connectors/src/allnet.ts';
-import { fetchArticle } from '../../../packages/connectors/src/fulltext.ts';
 import { gzipSync } from 'node:zlib';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -42,7 +40,8 @@ type SrcRow = {
   id: string; name: string; harvest_tier: string; host_group: string;
   config_json: string; last_attempt_at: string | null; consecutive_failures: number;
 };
-const all = db.prepare('SELECT * FROM sources WHERE enabled=1 OR EXISTS (SELECT 1 FROM allnet_subscriptions a WHERE a.source_id=sources.id AND a.collection_enabled=1) ORDER BY priority, id').all() as SrcRow[];
+// 已下线的全网热点来源（host_group='allnet'）即使被误启用也不再采集；阶段二删除其数据
+const all = db.prepare("SELECT * FROM sources WHERE enabled=1 AND host_group <> 'allnet' ORDER BY priority, id").all() as SrcRow[];
 const now = Date.now();
 const due = all.filter(s => {
   if (ONLY) return s.id === ONLY;
@@ -103,11 +102,7 @@ for (const src of due) {
   const eps = q.eps.all(src.id) as any[];
   const t0 = Date.now();
 
-  const subscription = db.prepare('SELECT * FROM allnet_subscriptions WHERE source_id=?').get(src.id) as Subscription | undefined;
-  // 保留旧的全网热点 RSS 令牌作为兼容层，但允许将其底层采集切换为
-  // 官方 RSS；source_type=rss 时必须走普通端点和 RSS 解析器。
-  const allnetMode = !!subscription && cfgS.source_type !== 'rss';
-  const { attempts, success } = allnetMode ? await fetchAllnet(db, subscription!) : await fetchWithFallback(
+  const { attempts, success } = await fetchWithFallback(
     eps as Endpoint[], throttler,
     { userAgent: defaults.user_agent,
       maxBytes: cfgS.max_body_bytes ?? defaults.max_body_bytes },
@@ -180,7 +175,7 @@ for (const src of due) {
   let raws;
   try {
     const channel = /telegram\/channel\/([^/?]+)|t\.me\/s\/([^/?]+)/.exec(success.endpoint.url);
-    raws = allnetMode ? parseAllnet(JSON.parse(body), subscription!) : parseBy(success.endpoint.parser, body, { channel: channel?.[1] ?? channel?.[2] });
+    raws = parseBy(success.endpoint.parser, body, { channel: channel?.[1] ?? channel?.[2] });
   } catch (e: any) {
     q.srcFail.run(nowIso(), success.httpCode ?? null, `解析失败: ${e.message}`, nowIso(), src.id);
     lines.push(`  ❌ ${src.id.padEnd(16)} 解析失败: ${e.message}`);
@@ -195,25 +190,6 @@ for (const src of due) {
     continue;
   }
 
-  // Meituan article enrichment uses the original host without API credentials.
-  // Reuse saved article content to avoid refetching history and creating title-only versions.
-  if (subscription?.upstream_id === 864) {
-    for (const r of raws) {
-      const prior = r.link ? db.prepare(`SELECT f.published_at, v.clean_text FROM feed_items f
-        JOIN item_versions v ON v.id=f.current_version_id WHERE f.source_id=? AND f.canonical_url=?`).get(src.id, canonicalizeUrl(r.link)) as any : null;
-      if(prior) { r.publishedRaw=prior.published_at; r.html=prior.clean_text; continue; }
-      if (r.link && new URL(r.link).origin === 'https://tech.meituan.com') {
-        await new Promise(resolve => setTimeout(resolve, 300));
-        const article = await fetchArticle(r.link, {userAgent:defaults.user_agent,timeoutMs:15000,maxBytes:2*1024*1024});
-        if (article.ok) { r.html=article.text??''; r.publishedRaw=article.publishedRaw??null; }
-        // Meituan's dated permalink is an original-site date, never the harvest time.
-        const date = new URL(r.link).pathname.match(/^\/(\d{4})\/(\d{2})\/(\d{2})\//);
-        if (!r.publishedRaw && date) r.publishedRaw=`${date[1]}-${date[2]}-${date[3]}T00:00:00+08:00`;
-      }
-    }
-  }
-
-  const previousSnapshotKeys = new Set<string>(subscription?.snapshot_json ? JSON.parse(subscription.snapshot_json).map((r:any)=>r.guid) : []);
   // ---- 归一化 + 落库 ----
   let ni = 0, nv = 0, latest: string | null = null;
   db.transaction(() => {
@@ -222,12 +198,11 @@ for (const src of due) {
       const t = normalizeTime(r.publishedRaw, cfgS.assumed_timezone ?? defaults.assumed_timezone,
         { historicalArchive: !!cfgS.historical_archive });
       if (t.utc && (!latest || t.utc > latest)) latest = t.utc;
-      if (subscription?.upstream_id === 864 && !t.utc) t.confidence = 'stale';
       const k = extractItemKey(r.link, r.guid, src.id, r.title, t.utc);
 
       let item = q.itemGet.get(src.id, k.key) as any;
       if (!item) {
-        const discoveredAt = subscription?.snapshot_at && r.guid && previousSnapshotKeys.has(r.guid) ? subscription.snapshot_at : nowIso();
+        const discoveredAt = nowIso();
         const win = t.utc ? windowOf(new Date(t.utc)).key : null;
         const id = q.itemIns.run(src.id, k.key, k.kind, cu, null, r.link ?? null,
           t.utc, t.taipei, t.raw, t.confidence, discoveredAt, runId, win, nowIso(), nowIso()).lastInsertRowid;
@@ -254,7 +229,6 @@ for (const src of due) {
     }
   })();
 
-  if (subscription) db.prepare('UPDATE allnet_subscriptions SET snapshot_json=?,snapshot_at=? WHERE source_id=?').run(JSON.stringify(raws),nowIso(),src.id);
   okCount++;
   newItems += ni; newVersions += nv;
   q.srcOk.run(nowIso(), nowIso(), success.httpCode ?? 200, latest, nowIso(), src.id);
