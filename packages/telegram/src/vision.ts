@@ -1,7 +1,7 @@
 import { readFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createProvider } from '../../ai/src/registry.ts';
-import { ProviderError, type Provider } from '../../ai/src/types.ts';
+import { ProviderError, type Provider, type ProviderConfig } from '../../ai/src/types.ts';
 import { validate } from '../../ai/src/schema.ts';
 import type { TelegramDB } from './db.ts';
 import { nowIso } from './core.ts';
@@ -56,12 +56,26 @@ function failTask(db: TelegramDB, task: any, error: unknown, mediaDir: string): 
       canRetry ? 'ready' : 'deleted', nowIso(), canRetry ? null : nowIso(), task.id);
 }
 
-export type VisionRunConfig = { apiKey?: string; mediaDir?: string; provider?: Provider };
+export type VisionRunConfig = {
+  apiKey?: string; mediaDir?: string; provider?: Provider;
+  /** 全局模型供应商解析出的配置（为空 = 用 telegram_settings 旧配置） */
+  model?: ProviderConfig;
+  /** 本次请求所用配置的指纹；鉴权失败暂停时记录，用于判断暂停属于哪份配置 */
+  fingerprint?: string;
+  /** 失败时重新读取「当前」配置指纹：与本次请求不同（管理员已换配置）就不暂停 */
+  currentFingerprint?: () => string | null;
+};
 
 /** Process at most one item. A systemd timer provides the single-concurrency guarantee. */
 export async function runOneVisionTask(db: TelegramDB, cfg: VisionRunConfig = {}): Promise<'done'|'idle'|'paused'|'deferred'|'failed'> {
   const settings = db.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any;
-  if (settings.vision_paused) return 'paused';
+  if (settings.vision_paused) {
+    // 暂停属于触发它的那份配置；管理员换了配置（指纹不同）后自动解除，旧数据（无指纹）仍需手动恢复
+    if (cfg.fingerprint && settings.vision_pause_fingerprint && settings.vision_pause_fingerprint !== cfg.fingerprint) {
+      db.prepare(`UPDATE telegram_settings SET vision_paused=0,vision_pause_reason=NULL,vision_pause_fingerprint=NULL,updated_at=? WHERE singleton=1`).run(nowIso());
+      console.log('Telegram 图片识别：模型配置已更换，自动解除鉴权失败暂停');
+    } else return 'paused';
+  }
   const task = db.prepare(`SELECT * FROM telegram_media_tasks
     WHERE superseded_at IS NULL AND temp_state='ready' AND
       (status='pending' OR (status='retry' AND next_attempt_at<=?))
@@ -74,12 +88,12 @@ export async function runOneVisionTask(db: TelegramDB, cfg: VisionRunConfig = {}
       `${today}T00:00:00.000Z`, tomorrow) as any).n);
   if (!task.first_requested_at && used >= Number(settings.vision_daily_limit)) return 'deferred';
   db.prepare(`UPDATE telegram_media_tasks SET status='running',requested_model=?,updated_at=? WHERE id=?`)
-    .run(settings.vision_model, nowIso(), task.id);
+    .run(cfg.model?.model ?? settings.vision_model, nowIso(), task.id);
   const mediaDir = cfg.mediaDir ?? process.env.TELEGRAM_MEDIA_DIR ?? join(process.cwd(), 'data/telegram-media');
   try {
     const bytes = readFileSync(task.temp_path);
     if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new ProviderError('bad_request', '图片实际大小无效');
-    const provider = cfg.provider ?? await createProvider({
+    const provider = cfg.provider ?? await createProvider(cfg.model ?? {
       provider: settings.vision_provider,
       model: settings.vision_model,
       baseUrl: settings.vision_base_url ?? undefined,
@@ -105,8 +119,10 @@ export async function runOneVisionTask(db: TelegramDB, cfg: VisionRunConfig = {}
     return 'done';
   } catch (error) {
     if (error instanceof ProviderError && error.kind === 'auth') {
-      db.prepare(`UPDATE telegram_settings SET vision_paused=1,vision_pause_reason=?,updated_at=? WHERE singleton=1`)
-        .run('鉴权失败：请检查视觉模型 API 凭证后手动恢复队列', nowIso());
+      // 请求期间管理员已换配置：这是旧配置迟到的失败，不暂停新配置
+      const stale = !!cfg.fingerprint && !!cfg.currentFingerprint && cfg.currentFingerprint() !== cfg.fingerprint;
+      if (!stale) db.prepare(`UPDATE telegram_settings SET vision_paused=1,vision_pause_reason=?,vision_pause_fingerprint=?,updated_at=? WHERE singleton=1`)
+        .run('鉴权失败：请检查视觉模型 API 凭证后手动恢复队列', cfg.fingerprint ?? null, nowIso());
       db.prepare(`UPDATE telegram_media_tasks SET status='pending',attempts=attempts+1,next_attempt_at=NULL,
         error_type='auth',error_message=?,updated_at=? WHERE id=?`).run(
           String(error.message).slice(0, 500), nowIso(), task.id);

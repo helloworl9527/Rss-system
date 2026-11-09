@@ -379,9 +379,22 @@ const KEY_LABEL: Record<string, string> = {
   EMBEDDING_API_KEY: '向量模型（语义去重）',
 };
 
-function renderEmbeddingSettings(csrf: string, vaultOk: boolean, e: NonNullable<Parameters<typeof renderSettings>[0]['embedding']>): string {
+function renderEmbeddingSettings(csrf: string, vaultOk: boolean, e: NonNullable<Parameters<typeof renderSettings>[0]['embedding']>, managed = false): string {
   const c = e.config;
   const ov = (env: string) => e.envOverridden.includes(env) ? ' <span class="muted">（被环境变量覆盖）</span>' : '';
+  if (managed) return `
+  <h2 id="embedding">向量模型（语义去重）</h2>
+  <p class="sub">是否启用、供应商与模型由「模型分配」中的「向量模型」管理；这里只设置维度与阈值。</p>
+  <form method="post" action="/settings/embedding">
+    <input type="hidden" name="csrf" value="${esc(csrf)}">
+    <table>
+      <tr><td>维度</td><td><input name="dimensions" value="${c.dimensions ? esc(String(c.dimensions)) : ''}" placeholder="留空 = 模型默认" style="width:120px"></td></tr>
+      <tr><td>直接合并阈值</td><td><input name="sim_high" value="${esc(String(c.simHigh))}" style="width:80px"></td></tr>
+      <tr><td>待确认阈值</td><td><input name="sim_low" value="${esc(String(c.simLow))}" style="width:80px">
+        <div class="muted">需满足 0 &lt; 待确认阈值 &lt; 直接合并阈值 ≤ 1。</div></td></tr>
+    </table>
+    <p><button class="primary" ${vaultOk ? '' : 'disabled'}>保存维度与阈值</button></p>
+  </form>`;
   const status = !c.enabled ? '<span class="muted">未启用：本期只合并网址完全相同的条目</span>'
     : e.errors.length ? `<span class="bad">已启用但配置无效：${e.errors.map(esc).join('；')}</span>` : '<span class="ok">已启用，配置有效</span>';
   return `
@@ -420,6 +433,10 @@ export function renderSettings(o: {
   telegram?: string;
   /** 向量模型的当前生效配置（resolveEmbeddingConfig），不含密钥值 */
   embedding?: { config: { enabled: boolean; baseUrl: string; model: string; dimensions: number; simHigh: number; simLow: number }; errors: string[]; envOverridden: string[]; keySet: boolean };
+  /** 「模型供应商」「模型分配」两节（model-views.ts 渲染） */
+  models?: string;
+  /** 全局模型供应商已启用：隐藏各处分散的供应商 / 模型 / 地址 / 密钥输入 */
+  managed?: boolean;
   saved?: string; error?: string;
 }): string {
   const cur = o.settings.l1Provider ?? o.settings.aiProvider ?? 'mock';
@@ -445,8 +462,9 @@ export function renderSettings(o: {
     ${o.envOverrides.map(esc).join('、')}</div>` : ''}
 
   <div class="page-h"><h1>设置</h1><span>按模块分组</span></div>
-  <nav class="tabs" aria-label="设置分组"><a href="#ai">日报 AI 模型</a><a href="#embedding">向量模型</a><a href="#keys">API Key</a><a href="#profiler">来源画像</a>${o.telegram ? '<a href="#telegram">Telegram 总结</a><a href="#vision">图片识别</a><a href="#retention">数据保留</a>' : ''}</nav>
-  <h2 id="ai">日报 AI 模型与 API 地址</h2>
+  <nav class="tabs" aria-label="设置分组">${o.models ? '<a href="#models">模型供应商</a><a href="#model-assign">模型分配</a>' : ''}${o.managed ? '' : '<a href="#ai">日报 AI 模型</a>'}<a href="#embedding">向量模型</a><a href="#keys">API Key</a><a href="#profiler">来源画像</a>${o.telegram ? '<a href="#telegram">Telegram 总结</a><a href="#vision">图片识别</a><a href="#retention">数据保留</a>' : ''}</nav>
+  ${o.models ?? ''}
+  ${o.managed ? '' : `<h2 id="ai">日报 AI 模型与 API 地址</h2>
   <p class="sub">每个层级的 Base URL 都可以直接编辑。留空使用所选厂商的官方默认地址；“OpenAI 兼容格式”没有默认地址，必须填写 API 根地址（通常以 /v1 结尾）。</p>
   <form method="post" action="/settings/ai">
     <input type="hidden" name="csrf" value="${esc(o.csrf)}">
@@ -467,9 +485,9 @@ export function renderSettings(o: {
     </table>
     <p class="muted">默认地址：${BASE_URL_DEFAULTS.map(([name, url]) => `${esc(name)} = ${esc(url)}`).join(' ｜ ')}</p>
     <p><button class="primary" ${o.vaultOk ? '' : 'disabled'}>保存供应商设置</button></p>
-  </form>
+  </form>`}
 
-  ${o.embedding ? renderEmbeddingSettings(o.csrf, o.vaultOk, o.embedding) : ''}
+  ${o.embedding ? renderEmbeddingSettings(o.csrf, o.vaultOk, o.embedding, !!o.managed) : ''}
 
   <h2 id="keys">API Key</h2>
   <p class="muted">加密存于 /var/lib/briefing/secrets.enc（0600），主密钥在 root 控制的
@@ -481,10 +499,10 @@ export function renderSettings(o: {
   <form method="post" action="/settings/source-profiler">
     <input type="hidden" name="csrf" value="${esc(o.csrf)}">
     <table><tr><th>字段</th><th>值</th><th>说明</th></tr>
-      <tr><td>供应商</td><td><select name="provider">${providerOpts(o.settings.sourceProfilerProvider ?? 'mock')}</select></td><td class="muted">选择 OpenAI 兼容格式时必须填写自定义 Base URL</td></tr>
+      ${o.managed ? '<tr><td>模型</td><td class="muted">由「模型分配」中的「来源画像」管理</td><td></td></tr>' : `<tr><td>供应商</td><td><select name="provider">${providerOpts(o.settings.sourceProfilerProvider ?? 'mock')}</select></td><td class="muted">选择 OpenAI 兼容格式时必须填写自定义 Base URL</td></tr>
       <tr><td>模型 ID</td><td><input name="model" value="${esc(o.settings.sourceProfilerModel ?? '')}" style="width:220px"></td><td class="muted">独立模型，不继承 L1</td></tr>
       <tr><td>Base URL</td><td><input name="base_url" list="base-url-defaults" value="${esc(o.settings.sourceProfilerBaseUrl ?? '')}" style="width:360px" placeholder="留空 = 厂商默认地址"></td><td class="muted">所有厂商均可覆盖；OpenAI 兼容格式必填</td></tr>
-      <tr><td>凭据引用</td><td><input name="credential_ref" value="${esc(o.settings.sourceProfilerCredentialRef ?? 'SOURCE_PROFILER_API_KEY')}" style="width:220px"></td><td class="muted">密钥名，不显示密钥内容</td></tr>
+      <tr><td>凭据引用</td><td><input name="credential_ref" value="${esc(o.settings.sourceProfilerCredentialRef ?? 'SOURCE_PROFILER_API_KEY')}" style="width:220px"></td><td class="muted">密钥名，不显示密钥内容</td></tr>`}
       <tr><td>参数</td><td><input name="temperature" value="${esc(o.settings.sourceProfilerTemperature ?? '0.1')}" style="width:70px"> <input name="reasoning_effort" value="${esc(o.settings.sourceProfilerReasoningEffort ?? '')}" placeholder="reasoning effort" style="width:140px"></td><td></td></tr>
       <tr><td>限制</td><td><input name="max_input_chars" value="${esc(o.settings.sourceProfilerMaxInputChars ?? '24000')}" style="width:100px"> <input name="max_output_tokens" value="${esc(o.settings.sourceProfilerMaxOutputTokens ?? '1800')}" style="width:100px"> <input name="timeout_ms" value="${esc(o.settings.sourceProfilerTimeoutMs ?? '30000')}" style="width:100px"></td><td class="muted">输入字符 / 输出 token / 超时毫秒</td></tr>
       <tr><td>重试/回退</td><td><input name="retry_policy" value="${esc(o.settings.sourceProfilerRetryPolicy ?? '1')}" style="width:70px"> <input name="fallback_profile" value="${esc(o.settings.sourceProfilerFallbackProfile ?? '')}" placeholder="回退模型 profile" style="width:180px"></td><td></td></tr>

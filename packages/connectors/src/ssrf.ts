@@ -24,6 +24,26 @@ const BLOCKED_HOSTNAMES = [
 ];
 const BLOCKED_SUFFIXES = ['.local', '.internal', '.localdomain', '.home.arpa', '.onion'];
 
+/** 把 IPv6 地址展开成 8 个 16 位整数（支持 :: 缩写、末尾点分 IPv4、% 区域标识）。格式不对返回 null。 */
+export function expandIPv6(ip: string): number[] | null {
+  let s = ip.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0]!;
+  const dotted = s.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+  if (dotted) {
+    const p = dotted[2]!.split('.').map(Number);
+    if (p.some(x => x > 255)) return null;
+    s = `${dotted[1]}${((p[0]! << 8) | p[1]!).toString(16)}:${((p[2]! << 8) | p[3]!).toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const part = (x: string) => x ? x.split(':') : [];
+  const head = part(halves[0]!), tail = halves.length === 2 ? part(halves[1]!) : [];
+  const fill = 8 - head.length - tail.length;
+  if (halves.length === 1 ? head.length !== 8 : fill < 0) return null;
+  const all = [...head, ...Array(halves.length === 2 ? fill : 0).fill('0'), ...tail];
+  if (all.length !== 8 || all.some(x => !/^[0-9a-f]{1,4}$/.test(x))) return null;
+  return all.map(x => parseInt(x, 16));
+}
+
 /** 判断一个 IP 是否属于必须拒绝的范围。 */
 export function isBlockedAddress(ip: string): string | null {
   const v = isIP(ip);
@@ -42,14 +62,20 @@ export function isBlockedAddress(ip: string): string | null {
     return null;
   }
   if (v === 6) {
-    const s = ip.toLowerCase();
-    if (s === '::1' || s === '::') return 'IPv6 环回/未指定地址';
-    if (s.startsWith('fe80')) return 'IPv6 链路本地';
-    if (s.startsWith('fc') || s.startsWith('fd')) return 'IPv6 唯一本地地址';
-    if (s.startsWith('ff')) return 'IPv6 组播';
-    // IPv4 映射地址：::ffff:127.0.0.1 之类，必须解开再判
-    const m = s.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (m) return isBlockedAddress(m[1]!);
+    // 按 16 位分段展开后按前缀判断（字符串前缀判断会漏掉 fe90::、::ffff:7f00:1 这类写法）
+    const w = expandIPv6(ip);
+    if (!w) return '无法识别的 IP 格式';
+    const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+    if (w.every(x => x === 0)) return 'IPv6 未指定地址';
+    if (w.slice(0, 7).every(x => x === 0) && w[7] === 1) return 'IPv6 环回地址';
+    if ((w[0]! & 0xffc0) === 0xfe80) return 'IPv6 链路本地 fe80::/10';
+    if ((w[0]! & 0xffc0) === 0xfec0) return 'IPv6 站点本地 fec0::/10';
+    if ((w[0]! & 0xfe00) === 0xfc00) return 'IPv6 唯一本地地址 fc00::/7';
+    if ((w[0]! & 0xff00) === 0xff00) return 'IPv6 组播';
+    // 内嵌 IPv4 的形式都要解开再判：映射 ::ffff:0:0/96、兼容 ::/96、NAT64 64:ff9b::/96、6to4 2002::/16
+    if (w.slice(0, 5).every(x => x === 0) && (w[5] === 0xffff || w[5] === 0)) return isBlockedAddress(v4(w[6]!, w[7]!));
+    if (w[0] === 0x64 && w[1] === 0xff9b && w.slice(2, 6).every(x => x === 0)) return isBlockedAddress(v4(w[6]!, w[7]!));
+    if (w[0] === 0x2002) return isBlockedAddress(v4(w[1]!, w[2]!));
     return null;
   }
   return '无法识别的 IP 格式';

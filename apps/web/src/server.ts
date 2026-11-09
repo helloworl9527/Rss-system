@@ -28,8 +28,14 @@ import { maskedSecrets, setSecret, setSettings, resolveSettings, vaultHealthy,
 import { getRetryState, hasRunStateTables } from '../../../packages/db/src/runstate.ts';
 import { EmbeddingError, parseEmbeddingFields, testEmbedding, validateEmbeddingConfig } from '../../../packages/ai/src/embeddings.ts';
 import { overrideCandidate, toggleSource, updateSourceGroup, updateSourceUrl, planResend, addSource, deleteSource,
-         testSource, approveSourceProposal, rejectSourceProposal, ensureProfilerProfile, ActionError, RETIRED_HOST_GROUP } from '../../../packages/web/src/actions.ts';
+         testSource, approveSourceProposal, rejectSourceProposal, ensureProfilerProfile, sourceProfilerConfig, ActionError, RETIRED_HOST_GROUP } from '../../../packages/web/src/actions.ts';
 import { createProvider } from '../../../packages/ai/src/registry.ts';
+import { loadModelSnapshot, readModelConfig, openProvider, currentMasterKey, resolveModel, hostOf, CONSUMERS, CONSUMER_LABEL, CONFIG_ERROR_LABEL, PROVIDER_TYPE_LABEL, type Consumer, type ProviderType } from '../../../packages/ai/src/model-config.ts';
+import { embeddingPick, tierPick, legacyTelegramConfig } from '../../../packages/web/src/model-runtime.ts';
+import { createModelProvider, updateModelProvider, deleteModelProvider, setManualModels, saveAssignments, setModelConfigEnabled,
+  importLegacy, applyModelsFetch, collectLegacy, workerEnvCopy, ModelConfigError, type AssignmentInput } from '../../../packages/web/src/model-providers.ts';
+import { fetchModelCatalog, tryStartFetch, endFetch } from '../../../packages/web/src/model-catalog.ts';
+import { renderModelsSection, type ConsumerStatus } from '../../../packages/web/src/model-views.ts';
 import { runSourceProfiler } from '../../../packages/ai/src/source-profiler.ts';
 import { readyTelegramDb } from '../../../packages/telegram/src/db.ts';
 import { addTelegramSource, retryTelegramSource, rotateAllToken, rotateSourceToken, renameTelegramSource,
@@ -57,7 +63,8 @@ setInterval(() => sessions.sweep(), 10 * 60e3).unref();
 const app = Fastify({
   logger: { level: process.env.LOG_LEVEL ?? 'info', serializers: { req(req) { return { method:req.method, url:String(req.url).startsWith('/rss/') ? '/rss/[REDACTED]' : req.url }; } } },
   bodyLimit: 256 * 1024,
-  trustProxy: true,          // Caddy 在前，需要真实客户端 IP 做限流
+  // 只信任本机反向代理（后台只监听 127.0.0.1）：真实客户端 IP 用于登录限流，外部伪造的转发头不被采信
+  trustProxy: ['127.0.0.1', '::1'],
 });
 await app.register(cookie);
 // HTML 表单提交的是 application/x-www-form-urlencoded，
@@ -110,7 +117,10 @@ function requireCsrf(req: any, reply: any, s: Session): boolean {
   const origin = req.headers.origin;
   if (origin) {
     const expect = process.env.ADMIN_BASE_URL;
-    if (expect && !origin.startsWith(expect)) {
+    // 精确比较源（协议 + 主机 + 端口），不用前缀匹配：https://brief.example.com.evil.com 不能通过
+    let want = '';
+    try { want = expect ? new URL(expect).origin : ''; } catch { want = ''; }
+    if (expect && origin !== want) {
       reply.code(403).send({ error: '跨源请求被拒绝' }); return false;
     }
   }
@@ -518,7 +528,7 @@ app.post('/telegram/rss/all/token',async(req,reply)=>{
 });
 app.post('/telegram/settings',async(req,reply)=>{
   const s=requireAuth(req,reply);if(!s||!requireWrite(req,reply,s))return; const b=(req.body??{}) as any;
-  try{updateTelegramSettings(telegramDb,{timezone:b.timezone,schedule:b.schedule,provider:b.provider,model:b.model,baseUrl:b.base_url,credentialRef:b.credential_ref,promptRules:b.prompt_rules});return reply.redirect('/settings?saved=telegram#telegram');}
+  try{updateTelegramSettings(telegramDb,{timezone:b.timezone,schedule:b.schedule,provider:b.provider,model:b.model,baseUrl:b.base_url,credentialRef:b.credential_ref,promptRules:b.prompt_rules,managedModels:loadModelSnapshot(db).enabled});return reply.redirect('/settings?saved=telegram#telegram');}
   catch(e:any){return reply.code(e instanceof TelegramError?e.code:500).type('text/html; charset=utf-8').send(settingsPage(s,{error:e instanceof TelegramError?e.message:'设置保存失败'}));}
 });
 app.post('/telegram/vision/resume',async(req,reply)=>{
@@ -776,13 +786,42 @@ const envOverrides = () => {
   return names.filter(n => !!process.env[n]);
 };
 
+/** 每个使用方当前实际生效的配置摘要（只含类型、主机、模型；不含密钥与地址路径）。 */
+function modelStatus(enabled: boolean, tgSettings: any): ConsumerStatus[] {
+  const fmt = (type: string, baseUrl: string | undefined, model: string) =>
+    `${PROVIDER_TYPE_LABEL[type as ProviderType] ?? type} · ${hostOf(baseUrl) || '官方地址'} · ${model || '（无模型）'}`;
+  if (enabled) {
+    const snap = loadModelSnapshot(db);
+    return CONSUMERS.map(c => {
+      const r = resolveModel(snap, c);
+      if (!r.ok) return { consumer: c, ok: false, text: CONFIG_ERROR_LABEL[r.error] };
+      if (r.disabled) return { consumer: c, ok: true, text: c === 'sourceProfiler' ? '已停用（模拟画像）' : '已停用' };
+      return { consumer: c, ok: true, text: fmt(r.cfg.provider, r.cfg.baseUrl, r.cfg.model) };
+    });
+  }
+  return collectLegacy(tgSettings, workerEnvCopy()).map(p => p.reason ? { consumer: p.consumer, ok: false, text: p.reason }
+    : p.disabled ? { consumer: p.consumer, ok: true, text: '旧配置：未启用 / 模拟' }
+    : { consumer: p.consumer, ok: true, text: `旧配置：${fmt(p.cfg!.provider, p.cfg!.baseUrl, p.cfg!.model)}${p.cfg!.apiKey ? '' : '（无密钥）'}` });
+}
+
+function modelsSection(s: Session): { html: string; enabled: boolean } {
+  const raw = readModelConfig(db);
+  const key = currentMasterKey();
+  const tgSettings = telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any;
+  const providers = raw.providers.map(p => { const o = openProvider(p, key); return { ...p, baseUrl: o.error ? null : (o.baseUrl ?? '') }; });
+  return { enabled: raw.enabled, html: renderModelsSection({ csrf: s.csrf, enabled: raw.enabled, revision: raw.revision, keyOk: !!key,
+    providers, assignments: raw.assignments, status: modelStatus(raw.enabled, tgSettings) }) };
+}
+
 function settingsPage(s: Session, extra: { saved?: string; error?: string } = {}) {
   const h = vaultHealthy();
+  const models = modelsSection(s);
   return renderSettings({
+    models: models.html, managed: models.enabled,
     csrf: s.csrf, vaultOk: h.ok, vaultReason: h.reason,
     secrets: maskedSecrets(), settings: resolveSettings() as any,
     envOverrides: envOverrides(),
-    telegram: renderTelegramSettings({ csrf: s.csrf, settings: telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any }),
+    telegram: renderTelegramSettings({ csrf: s.csrf, managed: models.enabled, settings: telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any }),
     embedding: resolveEmbeddingConfig(),
     ...extra,
   });
@@ -823,12 +862,146 @@ app.post('/settings/ai', async (req, reply) => {
   }
 });
 
+// ---------- 全局模型供应商（docs/model-providers-design.md 第 3 版定稿） ----------
+const modelsPage = (reply: any, s: Session, r: { saved?: string; error?: string }, code = 200) =>
+  reply.code(code).type('text/html; charset=utf-8').send(settingsPage(s, r));
+/** 写操作统一处理：登录、CSRF、只读模式；ModelConfigError 显示给管理员（不含密钥与地址路径）。 */
+function modelWrite(path: string, fn: (b: any, rev: number, req: any) => Promise<string> | string) {
+  app.post(path, async (req, reply) => {
+    const s = requireAuth(req, reply); if (!s) return;
+    if (!requireWrite(req, reply, s)) return;
+    const b = (req.body ?? {}) as any;
+    try { return modelsPage(reply, s, { saved: await fn(b, Number(b.revision), req) }); }
+    catch (e: any) {
+      if (e instanceof ModelConfigError) return modelsPage(reply, s, { error: e.message }, e.code === 'conflict' ? 409 : 400);
+      req.log.error({ err: String(e?.message ?? e).slice(0, 200) }, 'model config write failed');
+      return modelsPage(reply, s, { error: '保存失败，请查看服务日志' }, 500);
+    }
+  });
+}
+
+async function refreshModels(id: string): Promise<string> {
+  const row = db.prepare('SELECT * FROM model_providers WHERE id=?').get(id) as any;
+  if (!row) throw new ModelConfigError('供应商不存在');
+  if (row.models_next_allowed_at && row.models_next_allowed_for === row.config_version && Date.parse(row.models_next_allowed_at) > Date.now())
+    return `被限流，${row.models_next_allowed_at.slice(11, 16)} UTC 之后再试`;
+  const o = openProvider(row, currentMasterKey());
+  if (o.error || !o.apiKey) throw new ModelConfigError('密钥无法读取，不能拉取模型列表');
+  if (!tryStartFetch(id)) return '模型列表正在拉取或 10 秒内刚拉取过，请稍后再试';
+  try {
+    const r = await fetchModelCatalog(row.type, o.baseUrl, o.apiKey);
+    const applied = applyModelsFetch(db, id, row.config_version, r);
+    if (!applied) return '拉取期间供应商配置已变化，本次结果已丢弃';
+    return r.ok ? `模型列表已更新：${r.models.length} 个${r.truncated ? '（列表不完整）' : ''}` : `模型列表拉取失败（${r.kind}${r.status ? ` HTTP ${r.status}` : ''}），已保留原列表`;
+  } finally { endFetch(id); }
+}
+
+modelWrite('/settings/models/import', (b) => {
+  const tg = telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get();
+  const r = importLegacy(db, currentMasterKey(), tg, Number(b.revision));
+  if (!r.ok) throw new ModelConfigError(`未导入：${r.reasons.join('；')}`);
+  return `已导入 ${r.providers} 个供应商并启用。请在「模型分配」中逐个测试。`;
+});
+modelWrite('/settings/models/enable', (b, rev) => {
+  const on = b.enabled === '1';
+  setModelConfigEnabled(db, on, rev);
+  return on ? '已启用全局模型供应商，worker 下一个任务起生效。' : '已停用，回到旧配置（env 与各处设置）。';
+});
+modelWrite('/settings/models/providers', async (b, rev) => {
+  const r = createModelProvider(db, currentMasterKey(), { name: b.name, type: b.type, baseUrl: b.base_url, apiKey: b.api_key }, rev);
+  return `供应商已保存。${await refreshModels(r.id)}`;
+});
+modelWrite('/settings/models/providers/:id', async (b, rev, req) => {
+  const id = String(req.params.id);
+  const r = updateModelProvider(db, currentMasterKey(), id, { name: b.name, type: b.type, baseUrl: b.base_url, apiKey: b.api_key, clearKey: b.clear_key === '1' }, rev);
+  return r.reconfigured && String(b.api_key ?? '').trim() ? `供应商已保存。${await refreshModels(id)}` : '供应商已保存。';
+});
+modelWrite('/settings/models/providers/:id/delete', (_b, rev, req) => { deleteModelProvider(db, String(req.params.id), rev); return '供应商已删除。'; });
+modelWrite('/settings/models/providers/:id/manual', (b, rev, req) => {
+  setManualModels(db, String(req.params.id), String(b.models ?? '').split(/\r?\n/), rev); return '手动模型已保存。';
+});
+modelWrite('/settings/models/providers/:id/refresh', (_b, _rev, req) => refreshModels(String(req.params.id)));
+modelWrite('/settings/models/assignments', (b, rev) => {
+  const inputs: AssignmentInput[] = [];
+  for (const c of CONSUMERS) {
+    const t = String(b[`${c}_target`] ?? '');
+    if (!t) continue;
+    if (t === 'disabled') inputs.push({ consumer: c, mode: 'disabled' });
+    else if (t.startsWith('follow:')) inputs.push({ consumer: c, mode: 'follow', follow: t.slice(7) });
+    else if (t.startsWith('p:')) inputs.push({ consumer: c, mode: 'provider', providerId: t.slice(2), model: b[`${c}_model`], strictness: b[`${c}_strictness`] });
+    else throw new ModelConfigError(`${CONSUMER_LABEL[c]}：选项无效`);
+  }
+  saveAssignments(db, inputs, rev);
+  return '分配已保存，worker 下一个任务起生效。';
+});
+
+// 测试当前生效配置：与 worker 同一解析入口；只显示成功 / 错误类型与耗时，不显示上游正文
+let modelTestRunning = false, modelTestAt = 0;
+const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+modelWrite('/settings/models/test', async (b) => {
+  const c = String(b.consumer) as Consumer;
+  if (!CONSUMERS.includes(c)) throw new ModelConfigError('未知用途');
+  if (modelTestRunning || Date.now() - modelTestAt < 10_000) return '测试过于频繁，请 10 秒后再试';
+  const snap = loadModelSnapshot(db);
+  let cfg: any;
+  if (c === 'embedding') {
+    const e = embeddingPick(snap);
+    if (!e.config) throw new ModelConfigError(`无法测试：${e.note}`);
+    modelTestRunning = true; modelTestAt = Date.now();
+    try { const t = await testEmbedding(e.config); return `${CONSUMER_LABEL[c]}测试通过：${t.dims} 维，${t.ms} ms`; }
+    catch (err: any) { throw new ModelConfigError(`${CONSUMER_LABEL[c]}测试失败：${err instanceof EmbeddingError ? err.message : '未知错误'}`); }
+    finally { modelTestRunning = false; }
+  }
+  if (snap.enabled) {
+    const r = resolveModel(snap, c);
+    if (!r.ok) throw new ModelConfigError(`无法测试：${CONFIG_ERROR_LABEL[r.error]}`);
+    if (r.disabled) return `${CONSUMER_LABEL[c]}已停用，无需测试`;
+    cfg = r.cfg;
+  } else if (c === 'l1' || c === 'l2' || c === 'l3') {
+    const p = tierPick(snap, c.toUpperCase() as any); if (!p.ok) throw new ModelConfigError(p.message); cfg = p.cfg;
+  } else if (c === 'telegramSummary' || c === 'telegramVision') {
+    cfg = legacyTelegramConfig(telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get(), c);
+  } else {
+    const m = sourceProfilerConfig(db); if ('error' in m) throw new ModelConfigError(m.error); cfg = m.cfg;
+  }
+  modelTestRunning = true; modelTestAt = Date.now();
+  const t0 = Date.now();
+  try {
+    const p = await createProvider({ ...cfg, timeoutMs: 30_000 }, { retry: false });
+    await p.complete({ systemPrompt: '只输出 JSON。', userContent: '返回 {"ok": true}', maxOutputTokens: 50, schemaName: 'ping',
+      schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false },
+      ...(c === 'telegramVision' ? { images: [{ mimeType: 'image/png', data: TINY_PNG }] } : {}) } as any);
+    return `${CONSUMER_LABEL[c]}测试通过（${Date.now() - t0} ms）`;
+  } catch (err: any) {
+    throw new ModelConfigError(`${CONSUMER_LABEL[c]}测试失败：${err?.kind ?? 'error'}${err?.status ? ` HTTP ${err.status}` : ''}`);
+  } finally { modelTestRunning = false; }
+});
+
+// 部署验收与恢复核对：开关、revision、每个使用方的解析结果（不含密钥与地址路径）。需要登录。
+app.get('/health/models', async (req, reply) => {
+  const s = requireAuth(req, reply); if (!s) return;
+  const raw = readModelConfig(db);
+  const tg = telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get();
+  return { enabled: raw.enabled, revision: raw.revision, masterKey: !!currentMasterKey(), providers: raw.providers.length,
+    consumers: modelStatus(raw.enabled, tg) };
+});
+
 // ---------- 向量模型（语义去重） ----------
 app.post('/settings/embedding', async (req, reply) => {
   const s = requireAuth(req, reply); if (!s) return;
   if (!requireWrite(req, reply, s)) return;
   const b = (req.body ?? {}) as any;
   const str = (v: unknown, max: number) => String(v ?? '').trim().slice(0, max);
+  if (loadModelSnapshot(db).enabled) {
+    // 全局模型供应商接管：本表单只管维度与阈值
+    const dims = { dimensions: str(b.dimensions, 6), simHigh: str(b.sim_high, 10) || '0.9', simLow: str(b.sim_low, 10) || '0.8' };
+    const errs = validateEmbeddingConfig(parseEmbeddingFields({ enabled: 'true', baseUrl: 'https://example.com/v1', model: 'm', ...dims }, 'k'));
+    if (errs.length) return reply.code(400).type('text/html; charset=utf-8').send(settingsPage(s, { error: `向量模型设置未保存：${errs.join('；')}` }));
+    setSettings({ embeddingDimensions: dims.dimensions, dedupSimHigh: dims.simHigh, dedupSimLow: dims.simLow });
+    db.prepare(`INSERT INTO audit_events (entity_type,entity_id,action,payload_json,created_at) VALUES ('settings','embedding','embedding_settings_updated',?,?)`)
+      .run(JSON.stringify({ ...dims, managed: true, actor: 'owner' }), nowIso());
+    return reply.type('text/html; charset=utf-8').send(settingsPage(s, { saved: '向量维度与阈值已保存。' }));
+  }
   const fields = { enabled: b.enabled === 'on' ? 'true' : 'false', baseUrl: str(b.base_url, 300), model: str(b.model, 200),
     dimensions: str(b.dimensions, 6), simHigh: str(b.sim_high, 10), simLow: str(b.sim_low, 10) };
   const cfg = parseEmbeddingFields(fields, 'placeholder');
@@ -854,12 +1027,12 @@ app.post('/settings/embedding/test', async (req, reply) => {
   if (!requireWrite(req, reply, s)) return;
   if (embeddingTestRunning || Date.now() - embeddingTestAt < 10_000)
     return reply.code(429).type('text/html; charset=utf-8').send(settingsPage(s, { error: '测试过于频繁，请 10 秒后再试' }));
-  const r = resolveEmbeddingConfig();
-  const cfgErrors = r.errors;
-  if (cfgErrors.length) return reply.code(400).type('text/html; charset=utf-8').send(settingsPage(s, { error: `无法测试：${cfgErrors.join('；')}` }));
+  // 测的就是跑的：与 worker 用同一个解析入口（全局模型供应商启用时来自分配）
+  const pick = embeddingPick(loadModelSnapshot(db));
+  if (!pick.config) return reply.code(400).type('text/html; charset=utf-8').send(settingsPage(s, { error: `无法测试：${pick.note}` }));
   embeddingTestRunning = true; embeddingTestAt = Date.now();
   try {
-    const t = await testEmbedding(r.config);
+    const t = await testEmbedding(pick.config);
     return reply.type('text/html; charset=utf-8').send(settingsPage(s, { saved: `连通性测试通过：返回 ${t.dims} 维向量，耗时 ${t.ms} ms` }));
   } catch (e: any) {
     // 只展示结构化错误类型，不展示上游响应正文
@@ -873,22 +1046,29 @@ app.post('/settings/source-profiler', async (req, reply) => {
   if (!requireWrite(req, reply, s)) return;
   const b = (req.body ?? {}) as any;
   try {
-    const providerName = String(b.provider ?? 'mock').trim() as any;
-    const credentialRef = String(b.credential_ref ?? 'SOURCE_PROFILER_API_KEY').trim();
-    const probeProvider = await createProvider({ provider: providerName, model: String(b.model ?? '').trim() || 'mock-profiler',
-      baseUrl: String(b.base_url ?? '').trim() || undefined, timeoutMs: Number(b.timeout_ms ?? 30000),
-      apiKey: providerName === 'mock' ? undefined : resolveSecret(credentialRef as any) }, { retry: false });
-    await runSourceProfiler(probeProvider, { url: 'https://example.com/feed.xml', parser: 'rss', name: 'structured-output-test',
+    const probe = async (cfg: any) => runSourceProfiler(await createProvider(cfg, { retry: false }), { url: 'https://example.com/feed.xml', parser: 'rss', name: 'structured-output-test',
       metadata: { test: true }, samples: [{ sampleId: 'test-1', title: 'structured output test', link: 'https://example.com/1', publishedRaw: null }] });
-    setSettings({ sourceProfilerProvider: String(b.provider ?? '').trim(), sourceProfilerModel: String(b.model ?? '').trim(),
-      sourceProfilerBaseUrl: String(b.base_url ?? '').trim(), sourceProfilerCredentialRef: String(b.credential_ref ?? 'SOURCE_PROFILER_API_KEY').trim(),
+    const managed = loadModelSnapshot(db).enabled;   // 全局模型供应商开关打开：本表单只管非供应商参数
+    if (!managed) {
+      const providerName = String(b.provider ?? 'mock').trim() as any;
+      const credentialRef = String(b.credential_ref ?? 'SOURCE_PROFILER_API_KEY').trim();
+      await probe({ provider: providerName, model: String(b.model ?? '').trim() || 'mock-profiler',
+        baseUrl: String(b.base_url ?? '').trim() || undefined, timeoutMs: Number(b.timeout_ms ?? 30000),
+        apiKey: providerName === 'mock' ? undefined : resolveSecret(credentialRef as any) });
+      setSettings({ sourceProfilerProvider: String(b.provider ?? '').trim(), sourceProfilerModel: String(b.model ?? '').trim(),
+        sourceProfilerBaseUrl: String(b.base_url ?? '').trim(), sourceProfilerCredentialRef: String(b.credential_ref ?? 'SOURCE_PROFILER_API_KEY').trim() });
+    }
+    setSettings({
       sourceProfilerTemperature: String(b.temperature ?? '0.1').trim(), sourceProfilerReasoningEffort: String(b.reasoning_effort ?? '').trim(),
       sourceProfilerMaxInputChars: String(b.max_input_chars ?? '24000').trim(), sourceProfilerMaxOutputTokens: String(b.max_output_tokens ?? '1800').trim(),
       sourceProfilerTimeoutMs: String(b.timeout_ms ?? '30000').trim(), sourceProfilerRetryPolicy: String(b.retry_policy ?? '1').trim(),
       sourceProfilerFallbackProfile: String(b.fallback_profile ?? '').trim(), sourceProfilerEnabled: String(b.enabled ?? 'true') });
-    const profile = ensureProfilerProfile(db);
+    const model = sourceProfilerConfig(db);
+    if ('error' in model) throw new Error(model.error);
+    if (managed) await probe(model.cfg);
+    const profile = ensureProfilerProfile(db, model);
     db.prepare(`INSERT INTO audit_events (entity_type,entity_id,action,payload_json,created_at) VALUES ('settings','source_profiler','source_profiler_settings_updated',?,?)`)
-      .run(JSON.stringify({ provider: b.provider, model: b.model, enabled: b.enabled, config_version: profile.config_version, actor: 'owner' }), nowIso());
+      .run(JSON.stringify({ provider: model.cfg.provider, model: model.cfg.model, enabled: b.enabled, config_version: profile.config_version, actor: 'owner' }), nowIso());
     return reply.type('text/html; charset=utf-8').send(settingsPage(s, { saved: `Source Profiler 配置已保存并生成版本 v${profile.config_version}；下一次新增来源时会使用。` }));
   } catch (e: any) { return reply.code(500).type('text/html; charset=utf-8').send(settingsPage(s, { error: String(e?.message ?? e) })); }
 });

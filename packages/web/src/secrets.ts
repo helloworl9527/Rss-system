@@ -172,7 +172,7 @@ export function resolveSettings(path = vaultPath(), env: NodeJS.ProcessEnv = pro
     sourceProfilerRetryPolicy: env.SOURCE_PROFILER_RETRY_POLICY ?? s.sourceProfilerRetryPolicy ?? '1',
     sourceProfilerFallbackProfile: env.SOURCE_PROFILER_FALLBACK_PROFILE ?? s.sourceProfilerFallbackProfile,
     sourceProfilerEnabled: env.SOURCE_PROFILER_ENABLED ?? s.sourceProfilerEnabled ?? 'true',
-    ...Object.fromEntries(EMBEDDING_ENV.map(([k, env]) => [k, env[env] ?? s[k]])),
+    ...Object.fromEntries(EMBEDDING_ENV.map(([k, name]) => [k, env[name] ?? s[k]])),
   };
 }
 
@@ -187,7 +187,7 @@ export function resolveEmbeddingConfig(path = vaultPath(), env: NodeJS.ProcessEn
     dimensions: s.embeddingDimensions, simHigh: s.dedupSimHigh, simLow: s.dedupSimLow }, apiKey);
   const errors = validateEmbeddingConfig(config);
   if (!apiKey) errors.push('未设置 EMBEDDING_API_KEY');
-  const envOverridden = [...EMBEDDING_ENV.map(([, env]) => env), 'EMBEDDING_API_KEY'].filter(env => !!env[env]);
+  const envOverridden = [...EMBEDDING_ENV.map(([, name]) => name), 'EMBEDDING_API_KEY'].filter(name => !!env[name]);
   return { config, errors, envOverridden, keySet: !!apiKey };
 }
 
@@ -218,7 +218,7 @@ export function hydrateEnv(path = vaultPath(), env: NodeJS.ProcessEnv = process.
       ['SOURCE_PROFILER_RETRY_POLICY', s.sourceProfilerRetryPolicy],
       ['SOURCE_PROFILER_FALLBACK_PROFILE', s.sourceProfilerFallbackProfile],
       ['SOURCE_PROFILER_ENABLED', s.sourceProfilerEnabled],
-      ...EMBEDDING_ENV.map(([k, env]): [string, string | undefined] => [env, s[k]]),
+      ...EMBEDDING_ENV.map(([k, name]): [string, string | undefined] => [name, s[k]]),
     ];
     for (const [k, val] of map)
       if (val && !env[k]) { env[k] = val; loaded.push(k); }

@@ -131,6 +131,9 @@ export function updateTelegramSettings(db: TelegramDB, input: Record<string, unk
   const schedule = String(input.schedule ?? '').split(',').map(x => x.trim()).filter(Boolean);
   if (!schedule.length || schedule.some(x => !/^([01]\d|2[0-3]):[0-5]\d$/.test(x))) throw new TelegramError(400, '时段必须是逗号分隔的 HH:MM');
   const sorted = [...new Set(schedule)].sort();
+  // 全局模型供应商接管时，表单不再提交模型字段：保留库里原值（作为停用开关后的旧配置），不重置成默认值
+  const cur = db.prepare('SELECT provider,model,base_url,credential_ref FROM telegram_settings WHERE singleton=1').get() as any;
+  if (input.managedModels) Object.assign(input, { provider: cur.provider, model: cur.model, baseUrl: cur.base_url ?? '', credentialRef: cur.credential_ref });
   const provider=String(input.provider ?? 'openai_compatible');
   if(!['mock','openai','openai_compatible','deepseek','qwen','anthropic','gemini'].includes(provider)) throw new TelegramError(400,'供应商无效');
   const credentialRef=String(input.credentialRef ?? 'OPENAI_COMPAT_API_KEY');
@@ -168,7 +171,7 @@ export function updateTelegramRetention(db: TelegramDB, input: { keepForever: bo
 }
 
 export function resumeVisionQueue(db: TelegramDB): void {
-  db.prepare(`UPDATE telegram_settings SET vision_paused=0,vision_pause_reason=NULL,updated_at=? WHERE singleton=1`)
+  db.prepare(`UPDATE telegram_settings SET vision_paused=0,vision_pause_reason=NULL,vision_pause_fingerprint=NULL,updated_at=? WHERE singleton=1`)
     .run(nowIso());
   audit(db, 'settings', 'vision', 'vision_queue_resumed');
 }

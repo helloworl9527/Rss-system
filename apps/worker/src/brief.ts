@@ -17,7 +17,9 @@ import { loadRules } from '../../../packages/domain/src/rules.ts';
 import { windowFromKey } from '../../../packages/domain/src/normalize.ts';
 import { clusterCandidates, excludeCoveredToday, selectForBrief, type ClusterInput }
   from '../../../packages/domain/src/cluster.ts';
-import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
+import { createProvider } from '../../../packages/ai/src/registry.ts';
+import { tierConfigOrExit } from '../../../packages/web/src/model-runtime.ts';
+import { loadModelSnapshot } from '../../../packages/ai/src/model-config.ts';
 import { runCompose, type ComposeInput } from '../../../packages/ai/src/compose.ts';
 import { resolveSemanticDuplicates } from '../../../packages/ai/src/semantic-dedup.ts';
 import { renderHtml, renderText, checkEmail, subjectOf, type BriefData, type BriefItem }
@@ -145,7 +147,7 @@ const inputs: ClusterInput[] = included.map(r => {
     sourcePriority: r.priority ?? 5, isOfficial: !!r.is_official,
   };
 });
-const cfg = providerFromEnv('L1');
+const cfg = tierConfigOrExit(loadModelSnapshot(db as any), 'L1');
 const provider = await createProvider(cfg);
 const dedupProvider = await createProvider({ ...cfg, timeoutMs: 15000 });
 const semantic = await resolveSemanticDuplicates(inputs.map(i => ({

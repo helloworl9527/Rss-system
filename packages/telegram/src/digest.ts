@@ -183,13 +183,19 @@ export async function buildDigest(db: TelegramDB, windowEnd: string, cfg: Provid
 
 /** 为保留期内、各频道均已就绪且尚无汇总（或汇总失败到期重试）的时刻生成汇总。 */
 export async function runDueDigests(db: TelegramDB, cfg: ProviderConfig & { summaryRetentionDays: number; lookbackDays: number },
-  provider?: Provider, now = new Date()): Promise<number> {
+  provider?: Provider, now = new Date(), select?: () => { cfg: ProviderConfig } | { error: string } | null): Promise<number> {
   const floor = new Date(now.getTime() - cfg.lookbackDays * 86400_000).toISOString();
   const windows = (db.prepare(`SELECT DISTINCT sm.window_end FROM telegram_summaries sm
     LEFT JOIN telegram_digests d ON d.window_end=sm.window_end
     WHERE sm.window_end>=? AND sm.window_end<=? AND (d.id IS NULL OR (d.status='failed' AND d.next_attempt_at<=?))
     ORDER BY sm.window_end`).all(floor, now.toISOString(), now.toISOString()) as any[]).map(r => r.window_end as string);
   let done = 0;
-  for (const w of windows) if (windowReady(db, w, now) && await buildDigest(db, w, cfg, provider, now)) done++;
+  for (const w of windows) {
+    if (!windowReady(db, w, now)) continue;
+    // 每个要点任务领取前重新解析模型配置；配置错误时本轮不领取（不消耗次数、不生成兜底）
+    const r = select?.() ?? null;
+    if (r && 'error' in r) { console.log(`Telegram 模型配置错误（${r.error}），本轮不生成要点`); break; }
+    if (await buildDigest(db, w, r ? { ...cfg, ...r.cfg } : cfg, provider, now)) done++;
+  }
   return done;
 }

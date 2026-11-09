@@ -6,6 +6,9 @@ import { parseBy } from '../../connectors/src/parsers.ts';
 import { createProvider } from '../../ai/src/registry.ts';
 import { runSourceProfiler } from '../../ai/src/source-profiler.ts';
 import { resolveSecret, resolveSettings } from './secrets.ts';
+import { loadModelSnapshot } from '../../ai/src/model-config.ts';
+import { profilerPick } from './model-runtime.ts';
+import type { ProviderConfig } from '../../ai/src/types.ts';
 import { sha256 } from '../../db/src/index.ts';
 
 /**
@@ -361,19 +364,33 @@ export async function testSource(
   }
 }
 
-function sourceProfilerConfig() {
+/**
+ * 来源画像本次操作的模型配置：每次操作只解析一次，记录版本与实际调用共用这一份。
+ * 全局模型供应商开关关着时与原来逐字一致；打开时 versionCfg / storeBaseUrl 只含供应商指纹与主机名（不含路径与密钥）。
+ */
+export type ProfilerModel = { cfg: ProviderConfig; versionCfg: unknown; storeBaseUrl: string | null; credentialRef: string };
+export function sourceProfilerConfig(db: DB): ProfilerModel | { error: string } {
   const s = resolveSettings();
+  const timeoutMs = Number(s.sourceProfilerTimeoutMs ?? 30000);
+  const snap = loadModelSnapshot(db);
+  if (snap.enabled) {
+    const p = profilerPick(snap, timeoutMs);
+    if (!p.ok) return { error: `来源画像模型配置错误：${p.message}` };
+    const mock = p.cfg.provider === 'mock';
+    return { cfg: p.cfg, versionCfg: { provider: p.cfg.provider, model: p.cfg.model, fingerprint: p.fingerprint, timeoutMs },
+      storeBaseUrl: mock ? null : (p.cfg.baseUrl ? new URL(p.cfg.baseUrl).hostname : null), credentialRef: mock ? 'mock' : 'model_provider' };
+  }
   const provider = (s.sourceProfilerProvider ?? 'mock') as any;
   const secretName = s.sourceProfilerCredentialRef ?? 'SOURCE_PROFILER_API_KEY';
   const apiKey = provider === 'mock' ? undefined : resolveSecret(secretName as any);
-  return { provider, model: s.sourceProfilerModel ?? 'mock-profiler', apiKey,
-    baseUrl: s.sourceProfilerBaseUrl, timeoutMs: Number(s.sourceProfilerTimeoutMs ?? 30000) };
+  const cfg = { provider, model: s.sourceProfilerModel ?? 'mock-profiler', apiKey, baseUrl: s.sourceProfilerBaseUrl, timeoutMs };
+  return { cfg, versionCfg: cfg, storeBaseUrl: cfg.baseUrl ?? null, credentialRef: secretName };
 }
 
-export function ensureProfilerProfile(db: DB) {
+export function ensureProfilerProfile(db: DB, model: ProfilerModel) {
   const s = resolveSettings();
-  const cfg = sourceProfilerConfig();
-  const versionHash = sha256(JSON.stringify({ ...cfg, temperature: s.sourceProfilerTemperature,
+  const cfg = model.cfg;
+  const versionHash = sha256(JSON.stringify({ ...(model.versionCfg as object), temperature: s.sourceProfilerTemperature,
     reasoning_effort: s.sourceProfilerReasoningEffort, max_input_chars: s.sourceProfilerMaxInputChars,
     max_output_tokens: s.sourceProfilerMaxOutputTokens, retry_policy: s.sourceProfilerRetryPolicy,
     fallback_profile: s.sourceProfilerFallbackProfile })).slice(0, 12);
@@ -381,14 +398,14 @@ export function ensureProfilerProfile(db: DB) {
     ORDER BY config_version DESC LIMIT 1`).get() as any;
   const existingParams = (() => { try { return JSON.parse(existing?.params_json ?? '{}'); } catch { return {}; } })();
   const enabled = s.sourceProfilerEnabled === 'false' ? 0 : 1;
-  if (existing?.model_id === cfg.model && existing?.provider === cfg.provider && existing?.base_url === (cfg.baseUrl ?? null)
+  if (existing?.model_id === cfg.model && existing?.provider === cfg.provider && existing?.base_url === model.storeBaseUrl
       && existing?.enabled === enabled && existingParams.config_hash === versionHash) return existing;
   const now = nowIso();
   const next = Number(existing?.config_version ?? 0) + 1;
   db.prepare(`INSERT INTO ai_model_profiles
     (purpose,provider,base_url,model_id,credential_secret_ref,params_json,fallback_profile,enabled,config_version,created_at,updated_at)
-    VALUES ('source_profiler',?,?,?,?,?,?,?,?,?,?)`).run(cfg.provider, cfg.baseUrl ?? null, cfg.model,
-      s.sourceProfilerCredentialRef ?? 'SOURCE_PROFILER_API_KEY', JSON.stringify({ temperature: s.sourceProfilerTemperature,
+    VALUES ('source_profiler',?,?,?,?,?,?,?,?,?,?)`).run(cfg.provider, model.storeBaseUrl, cfg.model,
+      model.credentialRef, JSON.stringify({ temperature: s.sourceProfilerTemperature,
       reasoning_effort: s.sourceProfilerReasoningEffort, max_input_chars: s.sourceProfilerMaxInputChars,
       max_output_tokens: s.sourceProfilerMaxOutputTokens, retry_policy: s.sourceProfilerRetryPolicy, config_hash: versionHash }),
       s.sourceProfilerFallbackProfile ?? null, enabled, next, now, now);
@@ -410,12 +427,15 @@ export async function createSourceProposal(db: DB, o: SourceInput & { skipTest?:
   if (!safe.ok) throw new ActionError(400, `URL 不可用：${safe.reason}`);
   const t = await testSource(db, { url: safe.url, parser: o.parser, actor: o.actor });
   if (!t.ok) throw new ActionError(400, `探测失败（${t.outcome}）：${t.error ?? '未知错误'}`);
-  const profile = ensureProfilerProfile(db);
+  const model = sourceProfilerConfig(db);
   let analysis: any;
   let error: string | null = null;
+  let profile: any = null;
   try {
+    if ('error' in model) throw new Error(model.error);
+    profile = ensureProfilerProfile(db, model);
     if (!profile.enabled) throw new Error('Source Profiler 模型配置未启用');
-    const provider = await createProvider(sourceProfilerConfig(), { retry: false });
+    const provider = await createProvider(model.cfg, { retry: false });
     const input = { url: safe.url, parser: o.parser, name,
       metadata: { http_status: t.httpCode, content_type: t.contentType, parsed_count: t.parsedCount,
         latest_item_at: t.latestItemAt, bytes: t.bytes }, samples: t.sample };
@@ -447,12 +467,12 @@ export async function createSourceProposal(db: DB, o: SourceInput & { skipTest?:
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, safe.url, name, o.parser, JSON.stringify(t.sample),
       analysis ? JSON.stringify(analysis) : null, JSON.stringify(analysis?.evidence_sample_ids ?? t.sample.map((x: any) => x.sampleId)),
       analysis ? JSON.stringify(analysis.proposed_rule_diff ?? []) : null, analysis?.capability_gap ? JSON.stringify(analysis.capability_gap) : null,
-      profile.id, profile.config_version, analysis?.responseId ?? null, analysis?.confidence ?? null,
+      profile?.id ?? null, profile?.config_version ?? null, analysis?.responseId ?? null, analysis?.confidence ?? null,
       error ? 'AI_ANALYSIS_FAILED' : 'HUMAN_REVIEW', error, now, now);
     proposalId = Number(ins.lastInsertRowid);
     audit(db, { entityType: 'source_onboarding_proposal', entityId: String(proposalId), action: 'source_profiled',
-      payload: { source_id: id, status: error ? 'AI_ANALYSIS_FAILED' : 'HUMAN_REVIEW', model_profile_id: profile.id,
-        model_config_version: profile.config_version, error, actor: o.actor ?? 'owner' } });
+      payload: { source_id: id, status: error ? 'AI_ANALYSIS_FAILED' : 'HUMAN_REVIEW', model_profile_id: profile?.id ?? null,
+        model_config_version: profile?.config_version ?? null, error, actor: o.actor ?? 'owner' } });
   })();
   if (error) throw new ActionError(502, `来源已保存为待分析提案，但 Source Profiler 失败：${error}`);
   return { ok: true as const, id, proposalId, status: 'HUMAN_REVIEW', confidence: analysis.confidence };

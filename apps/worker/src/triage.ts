@@ -14,7 +14,9 @@ import { openDb, nowIso, sha256, type DB } from '../../../packages/db/src/index.
 import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
 import { isHighRisk } from '../../../packages/domain/src/risk.ts';
-import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
+import { createProvider } from '../../../packages/ai/src/registry.ts';
+import { tierConfigOrExit } from '../../../packages/web/src/model-runtime.ts';
+import { loadModelSnapshot } from '../../../packages/ai/src/model-config.ts';
 import { runTriage, type Candidate, type TriageDeps } from '../../../packages/ai/src/triage.ts';
 import type { TriageResult } from '../../../packages/ai/src/schema.ts';
 
@@ -119,7 +121,7 @@ for (const e of db.prepare(`
 }
 
 // ---- 供应商 ----
-const cfg = providerFromEnv('L1');
+const cfg = tierConfigOrExit(loadModelSnapshot(db as any), 'L1');
 const provider = await createProvider(cfg);
 const budget = rules.ai?.budget_per_run?.luna ?? {};
 

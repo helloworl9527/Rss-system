@@ -89,6 +89,8 @@ export type ProviderConfig = {
    * 并禁止跟随重定向。旧配置路径不设置它，行为与原来一致。
    */
   isolated?: boolean;
+  /** 库内配置的供应商指纹：并入各类缓存键，同端点同模型的不同账户不共用缓存。旧配置为空（缓存键不变）。 */
+  cacheScope?: string;
 };
 
 export type JsonSchema = Record<string, unknown>;

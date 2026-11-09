@@ -180,6 +180,7 @@ export function resolveModel(snap: Snapshot, consumer: Consumer): Resolved {
     cfg: {
       provider: p.row.type as ProviderName, model: a.model!, apiKey: p.apiKey,
       baseUrl: p.baseUrl || undefined, strictness: a.strictness ?? undefined, isolated: true,
+      cacheScope: fingerprintOf(p.row.id, p.row.config_version, a.model!, a.strictness),
     },
   };
 }

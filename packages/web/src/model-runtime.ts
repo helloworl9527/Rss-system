@@ -54,6 +54,12 @@ export function tierPick(snap: Snapshot, tier: 'L1' | 'L2' | 'L3'): ModelPick {
   return fromResolved(snap, tier.toLowerCase() as Consumer);
 }
 
+/** 给 createTierEnv：可用配置或配置错误（该层直接标记不可用，不派发请求）。 */
+export function tierInput(snap: Snapshot, tier: 'L1' | 'L2'): ProviderConfig | { configError: string } {
+  const p = tierPick(snap, tier);
+  return p.ok ? p.cfg : { configError: p.error };
+}
+
 /** 进程入口用：取不到就带着错误类型退出（旧流程 / triage / brief / review / 预览）。 */
 export function tierConfigOrExit(snap: Snapshot, tier: 'L1' | 'L2' | 'L3'): ProviderConfig {
   const p = tierPick(snap, tier);

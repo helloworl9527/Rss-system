@@ -60,8 +60,9 @@ export function effectiveMessageText(message: any): string {
   return parts.join('\n\n');
 }
 
-async function cachedComplete(db: TelegramDB, provider: Provider, prompt: string): Promise<SummaryShape> {
-  const key = summaryHash([provider.name, provider.model, SYSTEM, prompt]);
+async function cachedComplete(db: TelegramDB, provider: Provider, prompt: string, scope?: string): Promise<SummaryShape> {
+  // 库内配置（全局模型供应商）追加供应商指纹，同类型同模型的不同账户不共用缓存；旧配置键不变
+  const key = summaryHash(scope ? [provider.name, provider.model, scope, SYSTEM, prompt] : [provider.name, provider.model, SYSTEM, prompt]);
   const old = db.prepare('SELECT response_json FROM telegram_summary_cache WHERE request_hash=?').get(key) as any;
   if (old) return validateSummary(JSON.parse(old.response_json));
   const result = await provider.complete({ systemPrompt: SYSTEM, userContent: prompt, schema: TELEGRAM_SUMMARY_SCHEMA,
@@ -71,7 +72,7 @@ async function cachedComplete(db: TelegramDB, provider: Provider, prompt: string
   return parsed;
 }
 
-async function reduceParts(db: TelegramDB, provider: Provider, parts: SummaryShape[], maxChars: number): Promise<SummaryShape> {
+async function reduceParts(db: TelegramDB, provider: Provider, parts: SummaryShape[], maxChars: number, scope?: string): Promise<SummaryShape> {
   let current=parts;
   for(let level=0;current.length>1&&level<20;level++) {
     const groups: SummaryShape[][]=[];let group:SummaryShape[]=[];let size=0;
@@ -85,7 +86,7 @@ async function reduceParts(db: TelegramDB, provider: Provider, parts: SummarySha
     if(groups.length===current.length&&groups.every(x=>x.length===1))return merge(current);
     current=[];
     for(const items of groups) current.push(await cachedComplete(db,provider,
-      `请归并以下分块总结，去重、保留代表性消息 ID/时间且不得新增事实；价格条目里的购买地址（链接或域名路径）必须逐字原样保留。viewpoints 必须合并成一个连贯段落，禁止逐条复述及使用“有人提出/认为/表示”等引导语。\n${JSON.stringify(items)}`));
+      `请归并以下分块总结，去重、保留代表性消息 ID/时间且不得新增事实；价格条目里的购买地址（链接或域名路径）必须逐字原样保留。viewpoints 必须合并成一个连贯段落，禁止逐条复述及使用“有人提出/认为/表示”等引导语。\n${JSON.stringify(items)}`, scope));
   }
   return current[0]??merge(parts);
 }
@@ -145,10 +146,10 @@ export async function summarizeJob(db: TelegramDB, jobId: number, cfg: TelegramA
     if (current.length) chunks.push(current);
     const parts: SummaryShape[] = [];
     const byId = new Map(messages.map(m => [m.message_id, m]));
-    for (const chunk of chunks) parts.push(await cachedComplete(db,p,userPrompt(job.title,job.window_start,job.window_end,cfg.promptRules,chunk,byId)));
+    for (const chunk of chunks) parts.push(await cachedComplete(db,p,userPrompt(job.title,job.window_start,job.window_end,cfg.promptRules,chunk,byId),cfg.cacheScope));
     // 分层归并；所有引用随后按真实输入白名单过滤，阻止模型伪造来源。
     const ids = new Set(messages.map(m => m.message_id));
-    const value = parts.length>1 ? await reduceParts(db,p,parts,max) : parts[0]!;
+    const value = parts.length>1 ? await reduceParts(db,p,parts,max,cfg.cacheScope) : parts[0]!;
     // 摘要里的链接必须出现在输入消息原文中（不在的剔除，在的还原成原样写法）
     const allowedLinks = collectLinks(messages.map(m => m.effective_text));
     const fixLinks = (xs: string[]) => xs.map(x => restrictLinks(x, allowedLinks)).map(r => { if (r.removed.length) console.log(`Telegram 摘要剔除 ${r.removed.length} 个不在原消息里的链接：${job.title}`); return r.text; }).filter(Boolean);
@@ -234,15 +235,31 @@ export function ensureDueJobs(db: TelegramDB, now = new Date()): number {
   return made;
 }
 
-export async function runDueSummaries(db: TelegramDB, secret: string | undefined): Promise<number> {
+/**
+ * 模型配置选择器：每个任务领取前调用。返回 null = 用 telegram_settings 旧配置；{ error } = 本地可判定的配置错误，
+ * 本轮不领取任何任务（状态、次数都不变），等修好后下个周期自动继续。
+ */
+export type ModelSelector = () => { cfg: ProviderConfig } | { error: string } | null;
+
+export async function runDueSummaries(db: TelegramDB, secret: string | undefined, select?: ModelSelector): Promise<number> {
   ensureDueJobs(db);
   const s=db.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any;
+  const legacy: ProviderConfig={provider:s.provider,model:s.model,baseUrl:s.base_url??undefined,apiKey:secret};
+  const model=(): ProviderConfig | null => {
+    const r=select?.() ?? null;
+    if(r && 'error' in r){ console.log(`Telegram 模型配置错误（${r.error}），本轮不领取任务`); return null; }
+    return r ? r.cfg : legacy;
+  };
   const jobs=db.prepare(`SELECT id FROM telegram_summary_jobs WHERE status='pending' OR
     (status='failed' AND next_attempt_at IS NOT NULL AND next_attempt_at<=?) ORDER BY window_end,source_id`).all(nowIso()) as any[];
   let done=0;
-  for(const j of jobs) if(await summarizeJob(db,j.id,{provider:s.provider,model:s.model,baseUrl:s.base_url??undefined,apiKey:secret,timeoutMs:AI_TIMEOUT_MS,
-    promptRules:s.prompt_rules,promptVersion:s.prompt_version,summaryRetentionDays:s.summary_retention_days})) done++;
-  await runDueDigests(db,{provider:s.provider,model:s.model,baseUrl:s.base_url??undefined,apiKey:secret,timeoutMs:AI_TIMEOUT_MS,
-    summaryRetentionDays:s.summary_retention_days,lookbackDays:Number(s.raw_retention_days)+1});
+  for(const j of jobs) {
+    const m=model(); if(!m) return done;
+    if(await summarizeJob(db,j.id,{...m,timeoutMs:AI_TIMEOUT_MS,
+      promptRules:s.prompt_rules,promptVersion:s.prompt_version,summaryRetentionDays:s.summary_retention_days})) done++;
+  }
+  const m=model(); if(!m) return done;
+  await runDueDigests(db,{...m,timeoutMs:AI_TIMEOUT_MS,
+    summaryRetentionDays:s.summary_retention_days,lookbackDays:Number(s.raw_retention_days)+1},undefined,new Date(),select);
   return done;
 }

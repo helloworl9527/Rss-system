@@ -13,14 +13,16 @@
 import Database from 'better-sqlite3';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hydrateEnv, resolveEmbeddingConfig } from '../../../packages/web/src/secrets.ts';
+import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
 import { AiCache } from '../../../packages/digest/src/cache.ts';
 import { createTierEnv } from '../../../packages/digest/src/tiered.ts';
 import { buildDigestSemantic } from '../../../packages/digest/src/build-semantic.ts';
 import { DEFAULT_EXCLUSIVE_ACTIONS } from '../../../packages/digest/src/semantic.ts';
 import { ProviderError } from '../../../packages/ai/src/types.ts';
 import { windowFromKey, windowToReport } from '../../../packages/domain/src/normalize.ts';
-import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
+import { createProvider } from '../../../packages/ai/src/registry.ts';
+import { tierInput, embeddingPick, tierConfigOrExit } from '../../../packages/web/src/model-runtime.ts';
+import { loadModelSnapshot } from '../../../packages/ai/src/model-config.ts';
 import { buildDigest } from '../../../packages/digest/src/build.ts';
 import { loadTelegramDaily } from '../../../packages/digest/src/telegram.ts';
 import { stripDealsFromTelegram } from '../../../packages/digest/src/deals.ts';
@@ -41,7 +43,8 @@ const win = arg('--from') && arg('--to')
 const out = arg('--out') ?? './data/preview';
 // 旧版供应商延迟创建：新流程预览在 L1 配置损坏时仍可使用 L2 与缓存
 let legacy: Awaited<ReturnType<typeof createProvider>> | null = null;
-const legacyProvider = async () => legacy ??= await createProvider(providerFromEnv('L1'));
+const modelSnap = loadModelSnapshot(db as any);
+const legacyProvider = async () => legacy ??= await createProvider(tierConfigOrExit(modelSnap, 'L1'));
 
 console.log(`预览 ${win.key} ${win.label} [${win.start.toISOString()} → ${win.end.toISOString()})`);
 const tgCfg = (loadRules() as any).brief?.telegram_daily;
@@ -54,13 +57,12 @@ if (sem?.enabled && !argv.includes('--legacy')) {
   const cache = new AiCache(db as any);
   if (cache.note) console.log(`⚠️ ${cache.note}`);
   let used = 0; const cap = Number(sem.max_requests ?? 600);
-  const env = await createTierEnv({ l1: providerFromEnv('L1'), l2: providerFromEnv('L2'), promptVersion: 'sem1', cache,
+  const env = await createTierEnv({ l1: tierInput(modelSnap, 'L1'), l2: tierInput(modelSnap, 'L2'), promptVersion: 'sem1', cache,
     onDispatch: () => { if (++used > cap) { const e = new ProviderError('timeout', '预览请求预算用尽'); e.budgetExhausted = true; throw e; } },
     l2Items: Number(sem.l2_max_items ?? 80), l2Gray: Number(sem.l2_max_gray ?? 60), log: s => console.log(s) });
-  const emb = resolveEmbeddingConfig();
+  const emb = embeddingPick(modelSnap);
   const b = await buildDigestSemantic(db as any, win, env, { cache, telegramPath,
-    embedding: emb.config.enabled && !emb.errors.length ? emb.config : null,
-    embeddingNote: !emb.config.enabled ? '后台未启用向量模型' : emb.errors.join('；'),
+    embedding: emb.config, embeddingNote: emb.note,
     exclusiveActions: Array.isArray(sem.exclusive_actions) ? sem.exclusive_actions : DEFAULT_EXCLUSIVE_ACTIONS });
   b.warnings.forEach(w => console.log(`⚠️ ${w}`));
   console.log(`语义去重：${JSON.stringify(b.stats)}；AI 请求 ${used} 次`);

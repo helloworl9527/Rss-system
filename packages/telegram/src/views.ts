@@ -85,7 +85,7 @@ export function renderTelegram(o: { csrf: string; tab: TelegramTab; sources: any
 }
 
 /** 设置页里的三个 Telegram 分组：总结设置、图片识别、数据保留。 */
-export function renderTelegramSettings(o: { csrf: string; settings: any }): string {
+export function renderTelegramSettings(o: { csrf: string; settings: any; managed?: boolean }): string {
   const s = o.settings;
   const csrf = `<input type="hidden" name="csrf" value="${esc(o.csrf)}">`;
   return `
@@ -93,15 +93,15 @@ export function renderTelegramSettings(o: { csrf: string; settings: any }): stri
   <form method="post" action="/telegram/settings">${csrf}<table>
     <tr><td>业务时区</td><td><input name="timezone" value="${esc(s.timezone)}" aria-label="业务时区"></td></tr>
     <tr><td>总结时刻</td><td><input name="schedule" value="${esc(JSON.parse(s.schedule_json).join(', '))}" aria-label="总结时刻"><div class="muted">逗号分隔的 HH:MM，每个时刻生成一次各频道总结和跨频道要点</div></td></tr>
-    <tr><td>供应商</td><td><select name="provider" aria-label="供应商">${['mock', 'openai', 'openai_compatible', 'deepseek', 'qwen', 'anthropic', 'gemini'].map(x => `<option${x === s.provider ? ' selected' : ''}>${x}</option>`).join('')}</select></td></tr>
+    ${o.managed ? '<tr><td>模型</td><td class="muted">由上方「模型分配」中的「Telegram 总结」管理</td></tr>' : `<tr><td>供应商</td><td><select name="provider" aria-label="供应商">${['mock', 'openai', 'openai_compatible', 'deepseek', 'qwen', 'anthropic', 'gemini'].map(x => `<option${x === s.provider ? ' selected' : ''}>${x}</option>`).join('')}</select></td></tr>
     <tr><td>模型 / Base URL</td><td><input name="model" value="${esc(s.model)}" placeholder="模型 ID" aria-label="模型"> <input name="base_url" value="${esc(s.base_url || '')}" placeholder="Base URL" aria-label="Base URL" style="width:300px"></td></tr>
-    <tr><td>密钥</td><td><select name="credential_ref" aria-label="密钥">${['OPENAI_COMPAT_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'DASHSCOPE_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'].map(x => `<option${x === s.credential_ref ? ' selected' : ''}>${x}</option>`).join('')}</select></td></tr>
+    <tr><td>密钥</td><td><select name="credential_ref" aria-label="密钥">${['OPENAI_COMPAT_API_KEY', 'OPENAI_API_KEY', 'DEEPSEEK_API_KEY', 'DASHSCOPE_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'].map(x => `<option${x === s.credential_ref ? ' selected' : ''}>${x}</option>`).join('')}</select></td></tr>`}
     <tr><td>额外关注点</td><td><textarea name="prompt_rules" rows="5" style="width:100%" aria-label="额外关注点">${esc(s.prompt_rules)}</textarea><div class="muted">只能补充关注点和输出要求；“只依据消息内容”“写出具体内容”“忽略群管理消息”等固定规则不可修改。</div></td></tr>
   </table><p><button class="primary">保存总结设置</button></p></form>
 
   <h2 id="vision">图片识别</h2>
   <form method="post" action="/telegram/vision/limit">${csrf}<table>
-    <tr><td>模型</td><td><code>${esc(s.vision_model)}</code></td></tr>
+    <tr><td>模型</td><td>${o.managed ? '<span class="muted">由上方「模型分配」中的「Telegram 图片识别」管理</span>' : `<code>${esc(s.vision_model)}</code>`}</td></tr>
     <tr><td>每日上限</td><td><input name="limit" type="number" min="1" max="1440" value="${esc(s.vision_daily_limit)}" aria-label="每日上限" style="width:100px"> 张
       <div class="muted">识别器每分钟处理 1 张，所以每天最多 1,440 张。上限只限制新图片，积压的图片会顺延到第二天。</div></td></tr>
   </table><p><button class="primary">保存上限</button></p></form>

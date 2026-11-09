@@ -51,7 +51,8 @@ const provider = { name: 'mock', model: 'digest-m', strictness: 'strict', comple
   return { data: { items: [{ text: list.map((x: any) => x.text).join('；'), groups: [...new Set(list.flatMap((x: any) => x.groups)), '编造频道'] }] },
     rawText: '', responseId: 'r', model: 'digest-m', usage };
 } } as any;
-const cfg = { provider: 'mock' as const, model: 'm', summaryRetentionDays: 30, lookbackDays: 7 };
+// 保留天数取很大：样例数据用固定日期，RSS 按真实时间过滤过期，30 天会在 2026-11-09 之后让 RSS 断言失效
+const cfg = { provider: 'mock' as const, model: 'm', summaryRetentionDays: 36500, lookbackDays: 7 };
 
 console.log('等待所有频道就绪：\n');
 {

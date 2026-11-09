@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolveSecret } from '../../../packages/web/src/secrets.ts';
 import { createProvider } from '../../../packages/ai/src/registry.ts';
+import { telegramPick } from '../../../packages/web/src/model-runtime.ts';
 import { composeDaily, loadWindowMessages, renderDailyMarkdown, dailyCount } from '../../../packages/telegram/src/daily.ts';
 import { channelName } from '../../../packages/telegram/src/digest.ts';
 
@@ -19,8 +20,11 @@ const out = arg('--out') ?? './data/preview/tg-daily';
 const db = new Database(process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3', { readonly: true, fileMustExist: true });
 db.pragma('busy_timeout = 5000');
 const s = db.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any;
-const provider = await createProvider({ provider: s.provider, model: s.model, baseUrl: s.base_url ?? undefined,
-  apiKey: resolveSecret(s.credential_ref), timeoutMs: Number(process.env.TELEGRAM_AI_TIMEOUT_MS) || 240_000 });
+const timeoutMs = Number(process.env.TELEGRAM_AI_TIMEOUT_MS) || 240_000;
+const pick = telegramPick('telegramSummary');
+if (pick && !pick.ok) { console.error(`❌ 模型配置错误（Telegram 总结）：${pick.message}`); process.exit(1); }
+const provider = await createProvider(pick ? { ...pick.cfg, timeoutMs } : { provider: s.provider, model: s.model, baseUrl: s.base_url ?? undefined,
+  apiKey: resolveSecret(s.credential_ref), timeoutMs });
 const groups = loadWindowMessages(db as any, start.toISOString(), end.toISOString(), channelName);
 db.close();
 const fmt = (d: Date) => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', dateStyle: 'short', timeStyle: 'short' }).format(d);

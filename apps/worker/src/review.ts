@@ -15,6 +15,9 @@ import { hydrateEnv } from '../../../packages/web/src/secrets.ts';
 import { loadRules } from '../../../packages/domain/src/rules.ts';
 import { isHighRisk } from '../../../packages/domain/src/risk.ts';
 import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
+import { tierPick, tierConfigOrExit } from '../../../packages/web/src/model-runtime.ts';
+import { loadModelSnapshot } from '../../../packages/ai/src/model-config.ts';
+import type { ProviderConfig } from '../../../packages/ai/src/types.ts';
 import { runReview, DEFAULT_REVIEW_CONCURRENCY, type ReviewInput, type ReviewDeps }
   from '../../../packages/ai/src/review.ts';
 import { traceFacts } from '../../../packages/ai/src/fact-trace.ts';
@@ -155,17 +158,27 @@ await Promise.all(inputs.map(async input => {
 }));
 
 // ---- 供应商：L2/L3 可指向不同厂商 ----
-const l2cfg = providerFromEnv('L2'), l3cfg = providerFromEnv('L3');
-// 未单独配置时沿用 L1
-const fallback = providerFromEnv('L1');
-const pick = (c: typeof l2cfg, tierModelEnv: string) => ({
-  ...c,
-  provider: c.provider !== 'mock' || process.env.AI_PROVIDER ? (c.provider ?? fallback.provider) : fallback.provider,
-  model: c.model || process.env[tierModelEnv] || fallback.model,
-  apiKey: c.apiKey ?? fallback.apiKey,
-});
-const l2 = await createProvider(pick(l2cfg, 'AI_L2_MODEL'));
-const l3 = await createProvider(pick(l3cfg, 'AI_L3_MODEL'));
+const modelSnap = loadModelSnapshot(db as any);
+let l2cfgFinal: ProviderConfig, l3cfgFinal: ProviderConfig;
+if (!modelSnap.enabled) {
+  // 旧配置：原有逻辑不变
+  const l2cfg = providerFromEnv('L2'), l3cfg = providerFromEnv('L3');
+  // 未单独配置时沿用 L1
+  const fallback = providerFromEnv('L1');
+  const pick = (c: typeof l2cfg, tierModelEnv: string) => ({
+    ...c,
+    provider: c.provider !== 'mock' || process.env.AI_PROVIDER ? (c.provider ?? fallback.provider) : fallback.provider,
+    model: c.model || process.env[tierModelEnv] || fallback.model,
+    apiKey: c.apiKey ?? fallback.apiKey,
+  });
+  l2cfgFinal = pick(l2cfg, 'AI_L2_MODEL'); l3cfgFinal = pick(l3cfg, 'AI_L3_MODEL');
+} else {
+  // 全局模型供应商：L2/L3 不可用时退回完整的 L1 配置（不按字段拼接，不把 L1 密钥发给别的供应商）
+  const whole = (tier: 'L2' | 'L3') => { const p = tierPick(modelSnap, tier); return p.ok ? p.cfg : tierConfigOrExit(modelSnap, 'L1'); };
+  l2cfgFinal = whole('L2'); l3cfgFinal = whole('L3');
+}
+const l2 = await createProvider(l2cfgFinal);
+const l3 = await createProvider(l3cfgFinal);
 
 const bt = rules.ai?.budget_per_run ?? {};
 const deps: ReviewDeps = {

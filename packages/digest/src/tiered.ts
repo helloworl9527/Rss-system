@@ -37,11 +37,17 @@ export const LOW_CONFIDENCE = 0.6;
 /** 缓存中"两层都拒绝处理"的终态标记（只含标记，不含任何内容）。 */
 const REFUSED = '__refused';
 
-/** 配置标识：两层的供应商、模型、端点（不含密钥）与提示词版本。 */
-export function tierConfigId(l1: ProviderConfig, l2: ProviderConfig, promptVersion: string): string {
+/** 本地可判定的模型配置错误（全局模型供应商开关打开时）：该层直接标记不可用，不派发请求。 */
+export type TierConfigError = { configError: string };
+export type TierInput = ProviderConfig | TierConfigError;
+const isErr = (c: TierInput): c is TierConfigError => 'configError' in c;
+
+/** 配置标识：两层的供应商、模型、端点（不含密钥）与提示词版本；库内配置追加供应商指纹。 */
+export function tierConfigId(l1: TierInput, l2: TierInput, promptVersion: string): string {
   // 地址格式错误时不在这里抛出：该层会在创建供应商时被标记为不可用
   const endpoint = (u?: string) => { if (!u) return ''; try { const x = new URL(u); return x.origin + x.pathname; } catch { return `invalid:${u.length}`; } };
-  const pick = (c: ProviderConfig) => [c.provider, c.model, endpoint(c.baseUrl)];
+  const pick = (c: TierInput) => isErr(c) ? ['unavailable', c.configError]
+    : [c.provider, c.model, endpoint(c.baseUrl), ...(c.cacheScope ? [c.cacheScope] : [])];
   return sha256(JSON.stringify(['tier1', pick(l1), pick(l2), promptVersion])).slice(0, 32);
 }
 
@@ -50,20 +56,25 @@ export function tierConfigId(l1: ProviderConfig, l2: ProviderConfig, promptVersi
  * onDispatch 在每次实际请求前调用，用于持久化预算与截止时间检查。
  */
 export async function createTierEnv(o: {
-  l1: ProviderConfig; l2: ProviderConfig; promptVersion: string; cache: AiCache;
+  l1: TierInput; l2: TierInput; promptVersion: string; cache: AiCache;
   onDispatch: () => void; signal?: AbortSignal; l2Items?: number; l2Gray?: number; concurrency?: number;
   log?: (s: string) => void; providers?: { l1?: Provider; l2?: Provider };
 }): Promise<TierEnv> {
-  const slot = async (tier: Tier, cfg: ProviderConfig, injected?: Provider): Promise<Slot> => {
+  const slot = async (tier: Tier, cfg: TierInput, injected?: Provider): Promise<Slot> => {
     if (injected) return { tier, provider: injected, dead: false, deadReason: null };
+    if (isErr(cfg)) return { tier, provider: null, dead: true, deadReason: `config:${cfg.configError}` };
     try { return { tier, provider: await createProvider({ ...cfg, timeoutMs: cfg.timeoutMs ?? 120_000 }, { onDispatch: o.onDispatch }), dead: false, deadReason: null }; }
     catch (e) { return { tier, provider: null, dead: true, deadReason: errorKind(e) }; }
   };
-  const same = o.l1.provider === o.l2.provider && o.l1.model === o.l2.model && (o.l1.baseUrl ?? '') === (o.l2.baseUrl ?? '') && o.l1.apiKey === o.l2.apiKey;
+  const a = o.l1, b = o.l2;
+  const same = !isErr(a) && !isErr(b) && a.provider === b.provider && a.model === b.model && (a.baseUrl ?? '') === (b.baseUrl ?? '') && a.apiKey === b.apiKey;
+  const l1 = await slot('L1', a, o.providers?.l1), l2 = await slot('L2', b, o.providers?.l2);
+  // 配置错误直接作为最后错误类型，推迟发布时后台显示的就是它
+  const configErr = [l1, l2].find(s => s.deadReason?.startsWith('config:'))?.deadReason ?? null;
   return {
-    l1: await slot('L1', o.l1, o.providers?.l1), l2: await slot('L2', o.l2, o.providers?.l2), l2SameAsL1: same,
+    l1, l2, l2SameAsL1: same,
     configId: tierConfigId(o.l1, o.l2, o.promptVersion), cache: o.cache, signal: o.signal,
-    l2Left: { items: o.l2Items ?? 80, gray: o.l2Gray ?? 60 }, stopReason: null, lastErrorKind: null, dispatch: o.onDispatch,
+    l2Left: { items: o.l2Items ?? 80, gray: o.l2Gray ?? 60 }, stopReason: null, lastErrorKind: configErr, dispatch: o.onDispatch,
     concurrency: o.concurrency ?? 3, log: o.log ?? (() => {}),
   };
 }

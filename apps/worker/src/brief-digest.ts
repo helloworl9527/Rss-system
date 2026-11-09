@@ -7,7 +7,7 @@
  *   - 先持久化再投递；投递成功后才登记 pushed_events / pushed_projects（72 小时跨期去重）。
  */
 import { nowIso, type DB } from '../../../packages/db/src/index.ts';
-import { createProvider, providerFromEnv } from '../../../packages/ai/src/registry.ts';
+import { createProvider } from '../../../packages/ai/src/registry.ts';
 import { buildDigest, recordPushed } from '../../../packages/digest/src/build.ts';
 import { loadTelegramDaily } from '../../../packages/digest/src/telegram.ts';
 import { stripDealsFromTelegram } from '../../../packages/digest/src/deals.ts';
@@ -17,7 +17,8 @@ import { checkEmail } from '../../../packages/templates/src/email.ts';
 import { deliver } from '../../../packages/templates/src/delivery.ts';
 import { mailerFromEnv } from '../../../packages/templates/src/mailer.ts';
 import { ProviderError, type Provider } from '../../../packages/ai/src/types.ts';
-import { resolveEmbeddingConfig } from '../../../packages/web/src/secrets.ts';
+import { tierInput, embeddingPick, tierConfigOrExit } from '../../../packages/web/src/model-runtime.ts';
+import { loadModelSnapshot } from '../../../packages/ai/src/model-config.ts';
 import { AiCache } from '../../../packages/digest/src/cache.ts';
 import { createTierEnv } from '../../../packages/digest/src/tiered.ts';
 import { buildDigestSemantic, type SemanticBuild } from '../../../packages/digest/src/build-semantic.ts';
@@ -68,17 +69,19 @@ async function buildSemantic(o: Opts): Promise<number | { built: SemanticBuild; 
     dispatched++;
   };
   const cache = new AiCache(db);
+  // 本次尝试的模型配置快照：两层与向量都从同一份解析（全局模型供应商开关关着时就是旧配置）
+  const snap = loadModelSnapshot(db as any);
   const env = await createTierEnv({
-    l1: providerFromEnv('L1'), l2: providerFromEnv('L2'), promptVersion: 'sem1', cache, onDispatch,
+    l1: tierInput(snap, 'L1'), l2: tierInput(snap, 'L2'), promptVersion: 'sem1', cache, onDispatch,
     signal: deadline ? AbortSignal.timeout(Math.max(1, deadline - Date.now())) : undefined,
     l2Items: Number(cfg.l2_max_items ?? 80), l2Gray: Number(cfg.l2_max_gray ?? 60), log: s => console.log(s),
   });
   for (const s of [env.l1, env.l2]) if (s.dead) console.log(`  ⚠️ ${s.tier} 供应商不可用（${s.deadReason}）`);
-  const emb = resolveEmbeddingConfig();
-  const embedding = emb.config.enabled && !emb.errors.length ? emb.config : null;
+  const emb = embeddingPick(snap);
+  const embedding = emb.config;
   const tgEnabled = !!o.rules.brief?.telegram_daily?.enabled;
   const built = await buildDigestSemantic(db, o.win, env, {
-    cache, embedding, embeddingNote: !emb.config.enabled ? '后台未启用向量模型' : emb.errors.join('；'),
+    cache, embedding, embeddingNote: emb.note,
     exclusiveActions: Array.isArray(cfg.exclusive_actions) ? cfg.exclusive_actions : DEFAULT_EXCLUSIVE_ACTIONS,
     telegramPath: tgEnabled ? (process.env.TELEGRAM_DATABASE_PATH ?? './data/telegram.sqlite3') : null,
   });
@@ -128,7 +131,7 @@ async function compose(o: Opts, lease: Lease | null): Promise<number> {
       ({ built, provider, attemptId, aiCalls } = r);
       aiModel = provider?.model ?? '';
     } else {
-      const inner = await createProvider(providerFromEnv('L1'));
+      const inner = await createProvider(tierConfigOrExit(loadModelSnapshot(db as any), 'L1'));
       aiModel = inner.model;
       let legacyCalls = 0; aiCalls = () => legacyCalls;
       provider = { get name() { return inner.name; }, get model() { return inner.model; }, get strictness() { return inner.strictness; },
