@@ -48,9 +48,9 @@ function fromResolved(snap: Snapshot & { enabled: true }, consumer: Consumer): M
   return { ok: true, cfg: r.cfg, fingerprint: r.fingerprint, source: 'assignment' };
 }
 
-/** 日报 L1 / L2 / L3。 */
-export function tierPick(snap: Snapshot, tier: 'L1' | 'L2' | 'L3'): ModelPick {
-  if (!snap.enabled) { const cfg = providerFromEnv(tier); return { ok: true, cfg, fingerprint: legacyFingerprint(cfg), source: 'legacy' }; }
+/** 日报 L1 / L2 / L3。env 只给后台用：后台不 hydrate，测试旧配置时传入 worker 看到的环境副本。 */
+export function tierPick(snap: Snapshot, tier: 'L1' | 'L2' | 'L3', env: NodeJS.ProcessEnv = process.env): ModelPick {
+  if (!snap.enabled) { const cfg = providerFromEnv(tier, env); return { ok: true, cfg, fingerprint: legacyFingerprint(cfg), source: 'legacy' }; }
   return fromResolved(snap, tier.toLowerCase() as Consumer);
 }
 
@@ -109,8 +109,8 @@ export function telegramPick(consumer: 'telegramSummary' | 'telegramVision', dbP
 }
 
 /** 旧配置下 Telegram 的模型配置（与今天 runDueSummaries / runOneVisionTask 的读取一致），用于计算旧配置指纹。 */
-export function legacyTelegramConfig(settings: any, consumer: 'telegramSummary' | 'telegramVision'): ProviderConfig {
+export function legacyTelegramConfig(settings: any, consumer: 'telegramSummary' | 'telegramVision', env: NodeJS.ProcessEnv = process.env): ProviderConfig {
   return consumer === 'telegramSummary'
-    ? { provider: settings.provider, model: settings.model, baseUrl: settings.base_url ?? undefined, apiKey: resolveSecret(settings.credential_ref) }
-    : { provider: settings.vision_provider, model: settings.vision_model, baseUrl: settings.vision_base_url ?? undefined, apiKey: resolveSecret(settings.vision_credential_ref) };
+    ? { provider: settings.provider, model: settings.model, baseUrl: settings.base_url ?? undefined, apiKey: resolveSecret(settings.credential_ref, undefined, env) }
+    : { provider: settings.vision_provider, model: settings.vision_model, baseUrl: settings.vision_base_url ?? undefined, apiKey: resolveSecret(settings.vision_credential_ref, undefined, env) };
 }

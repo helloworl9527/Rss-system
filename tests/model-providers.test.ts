@@ -90,11 +90,21 @@ try {
     assert.throws(() => mp.saveAssignments(db, [{ consumer: 'l1', mode: 'disabled' }], r), /不能停用/);
     // 能力：L1 改成 Anthropic 后图片识别跟随 L1 → 整次写入被拒
     const pc = mp.createModelProvider(db, key, { name: 'Claude', type: 'anthropic', baseUrl: '', apiKey: KEY_B }, r); r = pc.revision;
-    assert.throws(() => mp.saveAssignments(db, [{ consumer: 'l1', mode: 'provider', providerId: pc.id, model: 'claude-x' }], r), /图片识别.*不支持/);
+    const full = (l1: any): any[] => [l1, { consumer: 'l2', mode: 'follow', follow: 'l1' }, { consumer: 'l3', mode: 'follow', follow: 'l2' },
+      { consumer: 'telegramSummary', mode: 'follow', follow: 'l1' }, { consumer: 'telegramVision', mode: 'follow', follow: 'l1' },
+      { consumer: 'sourceProfiler', mode: 'disabled' }, { consumer: 'embedding', mode: 'provider', providerId: pb, model: 'text-embedding-3-small' }];
+    assert.throws(() => mp.saveAssignments(db, full({ consumer: 'l1', mode: 'provider', providerId: pc.id, model: 'claude-x' }), r), /图片识别.*不支持/);
     assert.throws(() => mp.updateModelProvider(db, key, pa, { name: 'A', type: 'anthropic', baseUrl: '', apiKey: KEY_A }, r), /不支持/, '改供应商类型也重新校验引用图');
     r = mp.deleteModelProvider(db, pc.id, r).revision;
     r = mp.setModelConfigEnabled(db, true, r).revision;   // 7 行齐全可以启用
+    // 整表保存：提交内容就是完整分配表；启用时少了必需行 → 整次回滚（第 5 轮审查）
+    assert.throws(() => mp.saveAssignments(db, [{ consumer: 'l1', mode: 'provider', providerId: pa, model: 'flash' }], r), /没有分配/);
+    assert.equal((db.prepare('SELECT count(*) n FROM model_assignments').get() as any).n, 7, '回滚后 7 行都在');
     r = mp.setModelConfigEnabled(db, false, r).revision;
+    const rr = mp.saveAssignments(db, [{ consumer: 'l1', mode: 'provider', providerId: pa, model: 'flash' }], r).revision;
+    assert.deepEqual((db.prepare('SELECT consumer FROM model_assignments').all() as any[]).map(x => x.consumer), ['l1'], '未提交的分配被清除');
+    assert.ok(audits(db).at(-1)!.payload_json.includes('"to":"none"'), '审计记录被清除的分配');
+    r = mp.saveAssignments(db, full({ consumer: 'l1', mode: 'provider', providerId: pa, model: 'flash' }), rr).revision;
     const dbi = freshDb('incomplete.db');
     const pi = mp.createModelProvider(dbi, key, { name: 'A', type: 'openai', baseUrl: '', apiKey: KEY_A }, 0);
     const ri = mp.saveAssignments(dbi, [{ consumer: 'l1', mode: 'provider', providerId: pi.id, model: 'm' }], pi.revision).revision;
@@ -111,6 +121,13 @@ try {
     const leaked = audits(db).map(a => a.payload_json).join('\n');
     assert.ok(!leaked.includes(KEY_A) && !leaked.includes(KEY_B) && !leaked.includes('/v1'), '审计不含密钥与地址路径');
     ok('审计与配置同一事务：审计失败则配置不变；审计不含密钥与路径');
+  }
+
+  // ---------- 主密钥强度、导入前已有停用分配（第 5 轮审查） ----------
+  {
+    assert.ok(mc.masterKeyProblem('')); assert.ok(mc.masterKeyProblem('replace-with-a-long-random-secret'), '示例占位值');
+    assert.ok(mc.masterKeyProblem('short')); assert.equal(mc.masterKeyProblem('A'.repeat(43)), null);
+    ok('主密钥：缺失、示例占位值、过短都被识别');
   }
 
   // ---------- 快照解析 ----------
@@ -154,7 +171,9 @@ try {
       AI_L2_PROVIDER: 'openai_compatible', AI_L2_MODEL: 'flash', AI_L2_BASE_URL: 'https://gw.example.com/v1',
       AI_L3_PROVIDER: 'openai_compatible', AI_L3_MODEL: 'flash', AI_L3_BASE_URL: 'https://gw.example.com/v1', OPENAI_COMPAT_API_KEY: KEY_A };
     const db3 = freshDb('c.db');
-    const rep = mp.importLegacy(db3, key, tgSettings, 0, prodEnv);
+    // 导入前已保存过「停用」分配（没有供应商时也能保存）：导入用完整 7 行替换，不再主键冲突
+    const pre = mp.saveAssignments(db3, [{ consumer: 'sourceProfiler', mode: 'disabled' }, { consumer: 'embedding', mode: 'disabled' }], 0).revision;
+    const rep = mp.importLegacy(db3, key, tgSettings, pre, prodEnv);
     assert.ok(rep.ok, rep.reasons.join('；')); assert.equal(rep.providers, 1, '生产形态只生成 1 个供应商');
     const as = Object.fromEntries((db3.prepare('SELECT * FROM model_assignments').all() as any[]).map(a => [a.consumer, a.disabled ? 'disabled' : a.follow ? `follow:${a.follow}` : 'provider']));
     assert.deepEqual(as, { l1: 'provider', l2: 'follow:l1', l3: 'follow:l1', telegramSummary: 'follow:l1', telegramVision: 'follow:l1', sourceProfiler: 'disabled', embedding: 'disabled' });
@@ -211,6 +230,15 @@ try {
     x = fake([{ body: { data: [{ id: 'a' }], has_more: true } }]);
     assert.equal((await cat.fetchModelCatalog('anthropic', '', 'k', { fetchImpl: x.f }) as any).kind, 'bad_response', '有更多却没游标 → 失败');
     x = fake([{ body: {} }]); assert.equal((await cat.fetchModelCatalog('openai', '', 'k', { fetchImpl: x.f }) as any).kind, 'bad_response', 'HTTP 200 的 {} 不当作空列表');
+    for (const [t, body] of [['gemini', {}], ['gemini', { models: [{ name: 'models/x', supportedGenerationMethods: 'generateContent' }] }],
+      ['anthropic', { data: [{ id: 'a' }] }], ['anthropic', { data: [{ id: 'a' }], has_more: 'false' }], ['openai', { data: [{ id: 1 }] }]] as const) {
+      x = fake([{ body }]);
+      assert.equal((await cat.fetchModelCatalog(t as any, '', 'k', { fetchImpl: x.f }) as any).kind, 'bad_response', `${t} ${JSON.stringify(body)} 应判为格式错误`);
+    }
+    x = fake([{ body: { models: [] } }]); assert.deepEqual(await cat.fetchModelCatalog('gemini', '', 'k', { fetchImpl: x.f }), { ok: true, models: [], truncated: false }, '合法空数组才算空目录');
+    x = fake([{ body: { data: Array.from({ length: 500 }, (_, i) => ({ id: `m${i}` })), has_more: true, last_id: 'm499' } }, { status: 500, body: '' }]);
+    const exact = await cat.fetchModelCatalog('anthropic', '', 'k', { fetchImpl: x.f }) as any;
+    assert.deepEqual([exact.ok, exact.models.length, exact.truncated, x.seen.length], [true, 500, true, 1], '名额正好用完：不再请求下一页');
     x = fake([{ body: { data: [] } }]); assert.deepEqual(await cat.fetchModelCatalog('openai', '', 'k', { fetchImpl: x.f }), { ok: true, models: [], truncated: false });
     x = fake([{ status: 403, body: 'secret echo sk-xxx' }]); const e403 = await cat.fetchModelCatalog('openai', '', 'k', { fetchImpl: x.f }) as any;
     assert.deepEqual(e403, { ok: false, kind: 'forbidden', status: 403 }, '错误只留 kind/status，不含正文');
@@ -253,7 +281,8 @@ try {
     }); });
     await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()));
     const port = (srv.address() as any).port;
-    Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1', ANTHROPIC_AUTH_TOKEN: 'env-token', ANTHROPIC_CUSTOM_HEADERS: 'X-Api-Key: env-key\nX-Leak: 1', ANTHROPIC_LOG: 'debug', ANTHROPIC_API_KEY: 'env-api-key' });
+    Object.assign(process.env, { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1', ANTHROPIC_AUTH_TOKEN: 'env-token', ANTHROPIC_LOG: 'debug', ANTHROPIC_API_KEY: 'env-api-key',
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Api-Key: env-key\nX-Leak: 1\nAnthropic-Version: 1999-01-01\nAnthropic-Beta: evil\nUser-Agent: env-agent\nX-Stainless-Evil: 1' });
     const logs: string[] = []; const orig = [console.log, console.debug, console.info, console.warn, console.error];
     console.log = console.debug = console.info = console.warn = console.error = (...a: any[]) => { logs.push(a.join(' ')); };
     try {
@@ -265,6 +294,8 @@ try {
     assert.equal(reqs.length, 1); assert.equal(reqs[0]!.url, '/gw/v1/messages', '请求发往库里的地址');
     const h = reqs[0]!.headers;
     assert.equal(h['x-api-key'], 'db-key'); assert.equal(h.authorization, undefined); assert.equal(h['x-leak'], undefined, '环境注入的自定义头被丢弃');
+    assert.equal(h['anthropic-version'], '2023-06-01', '协议版本用固定值，环境同名头无效'); assert.equal(h['anthropic-beta'], undefined);
+    assert.equal(h['user-agent'], 'briefing-system'); assert.ok(!Object.keys(h).some(k => k.startsWith('x-stainless')), '不发送 x-stainless-* 头');
     assert.ok(!logs.join('\n').includes('u-secret-content'), 'ANTHROPIC_LOG=debug 不输出请求内容');
     ok('Anthropic 隔离：忽略 ANTHROPIC_BASE_URL / AUTH_TOKEN / CUSTOM_HEADERS / LOG，只用库里的地址与密钥');
   }

@@ -108,8 +108,12 @@ function mapAnthropicError(e: any): ProviderError {
   return new ProviderError('network', String(e?.message ?? e));
 }
 
-/** 允许发出的请求头（其余一律丢弃，包括 ANTHROPIC_CUSTOM_HEADERS 注入的任何头与 authorization）。 */
-const ALLOWED_HEADERS = new Set(['content-type', 'accept', 'user-agent', 'anthropic-version', 'anthropic-beta']);
+/**
+ * 库内配置的请求头全部由这里重建：SDK 合并了 ANTHROPIC_CUSTOM_HEADERS 之后，同名的 anthropic-version / beta /
+ * user-agent / x-stainless-* 也可能来自环境，所以只保留与请求体格式有关的 content-type / accept，其余用固定值。
+ */
+const PASS_HEADERS = new Set(['content-type', 'accept']);
+const FIXED_HEADERS: Record<string, string> = { 'anthropic-version': '2023-06-01', 'user-agent': 'briefing-system' };
 
 /**
  * 库内配置（全局模型供应商）的 SDK 选项：SDK 会隐式读取 ANTHROPIC_BASE_URL / AUTH_TOKEN / CUSTOM_HEADERS / LOG，
@@ -130,9 +134,9 @@ export function isolatedOptions(cfg: ProviderConfig): Record<string, unknown> {
       throw new ProviderError('bad_request', '请求地址与配置的 Base URL 不一致，已拦截');
     const headers = new Headers();
     new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined)).forEach((v, k) => {
-      const n = k.toLowerCase();
-      if (ALLOWED_HEADERS.has(n) || n.startsWith('x-stainless-')) headers.set(n, v);
+      if (PASS_HEADERS.has(k.toLowerCase())) headers.set(k.toLowerCase(), v);
     });
+    for (const [k, v] of Object.entries(FIXED_HEADERS)) headers.set(k, v);
     headers.set('x-api-key', key);
     return fetch(url, { ...init, headers, redirect: 'error' });
   };

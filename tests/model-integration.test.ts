@@ -71,6 +71,9 @@ try {
     const old = resolveEmbeddingConfig();
     assert.deepEqual(rt.embeddingPick(snap).config, old.config, '向量配置与旧解析一致（不加 scope，已有缓存继续命中）');
     for (const k of ['EMBEDDING_ENABLED', 'EMBEDDING_BASE_URL', 'EMBEDDING_MODEL', 'EMBEDDING_API_KEY']) delete process.env[k];
+    // 后台测试按钮传入 worker 的环境副本（第 5 轮审查）：解析结果来自传入的环境而不是后台自己的 process.env
+    const injected = rt.tierPick(snap, 'L1', { AI_L1_PROVIDER: 'openai', AI_L1_MODEL: 'vault-model', OPENAI_API_KEY: 'vk' });
+    assert.ok(injected.ok && injected.cfg.provider === 'openai' && injected.cfg.model === 'vault-model' && injected.cfg.apiKey === 'vk');
     db.close();
     ok('开关关着：L1/L2/L3（含 AI_BASE_URL、strictness、L3 换厂商）与向量配置都与旧代码逐字一致');
   }
@@ -114,6 +117,12 @@ try {
     const code = await runDigestBrief({ db, run: db.prepare('SELECT * FROM runs WHERE id=?').get(runId), rules: loadRules() as any, noSend: true, shadow: false, regenerate: false,
       win: { key: '2026-11-05:daily', label: '日报', start: new Date('2026-11-04T00:00:00Z'), end: new Date('2026-11-05T00:00:00Z') },
       outDir: join(dir, 'out'), trigger: 'timer', deadlineMs: Date.now() + 3600e3 });
+    // 预览：本地配置错误在构建与输出之前就以非零退出（第 5 轮审查）
+    const { spawnSync } = await import('node:child_process');
+    const pv = spawnSync(process.execPath, ['apps/worker/src/preview.ts', '--from', '2026-11-04T00:00:00Z', '--to', '2026-11-05T00:00:00Z', '--no-telegram', '--out', join(dir, 'pv')],
+      { encoding: 'utf8', env: { ...process.env, DATABASE_PATH: join(dir, 'gate.db') } });
+    assert.equal(pv.status, 1, pv.stderr.slice(-300)); assert.match(pv.stderr, /key_unreadable/);
+    assert.ok(!existsSync(join(dir, 'pv')) && !existsSync(join(dir, 'pv.html')), '不写出残缺预览');
     process.env.APP_ENCRYPTION_KEY = saved; delete process.env.AI_L1_PROVIDER; delete process.env.AI_L1_MODEL;
     assert.equal(code, EXIT_WAITING_AI);
     const run = db.prepare('SELECT status, error FROM runs WHERE id=?').get(runId) as any;
@@ -215,6 +224,18 @@ try {
     assert.equal(health.enabled, true); assert.equal(health.providers, 1);
     assert.ok(health.consumers.every((c: any) => c.ok), JSON.stringify(health.consumers));
     assert.ok(!JSON.stringify(health).includes(KEY) && !JSON.stringify(health).includes('/v1'), '不含密钥与地址路径');
+    // 配置不可用（密文被改）→ 首页红色告警，Telegram 用途归到 Telegram 区（第 5 轮审查）
+    { const w = openDb(dbpath); w.prepare(`UPDATE model_providers SET key_tag=?`).run(Buffer.alloc(16).toString('base64')); w.close(); }
+    const home = await (await fetch(base + '/', { headers: { cookie } })).text();
+    assert.ok(home.includes('模型配置错误：Telegram 总结') && home.includes('模型配置错误：日报 L1'), '首页显示模型配置错误告警');
+    const h2 = await (await fetch(base + '/health/models', { headers: { cookie } })).json() as any;
+    assert.ok(h2.consumers.some((c: any) => !c.ok && c.text.includes('无法解密')));
+    // 恢复：重新填写密钥（改地址以外的保存也必须能读原密钥，所以这里直接重填）
+    html = await page();
+    const pid = html.match(/settings\/models\/providers\/(p_[a-z0-9]{8})\/refresh/)![1]!;
+    const fix = await post(`/settings/models/providers/${pid}`, { csrf, revision: rev(), name: '网关', type: 'openai_compatible', base_url: 'https://gw.example.com/v1', api_key: KEY });
+    assert.equal(fix.status, 200);
+    assert.ok(!(await (await fetch(base + '/', { headers: { cookie } })).text()).includes('模型配置错误'), '修好后告警消失');
     // Telegram 设置保存不重置模型列（停用开关后它们就是旧配置）
     const saved = await post('/telegram/settings', { csrf, timezone: 'Asia/Shanghai', schedule: '08:00, 20:00', prompt_rules: '' });
     assert.equal(saved.status, 302);

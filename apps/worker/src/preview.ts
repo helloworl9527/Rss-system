@@ -44,6 +44,12 @@ const out = arg('--out') ?? './data/preview';
 // 旧版供应商延迟创建：新流程预览在 L1 配置损坏时仍可使用 L2 与缓存
 let legacy: Awaited<ReturnType<typeof createProvider>> | null = null;
 const modelSnap = loadModelSnapshot(db as any);
+// 全局模型供应商：本地可判定的配置错误在构建、派发、输出之前就退出（不产出残缺预览）
+if (modelSnap.enabled) {
+  for (const t of ['L1', 'L2'] as const) tierConfigOrExit(modelSnap, t);
+  const emb = embeddingPick(modelSnap);
+  if (!emb.config && emb.note.startsWith('向量模型配置错误')) { console.error(`❌ ${emb.note}`); process.exit(1); }
+}
 const legacyProvider = async () => legacy ??= await createProvider(tierConfigOrExit(modelSnap, 'L1'));
 
 console.log(`预览 ${win.key} ${win.label} [${win.start.toISOString()} → ${win.end.toISOString()})`);

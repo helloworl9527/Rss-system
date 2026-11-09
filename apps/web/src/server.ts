@@ -30,7 +30,7 @@ import { EmbeddingError, parseEmbeddingFields, testEmbedding, validateEmbeddingC
 import { overrideCandidate, toggleSource, updateSourceGroup, updateSourceUrl, planResend, addSource, deleteSource,
          testSource, approveSourceProposal, rejectSourceProposal, ensureProfilerProfile, sourceProfilerConfig, ActionError, RETIRED_HOST_GROUP } from '../../../packages/web/src/actions.ts';
 import { createProvider } from '../../../packages/ai/src/registry.ts';
-import { loadModelSnapshot, readModelConfig, openProvider, currentMasterKey, resolveModel, hostOf, CONSUMERS, CONSUMER_LABEL, CONFIG_ERROR_LABEL, PROVIDER_TYPE_LABEL, type Consumer, type ProviderType } from '../../../packages/ai/src/model-config.ts';
+import { loadModelSnapshot, readModelConfig, openProvider, currentMasterKey, masterKeyProblem, resolveModel, hostOf, CONSUMERS, CONSUMER_LABEL, CONFIG_ERROR_LABEL, PROVIDER_TYPE_LABEL, type Consumer, type ProviderType } from '../../../packages/ai/src/model-config.ts';
 import { embeddingPick, tierPick, legacyTelegramConfig } from '../../../packages/web/src/model-runtime.ts';
 import { createModelProvider, updateModelProvider, deleteModelProvider, setManualModels, saveAssignments, setModelConfigEnabled,
   importLegacy, applyModelsFetch, collectLegacy, workerEnvCopy, ModelConfigError, type AssignmentInput } from '../../../packages/web/src/model-providers.ts';
@@ -275,6 +275,17 @@ function opsSnapshot() {
         .get(new Date(now - 2 * 864e5).toISOString()) as any).n,
     },
   });
+  // 全局模型供应商：启用后任一用途配置不可用（Telegram 会静默不领取任务）→ 红色告警；主密钥太弱 → 提醒
+  try {
+    const raw = readModelConfig(db);
+    if (raw.enabled) for (const st of modelStatus(true, settings).filter(x => !x.ok))
+      alerts.push({ level: 'bad', area: st.consumer.startsWith('telegram') ? 'telegram' : 'system', title: `模型配置错误：${CONSUMER_LABEL[st.consumer]}`,
+        detail: `${st.text}；相关任务暂停领取，修好后自动继续`, href: '/settings#model-assign' });
+    const weak = masterKeyProblem();
+    if (weak && (raw.enabled || raw.providers.length)) alerts.push({ level: 'warn', area: 'system', title: '主密钥强度不足', detail: weak, href: '/settings#models' });
+  } catch (e: any) {
+    alerts.push({ level: 'bad', area: 'system', title: '无法读取模型配置', detail: String(e?.message ?? e).slice(0, 120), href: '/settings#models' });
+  }
   return { now, sys, alerts, sources, tgSources, worker };
 }
 
@@ -809,7 +820,7 @@ function modelsSection(s: Session): { html: string; enabled: boolean } {
   const key = currentMasterKey();
   const tgSettings = telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get() as any;
   const providers = raw.providers.map(p => { const o = openProvider(p, key); return { ...p, baseUrl: o.error ? null : (o.baseUrl ?? '') }; });
-  return { enabled: raw.enabled, html: renderModelsSection({ csrf: s.csrf, enabled: raw.enabled, revision: raw.revision, keyOk: !!key,
+  return { enabled: raw.enabled, html: renderModelsSection({ csrf: s.csrf, enabled: raw.enabled, revision: raw.revision, keyOk: !!key, keyProblem: masterKeyProblem(),
     providers, assignments: raw.assignments, status: modelStatus(raw.enabled, tgSettings) }) };
 }
 
@@ -896,7 +907,9 @@ async function refreshModels(id: string): Promise<string> {
   } finally { endFetch(id); }
 }
 
+const requireStrongKey = () => { const weak = masterKeyProblem(); if (weak) throw new ModelConfigError(`${weak}；请先在 /etc/briefing/env 换成强主密钥并重启 brief-web`); };
 modelWrite('/settings/models/import', (b) => {
+  requireStrongKey();
   const tg = telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get();
   const r = importLegacy(db, currentMasterKey(), tg, Number(b.revision));
   if (!r.ok) throw new ModelConfigError(`未导入：${r.reasons.join('；')}`);
@@ -908,6 +921,7 @@ modelWrite('/settings/models/enable', (b, rev) => {
   return on ? '已启用全局模型供应商，worker 下一个任务起生效。' : '已停用，回到旧配置（env 与各处设置）。';
 });
 modelWrite('/settings/models/providers', async (b, rev) => {
+  requireStrongKey();
   const r = createModelProvider(db, currentMasterKey(), { name: b.name, type: b.type, baseUrl: b.base_url, apiKey: b.api_key }, rev);
   return `供应商已保存。${await refreshModels(r.id)}`;
 });
@@ -958,9 +972,10 @@ modelWrite('/settings/models/test', async (b) => {
     if (r.disabled) return `${CONSUMER_LABEL[c]}已停用，无需测试`;
     cfg = r.cfg;
   } else if (c === 'l1' || c === 'l2' || c === 'l3') {
-    const p = tierPick(snap, c.toUpperCase() as any); if (!p.ok) throw new ModelConfigError(p.message); cfg = p.cfg;
+    // 后台不 hydrate 保管库：用 worker 实际看到的环境副本解析，测的就是 worker 跑的
+    const p = tierPick(snap, c.toUpperCase() as any, workerEnvCopy()); if (!p.ok) throw new ModelConfigError(p.message); cfg = p.cfg;
   } else if (c === 'telegramSummary' || c === 'telegramVision') {
-    cfg = legacyTelegramConfig(telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get(), c);
+    cfg = legacyTelegramConfig(telegramDb.prepare('SELECT * FROM telegram_settings WHERE singleton=1').get(), c, workerEnvCopy());
   } else {
     const m = sourceProfilerConfig(db); if ('error' in m) throw new ModelConfigError(m.error); cfg = m.cfg;
   }
@@ -1057,6 +1072,11 @@ app.post('/settings/source-profiler', async (req, reply) => {
         apiKey: providerName === 'mock' ? undefined : resolveSecret(credentialRef as any) });
       setSettings({ sourceProfilerProvider: String(b.provider ?? '').trim(), sourceProfilerModel: String(b.model ?? '').trim(),
         sourceProfilerBaseUrl: String(b.base_url ?? '').trim(), sourceProfilerCredentialRef: String(b.credential_ref ?? 'SOURCE_PROFILER_API_KEY').trim() });
+    } else {
+      // 接管模式：先用分配的模型 + 候选超时完成探测，通过后才保存参数（失败时原设置不变）
+      const m = sourceProfilerConfig(db);
+      if ('error' in m) throw new Error(m.error);
+      await probe({ ...m.cfg, timeoutMs: Number(b.timeout_ms ?? 30000) || 30000 });
     }
     setSettings({
       sourceProfilerTemperature: String(b.temperature ?? '0.1').trim(), sourceProfilerReasoningEffort: String(b.reasoning_effort ?? '').trim(),
@@ -1065,7 +1085,6 @@ app.post('/settings/source-profiler', async (req, reply) => {
       sourceProfilerFallbackProfile: String(b.fallback_profile ?? '').trim(), sourceProfilerEnabled: String(b.enabled ?? 'true') });
     const model = sourceProfilerConfig(db);
     if ('error' in model) throw new Error(model.error);
-    if (managed) await probe(model.cfg);
     const profile = ensureProfilerProfile(db, model);
     db.prepare(`INSERT INTO audit_events (entity_type,entity_id,action,payload_json,created_at) VALUES ('settings','source_profiler','source_profiler_settings_updated',?,?)`)
       .run(JSON.stringify({ provider: model.cfg.provider, model: model.cfg.model, enabled: b.enabled, config_version: profile.config_version, actor: 'owner' }), nowIso());

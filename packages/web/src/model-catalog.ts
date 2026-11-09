@@ -30,26 +30,26 @@ export function catalogUrl(type: ProviderType, baseUrl: string | undefined, curs
   return `${base}/models`;
 }
 
-/** 按协议校验结构并提取 ID。结构不符返回 null（整次失败）。 */
+/** 按协议严格校验结构并提取 ID。必需字段缺失或类型不对返回 null（整次失败，保留旧列表）；合法的空数组才算空目录。 */
 export function parsePage(type: ProviderType, j: any): Page | null {
   if (!j || typeof j !== 'object' || Array.isArray(j)) return null;
   if (type === 'gemini') {
-    if (j.models !== undefined && !Array.isArray(j.models)) return null;
+    if (!Array.isArray(j.models)) return null;   // {} 不是合法目录
+    if (j.nextPageToken !== undefined && (typeof j.nextPageToken !== 'string')) return null;
     const ids: string[] = [];
-    for (const m of j.models ?? []) {
-      if (!m || typeof m.name !== 'string') return null;
-      const methods = Array.isArray(m.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
-      if (!methods.includes('generateContent')) continue;
+    for (const m of j.models) {
+      if (!m || typeof m.name !== 'string' || !Array.isArray(m.supportedGenerationMethods)) return null;
+      if (!m.supportedGenerationMethods.includes('generateContent')) continue;
       ids.push(m.name.replace(/^models\//, ''));
     }
-    if (j.nextPageToken !== undefined && typeof j.nextPageToken !== 'string') return null;
     return { ids, next: j.nextPageToken || null };
   }
   if (!Array.isArray(j.data)) return null;
   const ids: string[] = [];
   for (const m of j.data) { if (!m || typeof m.id !== 'string') return null; ids.push(m.id); }
   if (type === 'anthropic') {
-    if (j.has_more === true) { if (typeof j.last_id !== 'string' || !j.last_id) return null; return { ids, next: j.last_id }; }
+    if (typeof j.has_more !== 'boolean') return null;
+    if (j.has_more) { if (typeof j.last_id !== 'string' || !j.last_id) return null; return { ids, next: j.last_id }; }
     return { ids, next: null };
   }
   return { ids, next: null };
@@ -106,6 +106,8 @@ export async function fetchModelCatalog(type: ProviderType, baseUrl: string | un
         if (ids.length >= MAX_IDS) { truncated = true; break; }
         ids.push(id);
       }
+      // 名额已满且还有下一页：标为不完整并成功结束，不再多请求一页
+      if (!truncated && ids.length >= MAX_IDS && p.next) truncated = true;
       if (truncated || !p.next) break;
       cursor = p.next;
     }

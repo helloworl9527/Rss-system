@@ -11,7 +11,7 @@ import { MODELS_ERROR_LABEL } from './model-catalog.ts';
 
 export type ConsumerStatus = { consumer: Consumer; text: string; ok: boolean };
 export type ModelsView = {
-  csrf: string; enabled: boolean; revision: number; keyOk: boolean;
+  csrf: string; enabled: boolean; revision: number; keyOk: boolean; keyProblem?: string | null;
   providers: Array<ProviderRow & { baseUrl: string | null }>;
   assignments: AssignmentRow[];
   /** 每个使用方当前实际生效的配置摘要（不含密钥与地址路径） */
@@ -88,6 +88,7 @@ export function renderModelsSection(v: ModelsView): string {
   <h2 id="models">模型供应商</h2>
   <p class="sub">所有需要调用模型的地方只选「供应商 + 模型」。密钥与完整 Base URL 加密存放在日报数据库中（主密钥 APP_ENCRYPTION_KEY 不在库里）。</p>
   ${v.keyOk ? '' : '<div class="err">未设置 APP_ENCRYPTION_KEY：无法保存或读取供应商密钥。</div>'}
+  ${v.keyOk && v.keyProblem ? `<div class="err">${esc(v.keyProblem)}。主密钥太弱时不能新增供应商或导入。</div>` : ''}
   ${state}
   <table><tr><th>名称</th><th>类型 / 主机</th><th>密钥</th><th>模型列表</th><th>使用方</th><th>操作</th></tr>
     ${providerRows || '<tr><td colspan="6" class="muted">还没有供应商</td></tr>'}</table>

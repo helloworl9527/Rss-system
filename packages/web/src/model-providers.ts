@@ -170,7 +170,7 @@ function toRow(i: AssignmentInput): AssignmentRow {
   return { consumer: i.consumer, provider_id: i.providerId, model, strictness: (st || null) as any, follow: null, disabled: 0 };
 }
 
-/** 整表保存（7 个使用方一次提交）。开关打开时要求 7 行齐全。 */
+/** 整表保存：提交内容就是完整的分配表（没提交的用途被清除）。开关打开时要求 7 行齐全，否则整次回滚。 */
 export function saveAssignments(db: DB, inputs: AssignmentInput[], expected: number): { revision: number } {
   const rows = inputs.map(toRow);
   if (new Set(rows.map(r => r.consumer)).size !== rows.length) throw new ModelConfigError('使用方重复');
@@ -179,13 +179,17 @@ export function saveAssignments(db: DB, inputs: AssignmentInput[], expected: num
     const before = new Map((db.prepare('SELECT * FROM model_assignments').all() as AssignmentRow[]).map(a => [a.consumer, a]));
     const ins = db.prepare(`INSERT INTO model_assignments (consumer,provider_id,model,strictness,follow,disabled) VALUES (?,?,?,?,?,?)
       ON CONFLICT(consumer) DO UPDATE SET provider_id=excluded.provider_id, model=excluded.model, strictness=excluded.strictness, follow=excluded.follow, disabled=excluded.disabled`);
+    const keep = new Set(rows.map(r => r.consumer));
+    const del = db.prepare('DELETE FROM model_assignments WHERE consumer=?');
+    for (const c of before.keys()) if (!keep.has(c)) del.run(c);
     for (const r of rows) {
       if (r.provider_id && !db.prepare('SELECT 1 FROM model_providers WHERE id=?').get(r.provider_id)) throw new ModelConfigError(`${CONSUMER_LABEL[r.consumer]}：供应商不存在`);
       ins.run(r.consumer, r.provider_id, r.model, r.strictness, r.follow, r.disabled);
     }
     checkGraph(db);
     const describe = (a?: AssignmentRow) => !a ? 'none' : a.disabled ? 'disabled' : a.follow ? `follow:${a.follow}` : `${a.provider_id}/${a.model}${a.strictness ? `/${a.strictness}` : ''}`;
-    const changes = rows.filter(r => describe(before.get(r.consumer)) !== describe(r)).map(r => ({ consumer: r.consumer, from: describe(before.get(r.consumer)), to: describe(r) }));
+    const changes = [...rows.filter(r => describe(before.get(r.consumer)) !== describe(r)).map(r => ({ consumer: r.consumer, from: describe(before.get(r.consumer)), to: describe(r) })),
+      ...[...before.keys()].filter(c => !keep.has(c)).map(c => ({ consumer: c, from: describe(before.get(c)), to: 'none' }))];
     audit(db, 'model_assignments_saved', 'assignments', { changes });
     return { revision };
   });
@@ -321,6 +325,8 @@ export function importLegacy(db: DB, key: Buffer | null, telegramSettings: any, 
       if (st?.enabled === 1 || db.prepare('SELECT 1 FROM model_providers LIMIT 1').get())
         throw new ModelConfigError('已导入或已手动建立供应商，不能重复导入', 'state');
       const revision = bump(db, expected);
+      // 没有供应商时已有的分配只可能是「停用 / 跟随」；导入以完整的 7 行替换它们
+      db.prepare('DELETE FROM model_assignments').run();
       for (const g of groups.values()) {
         const c = sealedCols(key, g.id, (g.cfg.baseUrl ?? '').trim().replace(/\/+$/, ''), g.cfg.apiKey!);
         const host = c.base_host || hostOf(normalizeBaseUrl(g.cfg.provider as ProviderType, ''));

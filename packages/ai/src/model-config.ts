@@ -81,6 +81,14 @@ export function masterKeyFrom(raw: string | undefined): Buffer | null {
 }
 export function currentMasterKey(): Buffer | null { return masterKeyFrom(process.env.APP_ENCRYPTION_KEY); }
 
+/** 主密钥强度：缺失、过短（< 32 字符）或是示例占位值时返回问题说明。已有密文的派生方式不变（兼容）。 */
+export function masterKeyProblem(raw = process.env.APP_ENCRYPTION_KEY): string | null {
+  if (!raw) return '未设置 APP_ENCRYPTION_KEY';
+  if (/replace-with|changeme|example|placeholder/i.test(raw)) return 'APP_ENCRYPTION_KEY 仍是示例占位值';
+  if (raw.length < 32) return 'APP_ENCRYPTION_KEY 太短（至少 32 字符，建议 openssl rand -base64 32 生成）';
+  return null;
+}
+
 export type Sealed = { ct: string; iv: string; tag: string };
 export function seal(key: Buffer, field: 'url' | 'key', id: string, plain: string): Sealed {
   const iv = randomBytes(12);
