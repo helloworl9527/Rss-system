@@ -258,8 +258,9 @@ export async function runDueSummaries(db: TelegramDB, secret: string | undefined
     if(await summarizeJob(db,j.id,{...m,timeoutMs:AI_TIMEOUT_MS,
       promptRules:s.prompt_rules,promptVersion:s.prompt_version,summaryRetentionDays:s.summary_retention_days})) done++;
   }
+  // 要点任务每个窗口都会重新调用 select；退回值必须是旧配置（中途停用开关时后续窗口回到旧配置）
   const m=model(); if(!m) return done;
-  await runDueDigests(db,{...m,timeoutMs:AI_TIMEOUT_MS,
+  await runDueDigests(db,{...legacy,timeoutMs:AI_TIMEOUT_MS,
     summaryRetentionDays:s.summary_retention_days,lookbackDays:Number(s.raw_retention_days)+1},undefined,new Date(),select);
   return done;
 }

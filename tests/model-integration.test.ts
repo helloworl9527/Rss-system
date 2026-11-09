@@ -75,6 +75,24 @@ try {
     ok('开关关着：L1/L2/L3（含 AI_BASE_URL、strictness、L3 换厂商）与向量配置都与旧代码逐字一致');
   }
 
+  // ---------- 向量分配给官方 OpenAI、地址留空：用官方默认地址（第 4 轮审查） ----------
+  {
+    const db = openDb(join(dir, 'emb.db')); migrate(db, 'migrations');
+    const a = mp.createModelProvider(db, key, { name: 'A', type: 'openai_compatible', baseUrl: 'https://gw.example.com/v1', apiKey: KEY }, 0);
+    const o = mp.createModelProvider(db, key, { name: 'OpenAI', type: 'openai', baseUrl: '', apiKey: KEY }, a.revision);
+    let r = mp.saveAssignments(db, [
+      { consumer: 'l1', mode: 'provider', providerId: a.id, model: 'flash' }, { consumer: 'l2', mode: 'follow', follow: 'l1' },
+      { consumer: 'l3', mode: 'follow', follow: 'l1' }, { consumer: 'telegramSummary', mode: 'follow', follow: 'l1' },
+      { consumer: 'telegramVision', mode: 'follow', follow: 'l1' }, { consumer: 'sourceProfiler', mode: 'disabled' },
+      { consumer: 'embedding', mode: 'provider', providerId: o.id, model: 'text-embedding-3-small' },
+    ], o.revision).revision;
+    mp.setModelConfigEnabled(db, true, r);
+    const e = rt.embeddingPick(mc.loadModelSnapshot(db));
+    assert.ok(e.config, e.note); assert.equal(e.config!.baseUrl, 'https://api.openai.com/v1'); assert.ok(e.config!.scope, '缓存键带供应商指纹');
+    db.close();
+    ok('向量分配给官方 OpenAI 且地址留空：使用官方默认地址，缓存键带指纹');
+  }
+
   // ---------- 开关打开：配置错误 → 日报推迟（不派发请求） ----------
   {
     const { db } = enabledDb('gate.db');

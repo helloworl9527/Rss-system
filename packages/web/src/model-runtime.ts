@@ -11,7 +11,7 @@ import { providerFromEnv } from '../../ai/src/registry.ts';
 import type { ProviderConfig } from '../../ai/src/types.ts';
 import { parseEmbeddingFields, validateEmbeddingConfig, type EmbeddingConfig } from '../../ai/src/embeddings.ts';
 import {
-  loadModelSnapshot, resolveModel, normalizeBaseUrl, CONFIG_ERROR_LABEL,
+  loadModelSnapshot, resolveModel, normalizeBaseUrl, CONFIG_ERROR_LABEL, OFFICIAL_BASE,
   type Consumer, type ConfigError, type Snapshot, type ProviderType,
 } from '../../ai/src/model-config.ts';
 import { resolveEmbeddingConfig, resolveSettings, resolveSecret } from './secrets.ts';
@@ -79,7 +79,9 @@ export function embeddingPick(snap: Snapshot): { config: EmbeddingConfig | null;
   if (r.ok && r.disabled) return { config: null, note: '后台已停用向量模型' };
   if (!r.ok) return { config: null, note: `向量模型配置错误：${CONFIG_ERROR_LABEL[r.error]}` };
   const s = resolveSettings();   // 维度与阈值仍在原处
-  const config = parseEmbeddingFields({ enabled: 'true', baseUrl: r.cfg.baseUrl ?? '', model: r.cfg.model,
+  // 官方类型地址留空 = 官方默认地址（向量客户端自己没有默认值）
+  const baseUrl = r.cfg.baseUrl || OFFICIAL_BASE[r.cfg.provider as ProviderType] || '';
+  const config = parseEmbeddingFields({ enabled: 'true', baseUrl, model: r.cfg.model,
     dimensions: s.embeddingDimensions, simHigh: s.dedupSimHigh, simLow: s.dedupSimLow }, r.cfg.apiKey);
   config.scope = r.fingerprint;
   const errors = validateEmbeddingConfig(config);

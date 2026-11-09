@@ -117,11 +117,16 @@ const ALLOWED_HEADERS = new Set(['content-type', 'accept', 'user-agent', 'anthro
  * 鉴权只用库里的密钥。
  */
 export function isolatedOptions(cfg: ProviderConfig): Record<string, unknown> {
-  const base = (cfg.baseUrl || 'https://api.anthropic.com').replace(/\/+$/, '');
+  // 先规范化（主机大小写、默认端口、末尾 /），SDK 发出的请求地址也是规范化后的，按源 + 路径前缀比较
+  const b = new URL(cfg.baseUrl || 'https://api.anthropic.com');
+  const basePath = b.pathname.replace(/\/+$/, '');
+  const base = b.origin + basePath;
   const key = cfg.apiKey ?? '';
   const isolatedFetch = async (input: any, init: any = {}) => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : String(input?.url ?? '');
-    if (!(url === base || url.startsWith(base + '/') || url.startsWith(base + '?')))
+    let u: URL | null = null;
+    try { u = new URL(url); } catch { u = null; }
+    if (!u || u.origin !== b.origin || !(u.pathname === basePath || u.pathname.startsWith(basePath + '/')))
       throw new ProviderError('bad_request', '请求地址与配置的 Base URL 不一致，已拦截');
     const headers = new Headers();
     new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined)).forEach((v, k) => {

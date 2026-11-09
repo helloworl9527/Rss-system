@@ -268,5 +268,23 @@ try {
     assert.ok(!logs.join('\n').includes('u-secret-content'), 'ANTHROPIC_LOG=debug 不输出请求内容');
     ok('Anthropic 隔离：忽略 ANTHROPIC_BASE_URL / AUTH_TOKEN / CUSTOM_HEADERS / LOG，只用库里的地址与密钥');
   }
+  // ---------- Anthropic 地址规范化后比较（第 4 轮审查） ----------
+  {
+    const { isolatedOptions } = await import('../packages/ai/src/providers/anthropic.ts');
+    const seen: string[] = []; const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (u: string) => { seen.push(u); return new Response('{}'); }) as any;
+    try {
+      const o = isolatedOptions({ provider: 'anthropic', model: 'c', apiKey: 'k', baseUrl: 'https://API.Example.COM:443/gw/' }) as any;
+      await o.fetch('https://api.example.com/gw/v1/messages', { headers: {} });
+      assert.deepEqual(seen, ['https://api.example.com/gw/v1/messages'], '大小写与默认端口不同的同一地址放行');
+      for (const bad of ['https://api.example.com/other/v1/messages', 'https://api.example.com/gwx/v1', 'https://api.example.com.evil.com/gw/v1', 'https://api.example.com:8443/gw/v1'])
+        await assert.rejects(o.fetch(bad, { headers: {} }), /已拦截/, `${bad} 应被拦截`);
+      assert.equal(seen.length, 1);
+      const d = isolatedOptions({ provider: 'anthropic', model: 'c', apiKey: 'k' }) as any;
+      await d.fetch('https://api.anthropic.com/v1/messages', { headers: {} });
+      assert.equal(seen[1], 'https://api.anthropic.com/v1/messages', '留空用官方地址');
+    } finally { globalThis.fetch = origFetch; }
+    ok('Anthropic 隔离：规范化后比较源与路径，相似域名、其他端口、路径外地址仍被拦截');
+  }
   console.log('\n✅ 全部通过');
 } finally { rmSync(dir, { recursive: true, force: true }); }
