@@ -40,8 +40,8 @@ export class GeminiProvider implements Provider {
     const timer = setTimeout(() => ac.abort(), this.#timeout);
     let r: Response;
     try {
-      r = await fetch(`${this.#base}/models/${this.model}:generateContent`, {
-        method: 'POST', signal: ac.signal,
+      r = await fetch(`${this.#base}/models/${encodeURIComponent(this.model)}:generateContent`, {
+        method: 'POST', signal: ac.signal, redirect: 'error',
         headers: { 'content-type': 'application/json', 'x-goog-api-key': this.#key },
         body: JSON.stringify(body),
       });

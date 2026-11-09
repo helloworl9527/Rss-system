@@ -140,39 +140,39 @@ export function maskedSecrets(path = vaultPath()): Array<{ name: SecretName; set
  * 解析生效值：环境变量优先于保管库。
  * 这样运维仍可用 env 临时覆盖，而不必先改保管库。
  */
-export function resolveSecret(name: SecretName, path = vaultPath()): string | undefined {
-  const fromEnv = process.env[name];
+export function resolveSecret(name: SecretName, path = vaultPath(), env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const fromEnv = env[name];
   if (fromEnv) return fromEnv;
   try { return loadVault(path).secrets[name]; } catch { return undefined; }
 }
 
-export function resolveSettings(path = vaultPath()): Settings {
+export function resolveSettings(path = vaultPath(), env: NodeJS.ProcessEnv = process.env): Settings {
   let s: Settings = {};
   try { s = loadVault(path).settings; } catch { /* 保管库不可用时退回纯 env */ }
   return {
-    aiProvider: process.env.AI_PROVIDER ?? s.aiProvider,
-    l1Provider: process.env.AI_L1_PROVIDER ?? s.l1Provider ?? s.aiProvider,
-    l1Model: process.env.AI_L1_MODEL ?? s.l1Model,
-    l2Model: process.env.AI_L2_MODEL ?? s.l2Model,
-    l3Model: process.env.AI_L3_MODEL ?? s.l3Model,
-    l2Provider: process.env.AI_L2_PROVIDER ?? s.l2Provider,
-    l3Provider: process.env.AI_L3_PROVIDER ?? s.l3Provider,
-    l1BaseUrl: process.env.AI_L1_BASE_URL ?? s.l1BaseUrl,
-    l2BaseUrl: process.env.AI_L2_BASE_URL ?? s.l2BaseUrl,
-    l3BaseUrl: process.env.AI_L3_BASE_URL ?? s.l3BaseUrl,
-    sourceProfilerProvider: process.env.SOURCE_PROFILER_PROVIDER ?? s.sourceProfilerProvider ?? 'mock',
-    sourceProfilerModel: process.env.SOURCE_PROFILER_MODEL ?? s.sourceProfilerModel ?? 'mock-profiler',
-    sourceProfilerBaseUrl: process.env.SOURCE_PROFILER_BASE_URL ?? s.sourceProfilerBaseUrl,
-    sourceProfilerCredentialRef: process.env.SOURCE_PROFILER_CREDENTIAL_REF ?? s.sourceProfilerCredentialRef ?? 'SOURCE_PROFILER_API_KEY',
-    sourceProfilerTemperature: process.env.SOURCE_PROFILER_TEMPERATURE ?? s.sourceProfilerTemperature ?? '0.1',
-    sourceProfilerReasoningEffort: process.env.SOURCE_PROFILER_REASONING_EFFORT ?? s.sourceProfilerReasoningEffort,
-    sourceProfilerMaxInputChars: process.env.SOURCE_PROFILER_MAX_INPUT_CHARS ?? s.sourceProfilerMaxInputChars ?? '24000',
-    sourceProfilerMaxOutputTokens: process.env.SOURCE_PROFILER_MAX_OUTPUT_TOKENS ?? s.sourceProfilerMaxOutputTokens ?? '1800',
-    sourceProfilerTimeoutMs: process.env.SOURCE_PROFILER_TIMEOUT_MS ?? s.sourceProfilerTimeoutMs ?? '30000',
-    sourceProfilerRetryPolicy: process.env.SOURCE_PROFILER_RETRY_POLICY ?? s.sourceProfilerRetryPolicy ?? '1',
-    sourceProfilerFallbackProfile: process.env.SOURCE_PROFILER_FALLBACK_PROFILE ?? s.sourceProfilerFallbackProfile,
-    sourceProfilerEnabled: process.env.SOURCE_PROFILER_ENABLED ?? s.sourceProfilerEnabled ?? 'true',
-    ...Object.fromEntries(EMBEDDING_ENV.map(([k, env]) => [k, process.env[env] ?? s[k]])),
+    aiProvider: env.AI_PROVIDER ?? s.aiProvider,
+    l1Provider: env.AI_L1_PROVIDER ?? s.l1Provider ?? s.aiProvider,
+    l1Model: env.AI_L1_MODEL ?? s.l1Model,
+    l2Model: env.AI_L2_MODEL ?? s.l2Model,
+    l3Model: env.AI_L3_MODEL ?? s.l3Model,
+    l2Provider: env.AI_L2_PROVIDER ?? s.l2Provider,
+    l3Provider: env.AI_L3_PROVIDER ?? s.l3Provider,
+    l1BaseUrl: env.AI_L1_BASE_URL ?? s.l1BaseUrl,
+    l2BaseUrl: env.AI_L2_BASE_URL ?? s.l2BaseUrl,
+    l3BaseUrl: env.AI_L3_BASE_URL ?? s.l3BaseUrl,
+    sourceProfilerProvider: env.SOURCE_PROFILER_PROVIDER ?? s.sourceProfilerProvider ?? 'mock',
+    sourceProfilerModel: env.SOURCE_PROFILER_MODEL ?? s.sourceProfilerModel ?? 'mock-profiler',
+    sourceProfilerBaseUrl: env.SOURCE_PROFILER_BASE_URL ?? s.sourceProfilerBaseUrl,
+    sourceProfilerCredentialRef: env.SOURCE_PROFILER_CREDENTIAL_REF ?? s.sourceProfilerCredentialRef ?? 'SOURCE_PROFILER_API_KEY',
+    sourceProfilerTemperature: env.SOURCE_PROFILER_TEMPERATURE ?? s.sourceProfilerTemperature ?? '0.1',
+    sourceProfilerReasoningEffort: env.SOURCE_PROFILER_REASONING_EFFORT ?? s.sourceProfilerReasoningEffort,
+    sourceProfilerMaxInputChars: env.SOURCE_PROFILER_MAX_INPUT_CHARS ?? s.sourceProfilerMaxInputChars ?? '24000',
+    sourceProfilerMaxOutputTokens: env.SOURCE_PROFILER_MAX_OUTPUT_TOKENS ?? s.sourceProfilerMaxOutputTokens ?? '1800',
+    sourceProfilerTimeoutMs: env.SOURCE_PROFILER_TIMEOUT_MS ?? s.sourceProfilerTimeoutMs ?? '30000',
+    sourceProfilerRetryPolicy: env.SOURCE_PROFILER_RETRY_POLICY ?? s.sourceProfilerRetryPolicy ?? '1',
+    sourceProfilerFallbackProfile: env.SOURCE_PROFILER_FALLBACK_PROFILE ?? s.sourceProfilerFallbackProfile,
+    sourceProfilerEnabled: env.SOURCE_PROFILER_ENABLED ?? s.sourceProfilerEnabled ?? 'true',
+    ...Object.fromEntries(EMBEDDING_ENV.map(([k, env]) => [k, env[env] ?? s[k]])),
   };
 }
 
@@ -180,24 +180,24 @@ export function resolveSettings(path = vaultPath()): Settings {
  * 向量模型的唯一配置解析入口：后台显示、连通性测试、worker、preview 都用它，保证"测的就是跑的"。
  * 环境变量优先，其次保管库；返回校验错误与被环境变量覆盖的字段（不含任何密钥值）。
  */
-export function resolveEmbeddingConfig(path = vaultPath()): { config: EmbeddingConfig; errors: string[]; envOverridden: string[]; keySet: boolean } {
-  const s = resolveSettings(path);
-  const apiKey = resolveSecret('EMBEDDING_API_KEY', path);
+export function resolveEmbeddingConfig(path = vaultPath(), env: NodeJS.ProcessEnv = process.env): { config: EmbeddingConfig; errors: string[]; envOverridden: string[]; keySet: boolean } {
+  const s = resolveSettings(path, env);
+  const apiKey = resolveSecret('EMBEDDING_API_KEY', path, env);
   const config = parseEmbeddingFields({ enabled: s.embeddingEnabled, baseUrl: s.embeddingBaseUrl, model: s.embeddingModel,
     dimensions: s.embeddingDimensions, simHigh: s.dedupSimHigh, simLow: s.dedupSimLow }, apiKey);
   const errors = validateEmbeddingConfig(config);
   if (!apiKey) errors.push('未设置 EMBEDDING_API_KEY');
-  const envOverridden = [...EMBEDDING_ENV.map(([, env]) => env), 'EMBEDDING_API_KEY'].filter(env => !!process.env[env]);
+  const envOverridden = [...EMBEDDING_ENV.map(([, env]) => env), 'EMBEDDING_API_KEY'].filter(env => !!env[env]);
   return { config, errors, envOverridden, keySet: !!apiKey };
 }
 
 /** 供 CLI 在启动时把保管库内容注入 process.env，让下游代码无感。 */
-export function hydrateEnv(path = vaultPath()): { loaded: string[]; error?: string } {
+export function hydrateEnv(path = vaultPath(), env: NodeJS.ProcessEnv = process.env): { loaded: string[]; error?: string } {
   try {
     const v = loadVault(path);
     const loaded: string[] = [];
     for (const [k, val] of Object.entries(v.secrets))
-      if (val && !process.env[k]) { process.env[k] = val; loaded.push(k); }
+      if (val && !env[k]) { env[k] = val; loaded.push(k); }
     const s = v.settings;
     const map: Array<[string, string | undefined]> = [
       ['AI_PROVIDER', s.aiProvider], ['AI_L1_PROVIDER', s.l1Provider],
@@ -221,7 +221,7 @@ export function hydrateEnv(path = vaultPath()): { loaded: string[]; error?: stri
       ...EMBEDDING_ENV.map(([k, env]): [string, string | undefined] => [env, s[k]]),
     ];
     for (const [k, val] of map)
-      if (val && !process.env[k]) { process.env[k] = val; loaded.push(k); }
+      if (val && !env[k]) { env[k] = val; loaded.push(k); }
     return { loaded };
   } catch (e: any) {
     return { loaded: [], error: String(e?.message ?? e) };

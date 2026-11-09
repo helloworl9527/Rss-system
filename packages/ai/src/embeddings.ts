@@ -16,6 +16,8 @@ export type EmbeddingConfig = {
   simHigh: number;
   simLow: number;
   apiKey?: string;
+  /** 库内配置的供应商指纹（缓存隔离）；旧配置为空 */
+  scope?: string;
 };
 
 export type EmbeddingErrorKind = 'network' | 'timeout' | 'server' | 'rate_limited' | 'auth' | 'not_found'
@@ -81,7 +83,10 @@ export function parseEmbeddingFields(f: { enabled?: string; baseUrl?: string; mo
 /** 缓存空间标识：端点 origin+path、模型、请求维度。不含密钥。 */
 export function embeddingConfigId(c: EmbeddingConfig): string {
   const u = new URL(c.baseUrl);
-  return createHash('sha256').update(JSON.stringify(['emb1', u.origin + u.pathname.replace(/\/+$/, ''), c.model, c.dimensions])).digest('hex').slice(0, 32);
+  // 库内配置（全局模型供应商）追加供应商指纹，同端点同模型的不同账户不共用缓存；旧配置不变，已有缓存继续命中
+  const parts: unknown[] = ['emb1', u.origin + u.pathname.replace(/\/+$/, ''), c.model, c.dimensions];
+  if (c.scope) parts.push(c.scope);
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32);
 }
 
 export type EmbedOptions = {

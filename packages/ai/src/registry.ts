@@ -67,9 +67,9 @@ const KEY_ENV: Record<string, string> = {
  * 层级可以指向不同厂商 —— 例如 L1 用便宜模型批量判定、
  * L2/L3 用强模型复核，这正是 PRD 15.1 分级调用的意图。
  */
-export function providerFromEnv(tier: 'L1' | 'L2' | 'L3'): ProviderConfig {
+export function providerFromEnv(tier: 'L1' | 'L2' | 'L3', env: NodeJS.ProcessEnv = process.env): ProviderConfig {
   const value = (name: string): string | undefined => {
-    const v = process.env[name]?.trim();
+    const v = env[name]?.trim();
     return v || undefined;
   };
   const l1Provider = (value('AI_L1_PROVIDER') ?? value('AI_PROVIDER') ?? 'mock') as ProviderName;
@@ -95,7 +95,7 @@ export function providerFromEnv(tier: 'L1' | 'L2' | 'L3'): ProviderConfig {
   return {
     provider,
     model,
-    apiKey: keyName ? process.env[keyName] : undefined,
+    apiKey: keyName ? env[keyName] : undefined,
     baseUrl,
     strictness,
   };

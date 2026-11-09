@@ -39,8 +39,11 @@ export class AnthropicProvider implements Provider {
     }
     // 不传 apiKey 时 SDK 自行从 ANTHROPIC_API_KEY / auth profile 解析
     const options: Record<string, unknown> = {};
-    if (this.#cfg.apiKey) options.apiKey = this.#cfg.apiKey;
-    if (this.#cfg.baseUrl) options.baseURL = this.#cfg.baseUrl.replace(/\/$/, '');
+    if (this.#cfg.isolated) Object.assign(options, isolatedOptions(this.#cfg));
+    else {
+      if (this.#cfg.apiKey) options.apiKey = this.#cfg.apiKey;
+      if (this.#cfg.baseUrl) options.baseURL = this.#cfg.baseUrl.replace(/\/$/, '');
+    }
     // 重试统一由 withTransientRetry 负责（每次实际请求都计入预算）；关闭 SDK 自带的重试，避免叠加与漏计
     options.maxRetries = 0;
     this.#client = new Anthropic(options);
@@ -103,4 +106,30 @@ function mapAnthropicError(e: any): ProviderError {
   if (typeof s === 'number' && s >= 500) return new ProviderError('server', String(e?.message ?? e), s);
   if (typeof s === 'number') return new ProviderError('bad_request', String(e?.message ?? e), s);
   return new ProviderError('network', String(e?.message ?? e));
+}
+
+/** 允许发出的请求头（其余一律丢弃，包括 ANTHROPIC_CUSTOM_HEADERS 注入的任何头与 authorization）。 */
+const ALLOWED_HEADERS = new Set(['content-type', 'accept', 'user-agent', 'anthropic-version', 'anthropic-beta']);
+
+/**
+ * 库内配置（全局模型供应商）的 SDK 选项：SDK 会隐式读取 ANTHROPIC_BASE_URL / AUTH_TOKEN / CUSTOM_HEADERS / LOG，
+ * 构造参数不足以全部关掉，所以最终请求由这里的 fetch 重建：只发往库里的地址、不跟随重定向、按白名单重建请求头、
+ * 鉴权只用库里的密钥。
+ */
+export function isolatedOptions(cfg: ProviderConfig): Record<string, unknown> {
+  const base = (cfg.baseUrl || 'https://api.anthropic.com').replace(/\/+$/, '');
+  const key = cfg.apiKey ?? '';
+  const isolatedFetch = async (input: any, init: any = {}) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : String(input?.url ?? '');
+    if (!(url === base || url.startsWith(base + '/') || url.startsWith(base + '?')))
+      throw new ProviderError('bad_request', '请求地址与配置的 Base URL 不一致，已拦截');
+    const headers = new Headers();
+    new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined)).forEach((v, k) => {
+      const n = k.toLowerCase();
+      if (ALLOWED_HEADERS.has(n) || n.startsWith('x-stainless-')) headers.set(n, v);
+    });
+    headers.set('x-api-key', key);
+    return fetch(url, { ...init, headers, redirect: 'error' });
+  };
+  return { apiKey: key, authToken: null, baseURL: base, logLevel: 'off', fetch: isolatedFetch, defaultHeaders: {}, ...(cfg.timeoutMs ? { timeout: cfg.timeoutMs } : {}) };
 }

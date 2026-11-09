@@ -84,6 +84,11 @@ export type ProviderConfig = {
   timeoutMs?: number;
   /** 强制覆盖 strictness（例如某 Qwen 模型支持 json_schema）。 */
   strictness?: Strictness;
+  /**
+   * 来自全局模型供应商（库内配置）：适配器不得从环境变量补任何东西（地址、鉴权、自定义头、调试日志），
+   * 并禁止跟随重定向。旧配置路径不设置它，行为与原来一致。
+   */
+  isolated?: boolean;
 };
 
 export type JsonSchema = Record<string, unknown>;
