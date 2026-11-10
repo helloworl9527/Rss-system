@@ -76,16 +76,18 @@ export async function traceFacts(
   const out: FactEvidence = { checkedAt, currentDate: checkedAt.slice(0, 10), origin: null, results: [] };
   try {
     if (originUrl) {
-      const safe = await safeCheck(originUrl);
-      if (safe.ok) {
-        try {
-          out.origin = await withDeadline(timeoutMs, async signal => {
+      // 首次安全校验（含 DNS 解析）也在截止时间内
+      try {
+        out.origin = await withDeadline(timeoutMs, async signal => {
+          const safe = await safeCheck(originUrl);
+          if (!safe.ok) return null;
+          try {
             const { response } = await safeFetch(safe.url, transport, safeCheck, signal);
             try { await response.body?.cancel(); } catch { /* response may already be closed by a test transport */ }
             return { url: safe.url, reachable: response.ok, status: response.status };
-          });
-        } catch { out.origin = { url: safe.url, reachable: false }; }
-      }
+          } catch { return { url: safe.url, reachable: false }; }
+        });
+      } catch { out.origin = { url: originUrl, reachable: false }; }
     }
     const query = originUrl
       ? `"${title.slice(0, 120)}" site:${new URL(originUrl).hostname}`

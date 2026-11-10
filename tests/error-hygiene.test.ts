@@ -316,6 +316,23 @@ try {
     vision.releaseVisionLease(tg, o7);
     ok('B2：被杀的保留任务按本次请求的指纹恢复，不会被立即再次放回');
 
+    // 核对轮：领取后、派发前失租 → 保持 running 交给有效 owner 恢复，不会被漏掉（也不发请求）
+    const m8 = media();
+    tg.prepare(`UPDATE telegram_media_tasks SET status='completed', temp_state='deleted' WHERE id<>? AND status IN ('pending','retry')`).run(m8.id);
+    let calls8 = 0; const counting = { ...good, complete: async () => { calls8++; return good.complete(); } };
+    const base8 = clock.getTime(); let tick = 0;
+    // 前三次读时钟（取得租约、本轮开始、领取时续租）不跳；之后（派发前续租）跳过 150 秒，模拟领取后卡住
+    const jumpy = () => new Date(base8 + (tick++ < 3 ? 0 : 400_000));
+    assert.equal(await vision.runOneVisionTask(tg, { provider: counting, mediaDir, now: jumpy }), 'idle');
+    assert.equal(calls8, 0, '失租后不发请求');
+    r = row(m8.id); assert.equal(r.status, 'running', '失租时不改成没有重试信息的 failed');
+    clock = new Date(base8 + 400_000);
+    const o8 = vision.acquireVisionLease(tg, clock)!;
+    vision.recoverVisionFiles(tg, mediaDir, clock, { owner: o8, fingerprint: 'F3' });
+    assert.equal(row(m8.id).status, 'retry', '有效 owner 按遗留任务恢复');
+    vision.releaseVisionLease(tg, o8);
+    ok('B2：派发前失租不发请求、不漏任务，由有效租约的进程恢复');
+
     // 条件回写：识别期间被采集器标为失效 → 不覆盖、不删文件
     const m5 = media();
     const superseding = { ...good, complete: async () => {
@@ -375,7 +392,11 @@ try {
     const t0 = Date.now();
     const out3 = await traceFacts('标题', null, stall, safeCheck as any, 100);
     assert.ok(Date.now() - t0 < 2000, '不会无限等待'); assert.match(String(out3.error), /请求超时/);
-    ok('fact-trace：逐跳校验重定向（指向内网的不请求），超过跳数上限报错；正文停滞也受截止时间约束');
+    // 核对轮：原文链接的首次安全校验（DNS）停滞也受截止时间约束
+    const t1 = Date.now();
+    const out4 = await traceFacts('标题', 'https://slow.example.com/a', stall, (() => new Promise(() => {})) as any, 100);
+    assert.ok(Date.now() - t1 < 2000, '首次安全校验停滞也不会无限等待'); assert.equal(out4.origin?.reachable, false);
+    ok('fact-trace：逐跳校验重定向（指向内网的不请求），超过跳数上限报错；正文停滞、首次安全校验停滞都受截止时间约束');
   }
 
   // ================= A3 清理脚本 =================

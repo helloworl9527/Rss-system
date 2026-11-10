@@ -69,7 +69,8 @@ export function releaseVisionLease(db: TelegramDB, owner: string): void {
 
 // ---------------- 失败处理：重试 / 保留 / 终态 ----------------
 
-type FailContext = { owner: string | null; fingerprint?: string | null; now: Date };
+type FailContext = { owner: string | null; fingerprint?: string | null; now: Date;
+  /** 在事务里调用时传入：文件删除推迟到事务提交之后执行 */ deferDelete?: string[] };
 
 /** 结果回写的所有权条件：仍在运行、仍是本进程领取的、未被采集器标为失效。 */
 const OWNED = `status='running' AND claim_token IS ? AND superseded_at IS NULL`;
@@ -78,7 +79,9 @@ function terminal(db: TelegramDB, task: any, kind: string, error: unknown, media
   const r = db.prepare(`UPDATE telegram_media_tasks SET status=?,attempts=attempts+1,next_attempt_at=NULL,error_type=?,error_message=?,
     temp_path=NULL,temp_state='deleted',held_next_at=NULL,claim_token=NULL,updated_at=?,completed_at=? WHERE id=? AND ${OWNED}`)
     .run(status, kind, errorText(error), ctx.now.toISOString(), ctx.now.toISOString(), task.id, ctx.owner);
-  if (r.changes === 1) tryDelete(task.temp_path, mediaDir);   // 先提交状态，再删文件
+  if (r.changes !== 1) return;
+  if (ctx.deferDelete) { if (task.temp_path) ctx.deferDelete.push(task.temp_path); }
+  else tryDelete(task.temp_path, mediaDir);   // 先提交状态，再删文件
 }
 
 /**
@@ -258,10 +261,12 @@ async function runOwned(db: TelegramDB, cfg: VisionRunConfig, owner: string, clo
     // 同时记下本次请求实际使用的配置指纹（被杀后恢复时按它判断是否需要因换配置而立即重试）
     const dispatchAt = clock().toISOString();
     const okDispatch = db.transaction(() => {
-      if (!renewVisionLease(db, owner, clock())) return 0;
+      if (!renewVisionLease(db, owner, clock())) return -1;
       return db.prepare(`UPDATE telegram_media_tasks SET first_requested_at=coalesce(first_requested_at,?),held_fingerprint=coalesce(?,held_fingerprint),updated_at=?
         WHERE id=? AND ${OWNED} AND (held_until IS NULL OR held_until>?)`).run(dispatchAt, cfg.fingerprint ?? null, dispatchAt, task.id, owner, dispatchAt).changes;
     }).immediate();
+    // 失租：不改任务状态（仍是 running），交给持有有效租约的进程按遗留任务恢复，不会被漏掉
+    if (okDispatch === -1) return 'idle';
     if (okDispatch !== 1) {
       db.prepare(`UPDATE telegram_media_tasks SET status='failed',claim_token=NULL,updated_at=? WHERE id=? AND ${OWNED}`).run(dispatchAt, task.id, owner);
       return 'idle';
@@ -305,7 +310,6 @@ async function runOwned(db: TelegramDB, cfg: VisionRunConfig, owner: string, clo
  * 持有租约时调用：清理孤儿文件；遗留的 running（上一个进程被杀）按一次超时失败走正常失败处理（计入次数，最终进入保留），不会无限循环。
  */
 export function recoverVisionFiles(db: TelegramDB, mediaDir = defaultMediaDir(), now = new Date(), opts: { owner?: string; fingerprint?: string | null } = {}): number {
-  // 只有仍持有有效租约时才恢复（否则可能把现任进程正在处理的任务当成遗留任务）
   if (opts.owner && !renewVisionLease(db, opts.owner, now)) return 0;
   const root = resolve(mediaDir);
   const cutoff = now.getTime() - 2 * 60 * 60_000;
@@ -320,9 +324,17 @@ export function recoverVisionFiles(db: TelegramDB, mediaDir = defaultMediaDir(),
       try { if (statSync(path).mtimeMs < cutoff) { unlinkSync(path); removed++; } } catch { /* raced with collector */ }
     }
   } catch (e: any) { if (e?.code !== 'ENOENT') throw e; }
-  for (const t of db.prepare(`SELECT * FROM telegram_media_tasks WHERE status='running' AND superseded_at IS NULL`).all() as any[])
-    // 指纹用派发前记下的本次请求指纹；没有（派发前就被杀，未发出请求）时用当前配置，避免被立即放回
-    failTask(db, t, new ProviderError('timeout', '视觉 worker 在运行中退出'), mediaDir, { owner: t.claim_token ?? null, fingerprint: t.held_fingerprint ?? opts.fingerprint ?? null, now });
+  // 恢复遗留 running：续租核对、查询与状态更新在同一个写事务里（失租就不恢复，避免把现任进程正在处理的任务当成遗留任务）；
+  // 文件删除推迟到提交之后
+  const deferred: string[] = [];
+  db.transaction(() => {
+    if (opts.owner && !renewVisionLease(db, opts.owner, new Date())) return;
+    for (const t of db.prepare(`SELECT * FROM telegram_media_tasks WHERE status='running' AND superseded_at IS NULL`).all() as any[])
+      // 指纹用派发前记下的本次请求指纹；没有（派发前就被杀，未发出请求）时用当前配置，避免被立即放回
+      failTask(db, t, new ProviderError('timeout', '视觉 worker 在运行中退出'), mediaDir,
+        { owner: t.claim_token ?? null, fingerprint: t.held_fingerprint ?? opts.fingerprint ?? null, now, deferDelete: deferred });
+  }).immediate();
+  for (const p of deferred) tryDelete(p, mediaDir);
   return removed;
 }
 
