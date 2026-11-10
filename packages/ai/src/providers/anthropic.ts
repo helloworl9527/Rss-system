@@ -1,3 +1,4 @@
+import { networkError, refusalError, invalidJsonError, upstreamCode, retryAfterFrom } from '../errors.ts';
 import type { Provider, CompleteRequest, CompleteResult, ProviderConfig, Strictness } from '../types.ts';
 import { ProviderError } from '../types.ts';
 
@@ -41,6 +42,8 @@ export class AnthropicProvider implements Provider {
     const options: Record<string, unknown> = {};
     if (this.#cfg.isolated) Object.assign(options, isolatedOptions(this.#cfg));
     else {
+      // 旧配置路径：固定 warn，不受 ANTHROPIC_LOG=debug 影响（debug 会打印请求内容）
+      options.logLevel = 'warn';
       if (this.#cfg.apiKey) options.apiKey = this.#cfg.apiKey;
       if (this.#cfg.baseUrl) options.baseURL = this.#cfg.baseUrl.replace(/\/$/, '');
     }
@@ -72,15 +75,13 @@ export class AnthropicProvider implements Provider {
     }
 
     // 安全护栏：拒答时 content 可能为空，必须先看 stop_reason
-    if (resp.stop_reason === 'refusal')
-      throw new ProviderError('refusal',
-        `模型拒答：${resp.stop_details?.category ?? 'unknown'} ${resp.stop_details?.explanation ?? ''}`);
+    if (resp.stop_reason === 'refusal') throw refusalError();
 
     const text = (resp.content ?? [])
       .filter((b: any) => b.type === 'text').map((b: any) => b.text).join('');
     let data: unknown;
     try { data = JSON.parse(text); }
-    catch { throw new ProviderError('bad_request', `响应不是合法 JSON（前 200 字）: ${text.slice(0, 200)}`); }
+    catch { throw invalidJsonError(text); }
 
     const u = resp.usage ?? {};
     return {
@@ -98,14 +99,18 @@ export class AnthropicProvider implements Provider {
 
 function mapAnthropicError(e: any): ProviderError {
   const s = e?.status;
-  if (s === 429) return new ProviderError('rate_limited', String(e?.message ?? e), s);
-  if (s === 401 || s === 403) return new ProviderError('auth', String(e?.message ?? e), s);
-  // SDK 自带重试已关闭（maxRetries=0），它原本会重试的 408 / 409 要映射成瞬时故障，交给 withTransientRetry
-  if (s === 408) return new ProviderError('timeout', String(e?.message ?? e), s);
-  if (s === 409) return new ProviderError('server', String(e?.message ?? e), s);
-  if (typeof s === 'number' && s >= 500) return new ProviderError('server', String(e?.message ?? e), s);
-  if (typeof s === 'number') return new ProviderError('bad_request', String(e?.message ?? e), s);
-  return new ProviderError('network', String(e?.message ?? e));
+  if (typeof s !== 'number') return networkError(e);
+  // SDK 已解析的错误类型（e.error.error.type）走白名单；e.message 含响应正文，不使用
+  const code = upstreamCode(e?.error?.error?.type ?? e?.error?.type);
+  let retryAfter: string | null = null;
+  try { retryAfter = e?.headers?.get?.('retry-after') ?? e?.headers?.['retry-after'] ?? null; } catch { retryAfter = null; }
+  const kind: ProviderError['kind'] = s === 429 ? 'rate_limited' : s === 401 || s === 403 ? 'auth'
+    // SDK 自带重试已关闭（maxRetries=0），它原本会重试的 408 / 409 要映射成瞬时故障，交给 withTransientRetry
+    : s === 408 ? 'timeout' : s === 409 || s >= 500 ? 'server' : 'bad_request';
+  const err = new ProviderError(kind, `HTTP ${s}${code ? ` ${code}` : ''}`, s);
+  if (code) err.code = code;
+  if (s === 429) { const sec = retryAfterFrom(retryAfter); if (sec !== undefined) err.retryAfterSec = sec; }
+  return err;
 }
 
 /**

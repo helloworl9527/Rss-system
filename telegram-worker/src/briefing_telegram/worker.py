@@ -485,7 +485,7 @@ class Worker:
                   (last_id, seen, utc_now(), row["id"]))
                 self.store.db.commit()
                 if seen % 5000 == 0:
-                    print(f"历史回填 {row['reference']}: 已扫描 {seen} 条，message_id={last_id}", flush=True)
+                    print(f"历史回填 来源#{row['id']}: 已扫描 {seen} 条，message_id={last_id}", flush=True)
             if batch:
                 if row["source_type"] == "normal":
                     self.store.save_normal_batch(row, batch)
@@ -496,7 +496,7 @@ class Worker:
               next_offset_id=0,messages_seen=?,updated_at=?,completed_at=?,last_error=NULL
               WHERE source_id=?""", (seen, now, now, row["id"]))
             self.store.db.commit()
-            print(f"历史回填完成 {row['reference']}: 共扫描 {seen} 条", flush=True)
+            print(f"历史回填完成 来源#{row['id']}: 共扫描 {seen} 条", flush=True)
         except Exception as exc:
             self.store.db.execute("UPDATE telegram_history_backfills SET updated_at=?,last_error=? WHERE source_id=?",
                                   (utc_now(), type(exc).__name__, row["id"]))

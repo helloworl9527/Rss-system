@@ -29,6 +29,8 @@ export class EmbeddingError extends Error {
   constructor(kind: EmbeddingErrorKind, o: { status?: number; retryAfterSec?: number; code?: string } = {}) {
     super(`embedding ${kind}${o.status ? ` HTTP ${o.status}` : ''}${o.code ? ` (${o.code})` : ''}`);
     this.name = 'EmbeddingError'; this.kind = kind; this.status = o.status; this.retryAfterSec = o.retryAfterSec; this.code = o.code;
+    // 只由类型、状态码与白名单错误码构成，可以原样输出（errorText）
+    (this as any).publicMessage = this.message;
   }
   /** 配置类错误：本期不应再请求该端点。 */
   get fatal(): boolean { return ['auth', 'not_found', 'config', 'budget', 'aborted'].includes(this.kind); }

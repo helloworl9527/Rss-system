@@ -108,6 +108,8 @@ export class ProviderError extends Error {
   contentFiltered?: boolean;
   /** 429 响应头 Retry-After 的秒数（结构化传递，不再从消息正文里解析）。 */
   retryAfterSec?: number;
+  /** 上游错误码（白名单内的原值，名单外为 other）；message 里不含任何上游正文。 */
+  code?: string;
   /** 本期 AI 请求预算已用尽或已到截止时间：不是供应商错误，调用方应停止派发。 */
   budgetExhausted?: boolean;
   retryable: boolean;

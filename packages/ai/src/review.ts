@@ -1,3 +1,4 @@
+import { errorText } from './errors.ts';
 import type { Provider, CompleteResult, JsonSchema } from './types.ts';
 import { ProviderError } from './types.ts';
 import { validate } from './schema.ts';
@@ -198,7 +199,7 @@ async function reviewOne(
       });
     } catch (e) {
       const pe = e as ProviderError;
-      lastErr = `${pe.kind}: ${pe.message}`;
+      lastErr = errorText(pe);
       lastKind = pe instanceof ProviderError ? pe.kind : undefined;
       if (pe instanceof ProviderError && !pe.retryable && pe.kind !== 'bad_request') break;
       continue;
@@ -210,7 +211,7 @@ async function reviewOne(
 
     let r = res.data as ReviewResult;
     if (r.candidate_id !== c.candidateId) {
-      lastErr = `candidate_id 不匹配：期望 ${c.candidateId} 实得 ${r.candidate_id}`;
+      lastErr = `candidate_id 不匹配：期望 ${c.candidateId}，返回的 ID 不在输入中`;
       lastKind = 'schema';
       continue;
     }

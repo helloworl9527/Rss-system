@@ -7,6 +7,7 @@
  * 不设条数上限；只丢闲聊、广告、群管理/机器人通知和无内容消息。
  * 已解决的问题把方法写进同一行；未解决或有争议的照样列出，并以「（未确认）」或「（有人反馈失败）」结尾。
  */
+import { errorText } from '../../ai/src/errors.ts';
 import type { Provider } from '../../ai/src/types.ts';
 import { validate } from '../../ai/src/schema.ts';
 import type { TelegramDB } from './db.ts';
@@ -149,7 +150,7 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
         // 单个群（或分块）失败不拖垮整份要点：记录后跳过，其余群照常生成
         lastError = e;
         if (e?.contentFiltered) filteredChunks++; else errorChunks++;
-        log(`⚠️ 提取 ${g.group} 第 ${i + 1}/${chunks.length} 块${e?.contentFiltered ? '被模型过滤' : '失败'}，已跳过：${String(e?.message ?? e).slice(0, 120)}`);
+        log(`⚠️ 提取 ${g.group} 第 ${i + 1}/${chunks.length} 块${e?.contentFiltered ? '被模型过滤' : '失败'}，已跳过：${errorText(e, 120)}`);
         continue;
       }
       okChunks++;
@@ -179,7 +180,10 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
   for (const x of points) byCat.set(x.category, [...(byCat.get(x.category) ?? []), x]);
   const categories: DailyCategory[] = [];
   const batch = opts.mergeBatch ?? 80;
+  // 分类名来自模型（可能复述消息内容），日志里只用序号
+  let catNo = 0;
   for (const [name, xs] of byCat) {
+    catNo++;
     const mergeOnce = async (list: Array<{ text: string; groups: string[] }>) => {
       const r = await call<{ items: DailyItem[] }>(p, MERGE_PROMPT, `分类：${name}\n\n${JSON.stringify(list.map(x => ({ text: x.text, groups: x.groups })))}`,
         MERGE_SCHEMA, 'tg_merge', 8000);
@@ -204,13 +208,13 @@ export async function composeDaily(p: Provider, groups: GroupMessages[], windowS
           for (let i = 0; i < items.length; i += batch) partial.push(...await mergeOnce(items.slice(i, i + batch)));
           items = partial.length <= batch * 1.5 ? await mergeOnce(partial) : partial;
         }
-      } catch (e: any) { log(`⚠️ 分类 ${name} 合并失败，保留未合并要点：${String(e?.message ?? e).slice(0, 120)}`); }
+      } catch (e: any) { log(`⚠️ 第 ${catNo} 个分类合并失败，保留未合并要点：${errorText(e, 120)}`); }
     }
     // 模型漏掉来源群时退回原始来源
     for (const it of items) if (!it.groups.length) it.groups = [...new Set(plain.filter(x => x.text === it.text).map(x => x.group))].slice(0, 3);
     items.push(...[...linkedItems.values()].map(i => i.sourceUrls?.length ? i : { text: i.text, groups: i.groups }));
     if (items.length) categories.push({ name, items });
-    log(`合并 ${name}：${xs.length} → ${items.length}`);
+    log(`合并第 ${catNo} 个分类：${xs.length} → ${items.length}`);
   }
   const order = (n: string) => { const i = SUGGESTED_CATEGORIES.indexOf(n); return n === '其他' ? 999 : i < 0 ? 500 : i; };
   categories.sort((a, b) => order(a.name) - order(b.name) || b.items.length - a.items.length);

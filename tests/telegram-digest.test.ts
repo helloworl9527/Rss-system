@@ -131,7 +131,7 @@ console.log('\n单频道与 AI 失败兜底：\n');
   t = new Date(t.getTime() + 3600_000); await runDueDigests(db, cfg, broken, t);
   t = new Date(t.getTime() + 3600_000); await runDueDigests(db, cfg, broken, t);
   const fb = db.prepare('SELECT * FROM telegram_digests WHERE window_end=?').get(W3) as any;
-  ok('第 3 次失败后退回逐频道拼接，时段不缺席', fb.status === 'completed' && fb.fallback === 1 && fb.attempts === 3 && String(fb.error).includes('upstream down'));
+  ok('第 3 次失败后退回逐频道拼接，时段不缺席', fb.status === 'completed' && fb.fallback === 1 && fb.attempts === 3 && !!fb.error && !String(fb.error).includes('upstream down'));  // 错误只记类型，不记上游原文
   const fbj = JSON.parse(fb.summary_json);
   ok('兜底为 daily_v2 结构（日报能读取），每个频道一个分类并标注频道', fbj.format === 'daily_v2' && fbj.categories.length === 2 &&
     String(fb.rendered_html).includes('<h3>折腾搞机</h3><ul><li>A 话题 的细节 <small>〔折腾搞机〕</small></li></ul>') && String(fb.rendered_html).includes('<h3>eSIM群</h3>'), String(fb.rendered_html));

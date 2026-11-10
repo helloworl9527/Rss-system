@@ -1,3 +1,4 @@
+import { errorText } from '../../ai/src/errors.ts';
 import { readFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createProvider } from '../../ai/src/registry.ts';
@@ -52,7 +53,7 @@ function failTask(db: TelegramDB, task: any, error: unknown, mediaDir: string): 
   db.prepare(`UPDATE telegram_media_tasks SET status=?,attempts=?,next_attempt_at=?,error_type=?,
     error_message=?,temp_path=?,temp_state=?,updated_at=?,completed_at=? WHERE id=?`).run(
       canRetry ? 'retry' : 'failed', attempts, retryAt, kind,
-      String((error as any)?.message ?? error).slice(0, 500), canRetry ? task.temp_path : null,
+      errorText(error), canRetry ? task.temp_path : null,
       canRetry ? 'ready' : 'deleted', nowIso(), canRetry ? null : nowIso(), task.id);
 }
 
@@ -125,7 +126,7 @@ export async function runOneVisionTask(db: TelegramDB, cfg: VisionRunConfig = {}
         .run('鉴权失败：请检查视觉模型 API 凭证后手动恢复队列', cfg.fingerprint ?? null, nowIso());
       db.prepare(`UPDATE telegram_media_tasks SET status='pending',attempts=attempts+1,next_attempt_at=NULL,
         error_type='auth',error_message=?,updated_at=? WHERE id=?`).run(
-          String(error.message).slice(0, 500), nowIso(), task.id);
+          errorText(error), nowIso(), task.id);
       return 'failed';
     }
     failTask(db, task, error, mediaDir);

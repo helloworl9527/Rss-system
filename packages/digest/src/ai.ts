@@ -2,6 +2,7 @@
  * 新版日报的模型调用：同厂商事件合并+中文摘要、转载判定、开源项目简介、时政速览。
  * 所有来源文本都是不可信输入；任何调用失败都有保守的确定性回退，不会让日报整体失败。
  */
+import { errorText } from '../../ai/src/errors.ts';
 import type { Provider } from '../../ai/src/types.ts';
 import { validate } from '../../ai/src/schema.ts';
 import { decodeEntities, type DigestSourceItem } from './core.ts';
@@ -78,7 +79,7 @@ export async function composeVendorEvents(p: Provider, vendorName: string, items
     }
     return { events };
   } catch (e: any) {
-    return { events: fallback(), error: String(e?.message ?? e).slice(0, 200) };
+    return { events: fallback(), error: errorText(e, 200) };
   }
 }
 
@@ -134,7 +135,7 @@ export async function politicsBullets(p: Provider, items: DigestSourceItem[]): P
       `你是中文新闻编辑。根据本时段的新闻标题与摘要，挑出最重要的 3–6 条国内外时政、宏观经济与重大社会事件，输出「时政速览」列表 bullets：每条一个新闻事件，用 1–2 句客观陈述，不同事件不得合并在一条里。不列来源、不加链接、不加序号或项目符号、不评论。${GUARD}`,
       { news: items.map(i => ({ title: clip(i.title, 120), text: clip(i.text, 200) })) }, POL_SCHEMA, 'politics', 900);
     return { bullets: out.bullets.map(b => String(b).replace(/^\s*(?:[•·\-*]|\d+[.、)])\s*/, '').trim()).filter(Boolean).slice(0, 8) };
-  } catch (e: any) { return { bullets: [], error: String(e?.message ?? e).slice(0, 200) }; }
+  } catch (e: any) { return { bullets: [], error: errorText(e, 200) }; }
 }
 
 // ---------- 技术教程：判定 + 概括 ----------
@@ -234,7 +235,7 @@ export async function judgeDeals(p: Provider, items: Array<{ id: number; title: 
       const mid = Math.ceil(batch.length / 2);
       for (const part of [batch.slice(0, mid), batch.slice(mid)]) {
         if (!part.length) continue;
-        try { await run(part); } catch (e2: any) { error = String(e2?.message ?? e2).slice(0, 200); }
+        try { await run(part); } catch (e2: any) { error = errorText(e2, 200); }
       }
     }
   }
@@ -262,7 +263,7 @@ export async function mergeDeals(p: Provider, items: Array<{ id: number; title: 
     }
     for (const i of items) if (!seen.has(i.id)) groups.push({ ids: [i.id], summary: i.summary });   // 模型漏掉的条目单独保留
     return { groups };
-  } catch (e: any) { return { groups: items.map(i => ({ ids: [i.id], summary: i.summary })), error: String(e?.message ?? e).slice(0, 200) }; }
+  } catch (e: any) { return { groups: items.map(i => ({ ids: [i.id], summary: i.summary })), error: errorText(e, 200) }; }
 }
 
 const TG_MATCH_SCHEMA = {
@@ -277,7 +278,7 @@ export async function matchTelegramSummary(p: Provider, deals: Array<{ title: st
     const out = await call<{ remove: number[] }>(p, TG_MATCH_PROMPT, { deals, lines }, TG_MATCH_SCHEMA, 'tg_deal_match', 2000, 0);
     const valid = new Set(lines.map(l => l.id));
     return { remove: new Set(out.remove.filter(id => valid.has(id))) };
-  } catch (e: any) { return { remove: new Set(), error: String(e?.message ?? e).slice(0, 200) }; }
+  } catch (e: any) { return { remove: new Set(), error: errorText(e, 200) }; }
 }
 
 export type TutorialVerdict = { id: number; tutorial: boolean; category: 'tech' | 'deals' | 'life'; reason: string; summary: string };
@@ -302,7 +303,7 @@ export async function judgeTutorials(p: Provider, items: Array<{ id: number; tit
       const mid = Math.ceil(batch.length / 2);
       for (const part of [batch.slice(0, mid), batch.slice(mid)]) {
         if (!part.length) continue;
-        try { await run(part); } catch (e2: any) { error = String(e2?.message ?? e2).slice(0, 200); }
+        try { await run(part); } catch (e2: any) { error = errorText(e2, 200); }
       }
     }
   }

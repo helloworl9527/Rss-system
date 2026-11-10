@@ -118,7 +118,8 @@ export function validate(data: unknown, schema: JsonSchema, path = '$'): string[
     if (!ok) { errs.push(`${path}: 期望类型 ${types.join('|')}，实际 ${actual}`); return errs; }
   }
   if (s.enum && !s.enum.includes(data))
-    errs.push(`${path}: 值 ${JSON.stringify(data)} 不在枚举 [${s.enum.join(', ')}] 内`);
+    // 不回显模型给出的值（可能复述输入内容）：只给位置、类型与长度
+    errs.push(`${path}: 值不在枚举 [${s.enum.join(', ')}] 内（类型 ${typeof data}${typeof data === 'string' ? `，长度 ${data.length}` : ''}）`);
   if (typeof data === 'number') {
     if (s.minimum !== undefined && data < s.minimum) errs.push(`${path}: ${data} < 最小值 ${s.minimum}`);
     if (s.maximum !== undefined && data > s.maximum) errs.push(`${path}: ${data} > 最大值 ${s.maximum}`);
@@ -138,9 +139,11 @@ export function validate(data: unknown, schema: JsonSchema, path = '$'): string[
     const o = data as Record<string, unknown>;
     for (const k of s.required ?? [])
       if (!(k in o)) errs.push(`${path}.${k}: 缺少必填字段`);
-    if (s.additionalProperties === false && s.properties)
-      for (const k of Object.keys(o))
-        if (!(k in s.properties)) errs.push(`${path}.${k}: 不允许的额外字段`);
+    if (s.additionalProperties === false && s.properties) {
+      // 字段名由模型生成，不写进错误：只给数量
+      const extra = Object.keys(o).filter(k => !(k in s.properties)).length;
+      if (extra) errs.push(`${path}: 不允许的额外字段 ${extra} 个`);
+    }
     for (const [k, sub] of Object.entries(s.properties ?? {}))
       if (k in o) errs.push(...validate(o[k], sub as JsonSchema, `${path}.${k}`));
   }

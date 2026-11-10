@@ -1,3 +1,4 @@
+import { httpError, networkError, refusalError, invalidJsonError, safeCount } from '../errors.ts';
 import type { Provider, CompleteRequest, CompleteResult, ProviderConfig, Strictness } from '../types.ts';
 import { ProviderError } from '../types.ts';
 
@@ -137,7 +138,7 @@ export class OpenAICompatProvider implements Provider {
     } catch (e: any) {
       if (e instanceof ProviderError) throw e;
       if (req.signal?.aborted) { const err = new ProviderError('timeout', '已到截止时间，请求取消'); err.budgetExhausted = true; throw err; }
-      throw new ProviderError(e?.name === 'AbortError' ? 'timeout' : 'network', String(e?.message ?? e));
+      throw networkError(e);
     } finally { clearTimeout(timer); }
 
     const choice = j.choices?.[0];
@@ -145,9 +146,11 @@ export class OpenAICompatProvider implements Provider {
 
     // 上游内容安全过滤：HTTP 200 但 choices 为空（补全 0 token），或 finish_reason=content_filter。
     // kind 仍是 bad_request（其他调用方行为不变），只打上 contentFiltered 标记供 Telegram 路径跳过且不重试。
+    // 结构化输出的原生拒答：message.refusal 非空（不写入拒答内容）
+    if (choice?.message?.refusal) throw refusalError();
     if (!choice || choice.finish_reason === 'content_filter') {
       const err = new ProviderError('bad_request',
-        `内容被模型过滤（${choice ? 'finish_reason=content_filter' : '响应无 choices'}，补全 ${j.usage?.completion_tokens ?? 0} token）`);
+        `内容被模型过滤（${choice ? 'finish_reason=content_filter' : '响应无 choices'}，补全 ${safeCount(j.usage?.completion_tokens ?? 0)} token）`);
       err.contentFiltered = true;
       throw err;
     }
@@ -155,14 +158,11 @@ export class OpenAICompatProvider implements Provider {
     // 截断要与"模型乱回"区分开：前者应缩短输入重试，后者是提示词问题
     if (choice?.finish_reason === 'length')
       throw new ProviderError('truncated',
-        `输出被 max_tokens 截断（已生成 ${j.usage?.completion_tokens ?? '?'} token）`);
+        `输出被 max_tokens 截断（已生成 ${safeCount(j.usage?.completion_tokens)} token）`);
 
     let data: unknown;
     try { data = parseJsonResponse(text); }
-    catch {
-      const hint = text ? `（前 200 字）: ${String(text).slice(0, 200)}` : '（响应体为空）';
-      throw new ProviderError('bad_request', `响应不是合法 JSON${hint}`);
-    }
+    catch { throw invalidJsonError(String(text ?? '')); }
 
     const u = j.usage ?? {};
     return {
@@ -179,17 +179,10 @@ export class OpenAICompatProvider implements Provider {
   }
 }
 
+/**
+ * 上游 HTTP 错误 → ProviderError（408 归为超时以便重试）。正文只用于取白名单错误码与 Retry-After，不进入 message。
+ * 保留这个名字给 Gemini 适配器与现有测试使用。
+ */
 export function toError(status: number, body: string, retryAfter?: string | null): ProviderError {
-  const msg = body.slice(0, 300);
-  if (status === 429) {
-    const e = new ProviderError('rate_limited', `HTTP 429 ${msg}`, status);
-    const sec = Number(retryAfter);
-    if (retryAfter && Number.isFinite(sec) && sec >= 0) e.retryAfterSec = sec;
-    return e;
-  }
-  // 408：上游流在完成前断开，属于瞬时故障，应走重试而不是当作请求错误
-  if (status === 408) return new ProviderError('timeout', `HTTP 408 ${msg}`, status);
-  if (status === 401 || status === 403) return new ProviderError('auth', `HTTP ${status} ${msg}`, status);
-  if (status >= 500) return new ProviderError('server', `HTTP ${status} ${msg}`, status);
-  return new ProviderError('bad_request', `HTTP ${status} ${msg}`, status);
+  return httpError(status, body, retryAfter);
 }

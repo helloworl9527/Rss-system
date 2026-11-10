@@ -1,3 +1,4 @@
+import { errorText } from '../../ai/src/errors.ts';
 import type { DB } from '../../db/src/index.ts';
 import { nowIso } from '../../db/src/index.ts';
 import { checkUrlSafe } from '../../connectors/src/ssrf.ts';
@@ -447,7 +448,7 @@ export async function createSourceProposal(db: DB, o: SourceInput & { skipTest?:
       analysis = await runSourceProfiler(fallbackProvider, input);
       analysis.fallback_used = fallback;
     }
-  } catch (e: any) { error = String(e?.message ?? e).slice(0, 500); }
+  } catch (e: any) { error = errorText(e, 500); }
   const now = nowIso();
   let proposalId = 0;
   db.transaction(() => {

@@ -66,11 +66,12 @@ console.log('\nHTTP 状态映射：\n');
 console.log('\n429 按 Retry-After 等待（有上限）：\n');
 {
   const h = harness();
-  const inner = scripted([new ProviderError('rate_limited', 'HTTP 429 {"error":"slow down","retry_after": 7}'), 'ok']);
+  const inner = scripted([toError(429, '{"error":"slow down","retry_after": 7}'), 'ok']);
   await withTransientRetry(inner, h.opts).complete(REQ);
   ok('Retry-After 7 秒', h.waits[0] === 7000, String(h.waits[0]));
   const h2 = harness();
-  await withTransientRetry(scripted([new ProviderError('rate_limited', 'Retry-After: 3600'), 'ok']), h2.opts).complete(REQ);
+  // 正文里的秒数由适配器在丢弃正文前解析；响应头无效时回退到正文
+  await withTransientRetry(scripted([toError(429, 'Retry-After: 3600', 'not-a-number'), 'ok']), h2.opts).complete(REQ);
   ok('超长 Retry-After 截断到 2 分钟', h2.waits[0] === 120_000, String(h2.waits[0]));
 }
 

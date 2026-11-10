@@ -6,6 +6,7 @@
  * 一条要点若一个有效频道都没有，就无法告诉读者出处，整条丢弃。AI 连续失败时退回确定性拼接，
  * 保证 RSS 不会因为模型故障缺一个时段。
  */
+import { errorText } from '../../ai/src/errors.ts';
 import type { Provider, ProviderConfig } from '../../ai/src/types.ts';
 import { createProvider } from '../../ai/src/registry.ts';
 import type { TelegramDB } from './db.ts';
@@ -23,9 +24,7 @@ const MAX_AI_ATTEMPTS = 3;
 /** 窗口结束后超过这么久，不再因为某个频道的总结任务 pending/待重试而阻塞跨频道要点（要点直接读原始消息，不依赖单频道总结）。 */
 const UNFINISHED_JOB_GRACE_MS = 40 * 60_000;
 /** 错误信息进日志前去掉可能的密钥/令牌。 */
-export const safeError = (e: unknown) => String((e as any)?.message ?? e)
-  .replace(/Bearer\s+\S+/gi, 'Bearer ***').replace(/\bsk-[A-Za-z0-9_-]{8,}/g, 'sk-***')
-  .replace(/(api[_-]?key|token|authorization|secret)(["'\s:=]+)[^\s"',}]+/gi, '$1$2***').slice(0, 300);
+export const safeError = (e: unknown) => errorText(e);
 
 /** 2026-10-22 起取消条数上限（用户要求列出全部实质要点）；常量仅为兼容保留。 */
 export const MAX_POINTS = Number.POSITIVE_INFINITY;
@@ -172,7 +171,7 @@ export async function buildDigest(db: TelegramDB, windowEnd: string, cfg: Provid
     const d = await composeDaily(p, groups, windowStart, windowEnd, { log: m => { if (m.startsWith('⚠️')) console.log(m); } });
     save({ status: 'completed', summary_json: JSON.stringify(d), rendered_html: renderDailyHtml(d), fallback: 0, response_model: p.model, error: null });
   } catch (e: any) {
-    const error = String(e?.message ?? e).slice(0, 1000);
+    const error = errorText(e);
     console.error(`Telegram 跨频道要点生成失败 窗口=${windowEnd} 第${attempts}次：${safeError(e)}`);
     if (attempts >= MAX_AI_ATTEMPTS) { complete(fallbackDigest(parts, windowStart, windowEnd, ['AI 汇总失败，以下为各群摘要的直接拼接']), true, null, error); return true; }
     save({ error, next_attempt_at: new Date(now.getTime() + 10 * 60_000 * attempts).toISOString() });

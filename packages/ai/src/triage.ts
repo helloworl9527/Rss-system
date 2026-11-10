@@ -1,3 +1,4 @@
+import { errorText } from './errors.ts';
 import type { Provider, CompleteResult } from './types.ts';
 import { ProviderError } from './types.ts';
 import { TRIAGE_SCHEMA, validate, type TriageResult } from './schema.ts';
@@ -212,7 +213,7 @@ async function callBatch(
       });
     } catch (e) {
       const pe = e as ProviderError;
-      lastErr = `${pe.kind}: ${pe.message}`;
+      lastErr = errorText(pe);
       lastKind = pe instanceof ProviderError ? pe.kind : undefined;
       // 拒答与鉴权错误重试无意义，直接转人工
       if (pe instanceof ProviderError && !pe.retryable && pe.kind !== 'bad_request') break;

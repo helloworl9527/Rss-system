@@ -30,11 +30,13 @@ export function isTransient(e: unknown): e is ProviderError {
   return e instanceof ProviderError && TRANSIENT.has(e.kind);
 }
 
-/** 429 若带 Retry-After 秒数则按它等，否则按退避表；上限 2 分钟，避免单条调用卡死整轮。 */
+/**
+ * 429 若带 Retry-After 秒数则按它等，否则按退避表；上限 2 分钟，避免单条调用卡死整轮。
+ * 秒数由适配器在丢弃响应正文前解析进 retryAfterSec（响应头优先，头无效时取正文），这里不再读 message。
+ */
 function waitFor(e: ProviderError, fallback: number): number {
   if (e.kind === 'rate_limited' && e.retryAfterSec !== undefined) return Math.min(e.retryAfterSec * 1000, MAX_RETRY_AFTER_MS);
-  const m = e.kind === 'rate_limited' ? /retry[-_ ]after["':\s]*(\d+)/i.exec(e.message) : null;
-  return m ? Math.min(Number(m[1]) * 1000, MAX_RETRY_AFTER_MS) : fallback;
+  return fallback;
 }
 
 /** 可被取消的等待：截止时间到达时立即结束，不再空等退避。 */

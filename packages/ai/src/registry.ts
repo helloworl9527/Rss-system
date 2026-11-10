@@ -48,7 +48,7 @@ async function createAdapter(cfg: ProviderConfig): Promise<Provider> {
       return new GeminiProvider(cfg);
     }
     default:
-      throw new ProviderError('bad_request', '未知供应商: ' + String(cfg.provider));
+      throw new ProviderError('bad_request', '未知供应商类型');
   }
 }
 

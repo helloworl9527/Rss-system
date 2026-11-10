@@ -1,3 +1,4 @@
+import { errorText } from './errors.ts';
 import type { Provider } from './types.ts';
 import { validate } from './schema.ts';
 
@@ -80,7 +81,7 @@ export async function resolveSemanticDuplicates(
       d.sameEvent = x.same_event === true && x.confidence >= 0.72;
       d.confidence = x.confidence; d.reason = x.reason; d.model = r.model; d.responseId = r.responseId;
       if (d.sameEvent) union(a.candidateId, b.candidateId);
-    } catch (e: any) { d.error = String(e?.message ?? e).slice(0, 240); d.reason = '语义判定失败，保守保持为不同事件'; }
+    } catch (e: any) { d.error = errorText(e, 240); d.reason = '语义判定失败，保守保持为不同事件'; }
     decisions.push(d); opts.onDecision?.(d);
   }
   const key = new Map<string, string>();

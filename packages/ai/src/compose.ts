@@ -1,3 +1,4 @@
+import { errorText } from './errors.ts';
 import type { Provider, CompleteResult } from './types.ts';
 import { ProviderError } from './types.ts';
 import { COMPOSE_SCHEMA, validate, type ComposeResult } from './schema.ts';
@@ -168,7 +169,7 @@ async function composeBatch(
       });
     } catch (e) {
       const pe = e as ProviderError;
-      lastErr = `${pe.kind}: ${pe.message}`;
+      lastErr = errorText(pe);
       lastKind = pe instanceof ProviderError ? pe.kind : undefined;
       if (pe instanceof ProviderError && !pe.retryable && pe.kind !== 'bad_request') break;
       continue;

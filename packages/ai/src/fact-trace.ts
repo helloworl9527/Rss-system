@@ -1,3 +1,4 @@
+import { errorText } from './errors.ts';
 import { XMLParser } from 'fast-xml-parser';
 import { checkUrlSafe } from '../../connectors/src/ssrf.ts';
 
@@ -54,7 +55,7 @@ export async function traceFacts(
       snippet: text(x?.description).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500),
     })).filter((x: any) => x.title && /^https:\/\//.test(x.url));
   } catch (e: any) {
-    out.error = String(e?.message ?? e).slice(0, 300);
+    out.error = errorText(e);
   }
   return out;
 }

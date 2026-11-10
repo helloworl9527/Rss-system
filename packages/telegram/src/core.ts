@@ -4,7 +4,9 @@ import type { TelegramDB } from './db.ts';
 export type SourceType = 'normal' | 'url';
 export class TelegramError extends Error {
   code: number;
-  constructor(code: number, message: string) { super(message); this.code = code; this.name = 'TelegramError'; }
+  /** 文案都由我们写死（或来自管理员输入），可以原样输出 */
+  publicMessage: string;
+  constructor(code: number, message: string) { super(message); this.code = code; this.name = 'TelegramError'; this.publicMessage = message; }
 }
 export const nowIso = () => new Date().toISOString();
 export const token256 = () => randomBytes(32).toString('hex');

@@ -1,3 +1,4 @@
+import { networkError, refusalError, invalidJsonError } from '../errors.ts';
 import type { Provider, CompleteRequest, CompleteResult, ProviderConfig, Strictness } from '../types.ts';
 import { ProviderError } from '../types.ts';
 import { toError } from './openai-compat.ts';
@@ -9,6 +10,8 @@ import { toError } from './openai-compat.ts';
  * 注意：Gemini 的 responseSchema 是 OpenAPI 子集，不接受 JSON Schema 的
  * 全部关键字（如 additionalProperties / $ref / oneOf），由 toGeminiSchema 裁剪。
  */
+const GEMINI_BLOCKED = new Set(['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII', 'RECITATION', 'IMAGE_SAFETY']);
+
 export class GeminiProvider implements Provider {
   readonly name = 'gemini' as const;
   readonly model;
@@ -46,19 +49,20 @@ export class GeminiProvider implements Provider {
         body: JSON.stringify(body),
       });
     } catch (e: any) {
-      throw new ProviderError(e?.name === 'AbortError' ? 'timeout' : 'network', String(e?.message ?? e));
+      throw networkError(e);
     } finally { clearTimeout(timer); }
 
-    if (!r.ok) throw toError(r.status, await r.text().catch(() => ''));
-    const j: any = await r.json();
+    if (!r.ok) throw toError(r.status, await r.text().catch(() => ''), r.headers.get('retry-after'));
+    let j: any;
+    try { j = await r.json(); } catch { throw invalidJsonError(''); }
     const cand = j.candidates?.[0];
-    if (cand?.finishReason === 'SAFETY' || cand?.finishReason === 'PROHIBITED_CONTENT')
-      throw new ProviderError('refusal', `Gemini 拒答: ${cand.finishReason}`);
+    // 原生拒答：提示被拦截（promptFeedback.blockReason）或候选因安全类原因结束
+    if (j.promptFeedback?.blockReason || GEMINI_BLOCKED.has(cand?.finishReason)) throw refusalError();
 
     const text = (cand?.content?.parts ?? []).map((p: any) => p.text ?? '').join('');
     let data: unknown;
     try { data = JSON.parse(text); }
-    catch { throw new ProviderError('bad_request', `响应不是合法 JSON（前 200 字）: ${text.slice(0, 200)}`); }
+    catch { throw invalidJsonError(text); }
 
     const u = j.usageMetadata ?? {};
     return {

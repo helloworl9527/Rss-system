@@ -1,3 +1,4 @@
+import { errorText } from '../../ai/src/errors.ts';
 import type { Provider, ProviderConfig } from '../../ai/src/types.ts';
 import { createProvider } from '../../ai/src/registry.ts';
 import type { TelegramDB } from './db.ts';
@@ -101,9 +102,6 @@ function merge(parts: SummaryShape[]): SummaryShape {
 
 export const SUMMARY_MAX_ATTEMPTS = 6;
 /** 错误信息进 journal 前去掉可能的密钥/令牌。 */
-const safeLogError = (e: unknown) => String((e as any)?.message ?? e)
-  .replace(/Bearer\s+\S+/gi, 'Bearer ***').replace(/\bsk-[A-Za-z0-9_-]{8,}/g, 'sk-***')
-  .replace(/(api[_-]?key|token|authorization|secret)(["'\s:=]+)[^\s"',}]+/gi, '$1$2***').slice(0, 300);
 /** 推理模型处理一整段频道消息常超过默认 90 秒，超时后重试只会重复同样的长请求 */
 const AI_TIMEOUT_MS = Number(process.env.TELEGRAM_AI_TIMEOUT_MS) || 240_000;
 
@@ -171,12 +169,12 @@ export async function summarizeJob(db: TelegramDB, jobId: number, cfg: TelegramA
   } catch (e: any) {
     // 5/10/20/40/80 分钟退避，共约 2.5 小时：中转服务短时断开（授权失效、限流）时能自行补回
     const attempts = Number(job.attempts) + 1;
-    console.error(`Telegram 总结失败 job=${jobId} source=${job.source_id}（${job.title}）第${attempts}次：${safeLogError(e)}`);
+    console.error(`Telegram 总结失败 job=${jobId} source=${job.source_id}（${job.title}）第${attempts}次：${errorText(e)}`);
     // 内容被模型过滤（响应无 choices）：重试结果不会变，直接结束，不走退避重试
     const filtered = Boolean(e?.contentFiltered);
     const retry = !filtered && attempts < SUMMARY_MAX_ATTEMPTS ? new Date(Date.now() + 5 * 60_000 * 2 ** (attempts - 1)).toISOString() : null;
     db.prepare(`UPDATE telegram_summary_jobs SET status='failed',error=?,next_attempt_at=?,updated_at=? WHERE id=?`)
-      .run((filtered ? '内容被模型过滤，不再重试：' : '') + String(e?.message ?? e).slice(0,1000),retry,nowIso(),job.id);
+      .run((filtered ? '内容被模型过滤，不再重试：' : '') + errorText(e),retry,nowIso(),job.id);
     return false;
   }
 }
