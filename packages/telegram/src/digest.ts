@@ -173,7 +173,9 @@ export async function buildDigest(db: TelegramDB, windowEnd: string, cfg: Provid
     response_model: model, error });
   /** 结尾说明 = 生成问题 + 采集未完成（同一来源合并） */
   const withIssues = (d: DailyDigest, gen: DigestIssue[], lead: string[] = []): DailyDigest => {
-    const issues = mergeIssues(gen, snap.collection);
+    // 按群的固定顺序列出（与来源列表一致），不按原因类型分组
+    const order = new Map(snap.sources.map((x, i) => [x.id, i]));
+    const issues = mergeIssues(gen, snap.collection).sort((x, y) => (order.get(x.sourceId ?? -1) ?? 1e9) - (order.get(y.sourceId ?? -1) ?? 1e9));
     const note = issuesNote(issues);
     const notes = [...lead, ...(note ? [note] : [])];
     const { notes: _n, issues: _i, ...rest } = d;

@@ -24,7 +24,10 @@ export function cleanupTelegram(db: TelegramDB, now = new Date()): {messages:num
   const result=db.transaction(()=>{
     const messages=Boolean(s.keep_messages_forever) ? 0 : db.prepare(`DELETE FROM telegram_messages
       WHERE sent_at<? AND source_id NOT IN
-        (SELECT id FROM telegram_sources WHERE retain_all_history=1)`).run(rawCutoff).changes;
+        (SELECT id FROM telegram_sources WHERE retain_all_history=1)
+        -- 有保留中图片（失败后保留 7 天等待自动重试）的消息暂不删除，否则图片任务会被级联删除
+        AND NOT EXISTS (SELECT 1 FROM telegram_media_tasks v WHERE v.chat_id=telegram_messages.chat_id
+          AND v.message_id=telegram_messages.message_id AND v.held_until > ? AND v.temp_state='ready')`).run(rawCutoff, now.toISOString()).changes;
     const urls=db.prepare('DELETE FROM telegram_urls WHERE expires_at<?').run(summaryCutoff).changes;
     const summaries=db.prepare('DELETE FROM telegram_summaries WHERE expires_at<?').run(summaryCutoff).changes;
     db.prepare('DELETE FROM telegram_digests WHERE expires_at<?').run(summaryCutoff);

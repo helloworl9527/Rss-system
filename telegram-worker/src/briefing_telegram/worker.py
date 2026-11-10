@@ -176,9 +176,30 @@ class Store:
             if row and row[0] != checksum:
                 raise RuntimeError(f"applied Telegram migration changed: {sql_path.name}")
             if not row:
-                self.db.executescript(sql)
-                self.db.execute("INSERT OR REPLACE INTO telegram_schema_migrations VALUES(?,?,?)", (sql_path.name, checksum, utc_now()))
-                self.db.commit()
+                self.apply_migration(sql_path.name, sql, checksum)
+
+    def apply_migration(self, name: str, sql: str, checksum: str) -> None:
+        """原子执行一个迁移：取得写锁后重新检查登记（另一个进程可能刚执行完），逐条执行 + 登记在同一事务里，失败整体回滚。"""
+        self.db.commit()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            if self.db.execute("SELECT 1 FROM telegram_schema_migrations WHERE name=?", (name,)).fetchone():
+                self.db.execute("ROLLBACK")
+                return
+            statement = ""
+            for line in sql.splitlines(keepends=True):
+                statement += line
+                if sqlite3.complete_statement(statement):
+                    if statement.strip():
+                        self.db.execute(statement)
+                    statement = ""
+            if statement.strip():
+                self.db.execute(statement)
+            self.db.execute("INSERT OR REPLACE INTO telegram_schema_migrations VALUES(?,?,?)", (name, checksum, utc_now()))
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
 
     def worker_state(self, state: str, *, authorized: bool = False, hint: str | None = None, error: str | None = None) -> None:
         self.db.execute("UPDATE telegram_worker_state SET authorized=?,login_state=?,account_hint=?,last_error=?,heartbeat_at=?,updated_at=? WHERE singleton=1", (authorized, state, hint, error, utc_now(), utc_now()))

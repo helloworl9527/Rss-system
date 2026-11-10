@@ -14,7 +14,7 @@ const ago = (t: string | null | undefined) => {
 const local = (t: string, tz: string) => new Date(t).toLocaleString('zh-CN', { timeZone: tz, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
 
 export function renderTelegram(o: { csrf: string; tab: TelegramTab; sources: any[]; settings: any; worker: any;
-  vision: { pending: number; failed: number; today: number; oldestMinutes: number | null };
+  vision: { pending: number; failed: number; today: number; oldestMinutes: number | null; held?: number; evicted?: number };
   digests: Digest[]; digestLookbackFrom: string; saved?: string; error?: string }): string {
   const csrf = (redirect: string) => `<input type="hidden" name="csrf" value="${esc(o.csrf)}"><input type="hidden" name="redirect" value="${esc(redirect)}">`;
   const tabs = `<nav class="tabs" aria-label="Telegram">${TELEGRAM_TABS.map(([k, l]) =>
@@ -67,7 +67,8 @@ export function renderTelegram(o: { csrf: string; tab: TelegramTab; sources: any
       <div class="card"><span class="l">状态</span><span class="n">${s.vision_paused ? '<span class="bad">已暂停</span>' : '运行中'}</span><span class="d">每分钟识别 1 张</span></div>
       <div class="card"><span class="l">待识别</span><span class="n">${v.pending.toLocaleString('en-US')} 张</span><span class="d">${v.pending ? `约 ${Math.max(1, Math.ceil(v.pending / Math.min(limit, 1440)))} 天处理完` : '没有积压'}</span></div>
       <div class="card"><span class="l">今天已识别</span><span class="n">${v.today.toLocaleString('en-US')} / ${limit.toLocaleString('en-US')}</span><span class="d"><a href="/settings#vision">调整每日上限</a></span></div>
-      <div class="card"><span class="l">识别失败</span><span class="n">${v.failed.toLocaleString('en-US')} 张</span><span class="d">已放弃，图片已删除</span></div>
+      <div class="card"><span class="l">保留中</span><span class="n">${(v.held ?? 0).toLocaleString('en-US')} 张</span><span class="d">识别失败后保留 7 天，每 12 小时或换模型配置后自动重试</span></div>
+      <div class="card"><span class="l">识别失败</span><span class="n">${v.failed.toLocaleString('en-US')} 张</span><span class="d">已放弃，图片已删除${v.evicted ? `（其中 ${v.evicted.toLocaleString('en-US')} 张因图片目录超过 1 GB 提前删除）` : ''}</span></div>
     </div>
     <p class="sub" style="margin-top:12px">模型 <code>${esc(s.vision_model)}</code> · 最近运行 ${esc(ago(s.vision_last_run_at))}，结果 ${esc(s.vision_last_result || '—')}。识别完成后只保留文字结果，图片随即删除。</p>`;
   }

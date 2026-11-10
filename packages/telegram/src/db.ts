@@ -29,12 +29,15 @@ export function migrateTelegram(db: TelegramDB, dir = join(process.cwd(), 'teleg
     const old = applied.get(name);
     if (old && old !== checksum) throw new Error(`Telegram 迁移 ${name} 已被修改`);
     if (old) continue;
-    db.transaction(() => {
+    // 取得写锁后重新检查登记：另一个进程（Node 或 Python）可能刚刚执行完同一个迁移，避免重复 ALTER
+    const ran = db.transaction(() => {
+      if (db.prepare('SELECT 1 FROM telegram_schema_migrations WHERE name=?').get(name)) return false;
       db.exec(sql);
       db.prepare('INSERT OR REPLACE INTO telegram_schema_migrations VALUES(?,?,?)')
         .run(name, checksum, new Date().toISOString());
-    })();
-    added.push(name);
+      return true;
+    }).immediate();
+    if (ran) added.push(name);
   }
   return added;
 }
