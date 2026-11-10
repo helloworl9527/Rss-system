@@ -167,8 +167,9 @@ export function maintainHeldMedia(db: TelegramDB, opts: { mediaDir?: string; now
         .run(held ? 'failed' : 'skipped', 'disk_full', '图片目录超过上限，提前删除', iso, iso, t.id, t.status);
       if (r.changes !== 1) continue;
       tryDelete(t.temp_path, mediaDir);
-      total -= sizeOf.get(resolve(t.temp_path ?? '')) ?? 0;
       evicted++;
+      // 只有文件确实已不在时才扣减用量（删除失败的文件仍占空间，继续往下删）
+      if (t.temp_path && !existsSync(t.temp_path)) total -= sizeOf.get(resolve(t.temp_path)) ?? 0;
     }
     if (evicted) db.prepare('UPDATE telegram_settings SET vision_disk_evicted=vision_disk_evicted+? WHERE singleton=1').run(evicted);
     if (total > cap) console.log(`Telegram 图片目录仍超过上限（${Math.round(total / 2 ** 20)} MB），剩余为下载中或孤儿文件`);

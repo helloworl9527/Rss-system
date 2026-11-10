@@ -75,14 +75,19 @@ try {
     // Anthropic（真 SDK + 本机假服务）：错误正文、拒答
     const replies: Array<[number, unknown]> = [[400, { type: 'error', error: { type: 'invalid_request_error', message: MARK } }],
       [200, { id: 'm', type: 'message', role: 'assistant', model: 'c', stop_reason: 'refusal', stop_details: { explanation: MARK }, content: [], usage: { input_tokens: 1, output_tokens: 0 } }],
-      [429, { type: 'error', error: { type: 'rate_limit_error', message: MARK } }]];
-    const srv = createServer((rq, rs) => { rq.resume(); rq.on('end', () => { const [st, body] = replies.shift()!; rs.writeHead(st, { 'content-type': 'application/json', ...(st === 429 ? { 'retry-after': '3' } : {}) }); rs.end(JSON.stringify(body)); }); });
+      [429, { type: 'error', error: { type: 'rate_limit_error', message: MARK } }],
+      [429, { type: 'error', error: { type: 'rate_limit_error', message: MARK }, retry_after: 4 }]];
+    let n429 = 0;
+    const srv = createServer((rq, rs) => { rq.resume(); rq.on('end', () => { const [st, body] = replies.shift()!;
+      // 第一个 429 带响应头；第二个没有响应头、秒数只在正文里
+      rs.writeHead(st, { 'content-type': 'application/json', ...(st === 429 && n429++ === 0 ? { 'retry-after': '3' } : {}) }); rs.end(JSON.stringify(body)); }); });
     await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()));
     const a = await createProvider({ provider: 'anthropic', model: 'c', apiKey: 'k', baseUrl: `http://127.0.0.1:${(srv.address() as any).port}` }, { retry: false });
     const ask = async () => { try { await a.complete({ systemPrompt: 's', userContent: 'u', schema: {}, schemaName: 't', maxOutputTokens: 5 }); return null; } catch (x) { return x as any; } };
     e = await ask(); assert.deepEqual([e.kind, e.code, e.status], ['bad_request', 'invalid_request_error', 400]); noLeak(e.message, 'Anthropic 400');
     e = await ask(); assert.deepEqual([e.kind, e.contentFiltered], ['refusal', true]); noLeak(e.message, 'Anthropic 拒答说明');
     e = await ask(); assert.deepEqual([e.kind, e.retryAfterSec], ['rate_limited', 3]); noLeak(e.message, 'Anthropic 429');
+    e = await ask(); assert.deepEqual([e.kind, e.retryAfterSec], ['rate_limited', 4], '没有响应头时从正文取等待秒数'); noLeak(e.message, 'Anthropic 429 正文');
     srv.close();
 
     // Schema 与 registry
@@ -301,7 +306,16 @@ try {
     assert.equal(row(big1.id).error_type, 'disk_full'); assert.equal(row(big2.id).status, 'skipped');
     assert.equal(row(big3.id).status, 'pending', '降到上限以下就停止');
     assert.ok((tg.prepare('SELECT vision_disk_evicted n FROM telegram_settings').get() as any).n >= 2);
-    ok('B2：目录硬上限按实际文件统计，先删保留中最早的，再把最早的待识别标为 disk_full');
+    // 删除失败（目录只读）时不扣减用量：继续往下处理，而不是删了一个就以为降到上限以下
+    const roDir = join(dir, 'media-ro'); mkdirSync(roDir);
+    const ro = [1, 2].map(() => { const x = media(600); const p2 = join(roDir, `r${x.id}`); writeFileSync(p2, Buffer.alloc(600, 1));
+      tg.prepare('UPDATE telegram_media_tasks SET temp_path=? WHERE id=?').run(p2, x.id); return x.id; });
+    const { chmodSync } = await import('node:fs');
+    chmodSync(roDir, 0o555);
+    try { vision.maintainHeldMedia(tg, { mediaDir: roDir, now: clock, fingerprint: 'F2', capBytes: 1000 }); }
+    finally { chmodSync(roDir, 0o755); }
+    assert.ok(ro.every(id => row(id).error_type === 'disk_full'), '删除失败时继续处理下一张');
+    ok('B2：目录硬上限按实际文件统计，先删保留中最早的，再把最早的待识别标为 disk_full；删除失败不误扣用量');
 
     // 消息清理不删有保留中图片的消息
     const m6 = media();

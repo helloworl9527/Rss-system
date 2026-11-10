@@ -39,23 +39,22 @@ function openExisting(envName) {
 
 /** 对一列做改写；where 限定范围。返回改写行数（dry-run 时为将要改写的行数）。 */
 function scrubColumn(db, table, column, where = '1=1', typeCol = null) {
-  const rows = db.prepare(`SELECT rowid AS rid, ${column} AS v${typeCol ? `, ${typeCol} AS t` : ''} FROM ${table}
-    WHERE ${column} IS NOT NULL AND ${column} <> '' AND substr(${column}, 1, ${MARK.length}) <> ? AND (${where})`).all(MARK);
-  if (!APPLY || !rows.length) return rows.length;
-  const up = db.prepare(`UPDATE ${table} SET ${column}=? WHERE rowid=?`);
-  db.transaction(() => { for (const r of rows) up.run(scrubbed(r.v, r.t), r.rid); })();
-  return rows.length;
+  const scope = `${column} IS NOT NULL AND ${column} <> '' AND substr(${column}, 1, ${MARK.length}) <> ? AND (${where})`;
+  const select = () => db.prepare(`SELECT rowid AS rid, ${column} AS v${typeCol ? `, ${typeCol} AS t` : ''} FROM ${table} WHERE ${scope}`).all(MARK);
+  if (!APPLY) return select().length;
+  // 读与写在同一个写事务里；写时再核对原值与范围（例如期间管理员把提案改成人工拒绝，就不再改写）
+  const up = db.prepare(`UPDATE ${table} SET ${column}=? WHERE rowid=? AND ${column}=? AND ${scope}`);
+  return db.transaction(() => { let n = 0; for (const r of select()) n += up.run(scrubbed(r.v, r.t), r.rid, r.v, MARK).changes; return n; }).immediate();
 }
 
 /** JSON 列里的顶层 $.error（只改这个键，不动其他字段）。 */
 function scrubJsonError(db, table, column, where = '1=1') {
-  const rows = db.prepare(`SELECT rowid AS rid, json_extract(${column}, '$.error') AS v FROM ${table}
-    WHERE json_valid(${column}) AND json_type(${column}, '$.error') = 'text'
-      AND substr(json_extract(${column}, '$.error'), 1, ${MARK.length}) <> ? AND (${where})`).all(MARK);
-  if (!APPLY || !rows.length) return rows.length;
-  const up = db.prepare(`UPDATE ${table} SET ${column}=json_set(${column}, '$.error', ?) WHERE rowid=?`);
-  db.transaction(() => { for (const r of rows) up.run(scrubbed(r.v, null), r.rid); })();
-  return rows.length;
+  const scope = `json_valid(${column}) AND json_type(${column}, '$.error') = 'text'
+      AND substr(json_extract(${column}, '$.error'), 1, ${MARK.length}) <> ? AND (${where})`;
+  const select = () => db.prepare(`SELECT rowid AS rid, json_extract(${column}, '$.error') AS v FROM ${table} WHERE ${scope}`).all(MARK);
+  if (!APPLY) return select().length;
+  const up = db.prepare(`UPDATE ${table} SET ${column}=json_set(${column}, '$.error', ?) WHERE rowid=? AND json_extract(${column}, '$.error')=? AND ${scope}`);
+  return db.transaction(() => { let n = 0; for (const r of select()) n += up.run(scrubbed(r.v, null), r.rid, r.v, MARK).changes; return n; }).immediate();
 }
 
 async function backup(db, path, dir) {

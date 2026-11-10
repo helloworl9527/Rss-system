@@ -109,7 +109,8 @@ function mapAnthropicError(e: any): ProviderError {
     : s === 408 ? 'timeout' : s === 409 || s >= 500 ? 'server' : 'bad_request';
   const err = new ProviderError(kind, `HTTP ${s}${code ? ` ${code}` : ''}`, s);
   if (code) err.code = code;
-  if (s === 429) { const sec = retryAfterFrom(retryAfter); if (sec !== undefined) err.retryAfterSec = sec; }
+  // 响应头缺失或无效时按原有规则从 SDK 错误文本（含响应正文）里取秒数；该文本只用于解析，不进入 message
+  if (s === 429) { const sec = retryAfterFrom(retryAfter, typeof e?.message === 'string' ? e.message : ''); if (sec !== undefined) err.retryAfterSec = sec; }
   return err;
 }
 
