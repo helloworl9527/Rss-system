@@ -11,7 +11,7 @@ import type { Provider, ProviderConfig } from '../../ai/src/types.ts';
 import { createProvider } from '../../ai/src/registry.ts';
 import type { TelegramDB } from './db.ts';
 import { cleanViewpoint, nowIso, stripMessageReferences, summaryHash } from './core.ts';
-import { composeDaily, isDaily, loadWindowMessages, renderDailyHtml, DAILY_FORMAT, type DailyDigest } from './daily.ts';
+import { composeDaily, isDaily, loadWindowMessages, loadWindowSnapshot, renderDailyHtml, mergeIssues, issuesNote, DAILY_FORMAT, type DailyDigest, type DigestIssue } from './daily.ts';
 
 const RENTAL_COMMUNITY = '[合租社群]Netflix|YouTube|Spotify|office365|Hbo|Surge|美剧|等音乐影视聊天机场电影盒子软路由';
 export const channelName = (name: unknown) => String(name ?? '') === RENTAL_COMMUNITY ? '合租社群' : String(name ?? '');
@@ -104,7 +104,9 @@ export function digestHtml(db: TelegramDB, row: { summary_json: string | null; s
       .map(r => [r.id, channelName(r.name)]));
     const channels = [...new Set(ids.map(id => names.get(id)).filter((n): n is string => !!n))];
     const raw = JSON.parse(row.summary_json);
-    if (isDaily(raw)) return renderDailyHtml(raw) + `<p><small>涉及群组：${esc(raw.groups.join('、'))}</small></p>`;
+    // 未正常汇总的说明放在最后（「涉及群组」之后）
+    if (isDaily(raw)) return renderDailyHtml({ ...raw, notes: [] }) + `<p><small>涉及群组：${esc(raw.groups.join('、'))}</small></p>`
+      + (raw.notes ?? []).map((n: string) => `<p><small>${esc(n)}</small></p>`).join('');
     // 存储时频道名已校验；这里直接按存储值渲染，不再二次过滤（频道改名后旧汇总仍保留当时的名字）
     const points = (Array.isArray(raw?.points) ? raw.points : []).map((p: any) => ({
       text: String(p.text ?? ''), detail: String(p.detail ?? ''), channels: Array.isArray(p.channels) ? p.channels.map(String) : [] }));
@@ -141,17 +143,20 @@ function windowReady(db: TelegramDB, windowEnd: string, now: Date): boolean {
 
 export async function buildDigest(db: TelegramDB, windowEnd: string, cfg: ProviderConfig & { summaryRetentionDays: number },
   provider?: Provider, now = new Date()): Promise<boolean> {
-  const parts = partsFor(db, windowEnd);
-  if (!parts.length) return false;
-  const channels = [...new Set(parts.map(p => p.channel))];
-  const windowStartAll = parts.map(p => p.windowStart).sort()[0]!;
-  // daily_v2：输入身份 = 窗口 + 各群消息指纹；有新补采消息时会重新生成
-  const groups = loadWindowMessages(db, windowStartAll, windowEnd, channelName);
+  const allParts = partsFor(db, windowEnd);
+  if (!allParts.length) return false;
+  const windowStartAll = allParts.map(p => p.windowStart).sort()[0]!;
+  // 一致快照：参与生成的来源（启用、正常）、窗口消息、采集覆盖水位在同一个只读事务里读取
+  const snap = loadWindowSnapshot(db, windowStartAll, windowEnd, channelName);
+  // 兜底与 source_ids 只用本期参与生成的来源（停用群的旧单群总结不进入兜底）
+  const scope = new Set(snap.sources.map(s => s.id));
+  const parts = allParts.filter(p => scope.has(p.sourceId));
+  const groups = snap.groups;
   const inputHash = summaryHash([DAILY_FORMAT, windowStartAll, windowEnd, groups.map(g => [g.group, g.messages.map(m => [m.message_id, m.text.length])])]);
   const old = db.prepare('SELECT * FROM telegram_digests WHERE window_end=?').get(windowEnd) as any;
   if (old?.status === 'completed' && old.input_hash === inputHash) return false;
   const attempts = Number(old?.attempts ?? 0) + 1;
-  const windowStart = parts.map(p => p.windowStart).sort()[0]!;
+  const windowStart = windowStartAll;
   const expires = new Date(now.getTime() + cfg.summaryRetentionDays * 86400_000).toISOString();
   const save = (fields: Record<string, unknown>) => {
     const row = { window_start: windowStart, window_end: windowEnd, source_ids: JSON.stringify(parts.map(p => p.sourceId)),
@@ -166,14 +171,28 @@ export async function buildDigest(db: TelegramDB, windowEnd: string, cfg: Provid
   const complete = (d: DailyDigest, fallback: boolean, model: string | null, error: string | null = null) => save({
     status: 'completed', summary_json: JSON.stringify(d), rendered_html: renderDailyHtml(d), fallback: fallback ? 1 : 0,
     response_model: model, error });
+  /** 结尾说明 = 生成问题 + 采集未完成（同一来源合并） */
+  const withIssues = (d: DailyDigest, gen: DigestIssue[], lead: string[] = []): DailyDigest => {
+    const issues = mergeIssues(gen, snap.collection);
+    const note = issuesNote(issues);
+    const notes = [...lead, ...(note ? [note] : [])];
+    const { notes: _n, issues: _i, ...rest } = d;
+    return { ...rest, ...(issues.length ? { issues } : {}), ...(notes.length ? { notes } : {}) };
+  };
   try {
     const p = provider ?? await createProvider(cfg);
     const d = await composeDaily(p, groups, windowStart, windowEnd, { log: m => { if (m.startsWith('⚠️')) console.log(m); } });
-    save({ status: 'completed', summary_json: JSON.stringify(d), rendered_html: renderDailyHtml(d), fallback: 0, response_model: p.model, error: null });
+    complete(withIssues(d, d.issues ?? []), false, p.model);
   } catch (e: any) {
     const error = errorText(e);
     console.error(`Telegram 跨频道要点生成失败 窗口=${windowEnd} 第${attempts}次：${safeError(e)}`);
-    if (attempts >= MAX_AI_ATTEMPTS) { complete(fallbackDigest(parts, windowStart, windowEnd, ['AI 汇总失败，以下为各群摘要的直接拼接']), true, null, error); return true; }
+    if (attempts >= MAX_AI_ATTEMPTS) {
+      // 生成前失败（没有逐群结果）时，参与生成的所有群都记生成失败；否则用真实原因
+      const gen: DigestIssue[] = Array.isArray(e?.issues) ? e.issues
+        : snap.sources.map(s => ({ sourceId: s.id, group: s.group, reasons: ['generation_failed' as const] }));
+      complete(withIssues(fallbackDigest(parts, windowStart, windowEnd), gen, ['AI 汇总失败，以下为各群摘要的直接拼接']), true, null, error);
+      return true;
+    }
     save({ error, next_attempt_at: new Date(now.getTime() + 10 * 60_000 * attempts).toISOString() });
     return false;
   }

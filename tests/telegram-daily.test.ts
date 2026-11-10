@@ -47,8 +47,10 @@ const flaky: any = { ...fake, async complete(req: any) {
 } };
 const d2 = await composeDaily(flaky, [{ group: 'A群', messages: msgs(3) }, { group: 'B群', messages: msgs(3) }], 's', 'e');
 assert.equal(dailyCount(d2), 3, '只保留 A 群');
-assert.deepEqual(d2.notes, ['B群 群本期生成失败']);
-assert.ok(renderDailyHtml(d2).includes('B群 群本期生成失败'));
+// 用户决定（2026-11-10）：结尾一句说明哪些群组没有正常汇总
+assert.deepEqual(d2.notes, ['本期以下群组未正常汇总：B群（生成失败）']);
+assert.deepEqual(d2.issues, [{ sourceId: undefined, group: 'B群', reasons: ['generation_failed'] }]);
+assert.ok(renderDailyHtml(d2).endsWith('<p><small>本期以下群组未正常汇总：B群（生成失败）</small></p>'), '说明在最后');
 const dead: any = { ...fake, async complete() { throw new Error('down'); } };
 await assert.rejects(() => composeDaily(dead, [{ group: 'A群', messages: msgs(2) }, { group: 'B群', messages: msgs(2) }], 's', 'e'), /down/);
 
@@ -70,7 +72,7 @@ await assert.rejects(() => composeDaily(dead, [{ group: 'A群', messages: msgs(2
     { group: 'P群', messages: big(8) }], 's', 'e', { maxChars: 3000 });
   assert.equal(extractCalls['F群'], 1, '被过滤的块不重试');
   assert.equal(extractCalls['G群'], 3, '普通失败仍重试 3 次');
-  assert.deepEqual(d3.notes, ['F群 群本期内容被模型过滤', 'G群 群本期生成失败', 'P群 群部分内容被模型过滤']);
+  assert.deepEqual(d3.notes, ['本期以下群组未正常汇总：F群（内容被模型过滤）；G群（生成失败）；P群（部分内容被模型过滤）']);
   assert.ok(dailyCount(d3) > 0 && d3.categories.every(c => c.items.every(i => !i.groups.includes('F群'))));
 }
 
