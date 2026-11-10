@@ -21,15 +21,14 @@ const MAX_BODY = 1024 * 1024;
  * 整次操作一个截止时间（不每跳重置），中间响应体立即关闭。
  * 残余风险：DNS 校验与实际连接之间域名解析结果被改（DNS rebinding）不在这里解决（docs/error-hygiene-design.md）。
  */
-async function safeFetch(url: string, transport: typeof fetch, safeCheck: typeof checkUrlSafe, timeoutMs: number): Promise<{ response: Response; url: string }> {
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
-  try {
+async function safeFetch(url: string, transport: typeof fetch, safeCheck: typeof checkUrlSafe, signal: AbortSignal): Promise<{ response: Response; url: string }> {
+  {
     let current = url;
     for (let hop = 0; ; hop++) {
       const safe = await safeCheck(current);
       if (!safe.ok) throw new PublicError(`地址未通过安全校验（第 ${hop + 1} 跳）`);
-      const response = await transport(safe.url, { signal: ac.signal, redirect: 'manual', headers: {
+      if (signal.aborted) throw new PublicError('请求超时');
+      const response = await transport(safe.url, { signal, redirect: 'manual', headers: {
         'user-agent': 'BriefingFactTrace/1.0',
         accept: 'application/rss+xml, application/xml, text/html;q=0.8',
       } });
@@ -42,7 +41,16 @@ async function safeFetch(url: string, transport: typeof fetch, safeCheck: typeof
       }
       return { response, url: safe.url };
     }
-  } finally { clearTimeout(timer); }
+  }
+}
+
+/** 整次操作（安全校验、每一跳、读取正文）一个截止时间；正文读完或放弃后才清除计时器。 */
+async function withDeadline<T>(ms: number, fn: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const ac = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => { ac.abort(); rej(new PublicError('请求超时')); }, ms); });
+  try { return await Promise.race([fn(ac.signal), timeout]); }
+  finally { clearTimeout(timer); }
 }
 
 async function readCapped(response: Response): Promise<string> {
@@ -62,7 +70,7 @@ async function readCapped(response: Response): Promise<string> {
 /** 实时核验候选原始链接，并从公开搜索结果取回独立来源摘要供复核模型比对。 */
 export async function traceFacts(
   title: string, originUrl: string | null, transport: typeof fetch = fetch,
-  safeCheck: typeof checkUrlSafe = checkUrlSafe,
+  safeCheck: typeof checkUrlSafe = checkUrlSafe, timeoutMs = 8000,
 ): Promise<FactEvidence> {
   const checkedAt = new Date().toISOString();
   const out: FactEvidence = { checkedAt, currentDate: checkedAt.slice(0, 10), origin: null, results: [] };
@@ -71,9 +79,11 @@ export async function traceFacts(
       const safe = await safeCheck(originUrl);
       if (safe.ok) {
         try {
-          const { response } = await safeFetch(safe.url, transport, safeCheck, 8000);
-          out.origin = { url: safe.url, reachable: response.ok, status: response.status };
-          try { await response.body?.cancel(); } catch { /* response may already be closed by a test transport */ }
+          out.origin = await withDeadline(timeoutMs, async signal => {
+            const { response } = await safeFetch(safe.url, transport, safeCheck, signal);
+            try { await response.body?.cancel(); } catch { /* response may already be closed by a test transport */ }
+            return { url: safe.url, reachable: response.ok, status: response.status };
+          });
         } catch { out.origin = { url: safe.url, reachable: false }; }
       }
     }
@@ -81,9 +91,12 @@ export async function traceFacts(
       ? `"${title.slice(0, 120)}" site:${new URL(originUrl).hostname}`
       : `"${title.slice(0, 120)}"`;
     const searchUrl = `https://www.bing.com/search?format=rss&q=${encodeURIComponent(query)}`;
-    const { response } = await safeFetch(searchUrl, transport, safeCheck, 8000);
-    if (!response.ok) throw new PublicError(`搜索 HTTP ${response.status}`);
-    const parsed = xml.parse(await readCapped(response));
+    const body = await withDeadline(timeoutMs, async signal => {
+      const { response } = await safeFetch(searchUrl, transport, safeCheck, signal);
+      if (!response.ok) { try { await response.body?.cancel(); } catch { /* 已关闭 */ } throw new PublicError(`搜索 HTTP ${response.status}`); }
+      return readCapped(response);
+    });
+    const parsed = xml.parse(body);
     const raw = parsed?.rss?.channel?.item ?? [];
     const items = Array.isArray(raw) ? raw : [raw];
     out.results = items.slice(0, 5).map((x: any) => ({

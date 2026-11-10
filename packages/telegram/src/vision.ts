@@ -57,6 +57,11 @@ export function acquireVisionLease(db: TelegramDB, now = new Date()): string | n
     AND (vision_lease_until IS NULL OR vision_lease_until < ?)`).run(new Date(now.getTime() + LEASE_MS).toISOString(), owner, now.toISOString());
   return r.changes === 1 ? owner : null;
 }
+/** 核对并续租：租约仍归 owner 且未过期才续 150 秒；失效返回 false（调用方必须立即停止，不能再领取、派发或恢复）。 */
+export function renewVisionLease(db: TelegramDB, owner: string, now = new Date()): boolean {
+  return db.prepare(`UPDATE telegram_settings SET vision_lease_until=? WHERE singleton=1 AND vision_lease_owner=? AND vision_lease_until>?`)
+    .run(new Date(now.getTime() + LEASE_MS).toISOString(), owner, now.toISOString()).changes === 1;
+}
 /** 只释放自己的租约（旧进程不能释放新进程的租约）。 */
 export function releaseVisionLease(db: TelegramDB, owner: string): void {
   db.prepare(`UPDATE telegram_settings SET vision_lease_until=NULL, vision_lease_owner=NULL WHERE singleton=1 AND vision_lease_owner=?`).run(owner);
@@ -226,10 +231,14 @@ async function runOwned(db: TelegramDB, cfg: VisionRunConfig, owner: string, clo
       AND (status='pending' OR (status='retry' AND next_attempt_at<=?)) LIMIT 1`).get(iso)) return 'deferred';
     return 'idle';
   }
-  const claimed = db.prepare(`UPDATE telegram_media_tasks SET status='running',claim_token=?,requested_model=?,updated_at=?
-    WHERE id=? AND status IN ('pending','retry') AND superseded_at IS NULL AND temp_state='ready'`)
-    .run(owner, cfg.model?.model ?? settings.vision_model, iso, task.id);
-  if (claimed.changes !== 1) return 'idle';
+  // 领取与租约核对在同一个写事务里：租约已被别的进程接管时不领取
+  const claimedOk = db.transaction(() => {
+    if (!renewVisionLease(db, owner, clock())) return false;
+    return db.prepare(`UPDATE telegram_media_tasks SET status='running',claim_token=?,requested_model=?,updated_at=?
+      WHERE id=? AND status IN ('pending','retry') AND superseded_at IS NULL AND temp_state='ready'`)
+      .run(owner, cfg.model?.model ?? settings.vision_model, iso, task.id).changes === 1;
+  }).immediate();
+  if (!claimedOk) return 'idle';
   const mediaDir = cfg.mediaDir ?? defaultMediaDir();
   const ctx: FailContext = { owner, fingerprint: cfg.fingerprint ?? null, now };
   try {
@@ -245,10 +254,15 @@ async function runOwned(db: TelegramDB, cfg: VisionRunConfig, owner: string, clo
       apiKey: cfg.apiKey,
     }, { retry: false });
     // 派发前再确认：仍归本进程、未被替换、保留期未到
+    // 派发前再确认（同一个写事务）：租约仍有效、任务仍归本进程、未被替换、保留期未到；
+    // 同时记下本次请求实际使用的配置指纹（被杀后恢复时按它判断是否需要因换配置而立即重试）
     const dispatchAt = clock().toISOString();
-    const ok = db.prepare(`UPDATE telegram_media_tasks SET first_requested_at=coalesce(first_requested_at,?),updated_at=?
-      WHERE id=? AND ${OWNED} AND (held_until IS NULL OR held_until>?)`).run(dispatchAt, dispatchAt, task.id, owner, dispatchAt);
-    if (ok.changes !== 1) {
+    const okDispatch = db.transaction(() => {
+      if (!renewVisionLease(db, owner, clock())) return 0;
+      return db.prepare(`UPDATE telegram_media_tasks SET first_requested_at=coalesce(first_requested_at,?),held_fingerprint=coalesce(?,held_fingerprint),updated_at=?
+        WHERE id=? AND ${OWNED} AND (held_until IS NULL OR held_until>?)`).run(dispatchAt, cfg.fingerprint ?? null, dispatchAt, task.id, owner, dispatchAt).changes;
+    }).immediate();
+    if (okDispatch !== 1) {
       db.prepare(`UPDATE telegram_media_tasks SET status='failed',claim_token=NULL,updated_at=? WHERE id=? AND ${OWNED}`).run(dispatchAt, task.id, owner);
       return 'idle';
     }
@@ -290,7 +304,9 @@ async function runOwned(db: TelegramDB, cfg: VisionRunConfig, owner: string, clo
 /**
  * 持有租约时调用：清理孤儿文件；遗留的 running（上一个进程被杀）按一次超时失败走正常失败处理（计入次数，最终进入保留），不会无限循环。
  */
-export function recoverVisionFiles(db: TelegramDB, mediaDir = defaultMediaDir(), now = new Date()): number {
+export function recoverVisionFiles(db: TelegramDB, mediaDir = defaultMediaDir(), now = new Date(), opts: { owner?: string; fingerprint?: string | null } = {}): number {
+  // 只有仍持有有效租约时才恢复（否则可能把现任进程正在处理的任务当成遗留任务）
+  if (opts.owner && !renewVisionLease(db, opts.owner, now)) return 0;
   const root = resolve(mediaDir);
   const cutoff = now.getTime() - 2 * 60 * 60_000;
   let removed = 0;
@@ -305,7 +321,8 @@ export function recoverVisionFiles(db: TelegramDB, mediaDir = defaultMediaDir(),
     }
   } catch (e: any) { if (e?.code !== 'ENOENT') throw e; }
   for (const t of db.prepare(`SELECT * FROM telegram_media_tasks WHERE status='running' AND superseded_at IS NULL`).all() as any[])
-    failTask(db, t, new ProviderError('timeout', '视觉 worker 在运行中退出'), mediaDir, { owner: t.claim_token ?? null, fingerprint: t.held_fingerprint ?? null, now });
+    // 指纹用派发前记下的本次请求指纹；没有（派发前就被杀，未发出请求）时用当前配置，避免被立即放回
+    failTask(db, t, new ProviderError('timeout', '视觉 worker 在运行中退出'), mediaDir, { owner: t.claim_token ?? null, fingerprint: t.held_fingerprint ?? opts.fingerprint ?? null, now });
   return removed;
 }
 

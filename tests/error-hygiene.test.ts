@@ -286,7 +286,35 @@ try {
     release(); await oldRun;
     r = row(m4.id); assert.equal(r.description, 'd', '旧进程迟到的结果不覆盖新进程');
     vision.releaseVisionLease(tg, newOwner);
-    ok('B2：租约互斥、只能释放自己的租约；旧进程恢复后无法覆盖新进程的任务；遗留 running 走正常失败处理');
+    // 第 5 轮审查：租约过期后的旧 owner 不能再领取，也不能恢复现任进程的任务
+    const cur = vision.acquireVisionLease(tg, clock)!;
+    const m4b = media();
+    assert.equal(await vision.runOneVisionTask(tg, { provider: good, mediaDir, owner: newOwner, now: () => clock }), 'idle', '失效的 owner 不领取');
+    assert.equal(row(m4b.id).status, 'pending');
+    tg.prepare(`UPDATE telegram_media_tasks SET status='running', claim_token=? WHERE id=?`).run(cur, m4b.id);
+    assert.equal(vision.recoverVisionFiles(tg, mediaDir, clock, { owner: newOwner }), 0);
+    assert.equal(row(m4b.id).status, 'running', '失效的 owner 不恢复现任进程的任务');
+    tg.prepare(`UPDATE telegram_media_tasks SET status='pending', claim_token=NULL WHERE id=?`).run(m4b.id);
+    vision.releaseVisionLease(tg, cur);
+    ok('B2：租约互斥、只能释放自己的租约；旧进程恢复后无法覆盖新进程的任务；失效的 owner 不领取、不恢复；遗留 running 走正常失败处理');
+
+    // 第 5 轮审查：换配置后放回的保留图片被杀，恢复时用本次请求的指纹，不会被立即再次放回
+    const m7 = media();
+    tg.prepare(`UPDATE telegram_media_tasks SET status='failed', held_until=?, held_next_at=?, held_fingerprint='F1', attempts=3 WHERE id=?`)
+      .run(new Date(clock.getTime() + 5 * 86400_000).toISOString(), new Date(clock.getTime() + 3600_000).toISOString(), m7.id);
+    tg.prepare(`UPDATE telegram_media_tasks SET status='completed', temp_state='deleted' WHERE id<>? AND status IN ('pending','retry')`).run(m7.id);
+    assert.equal(vision.maintainHeldMedia(tg, { mediaDir, now: clock, fingerprint: 'F3' }).released, 1);
+    const hang = { ...good, complete: () => new Promise(() => {}) };
+    void run(hang, { fingerprint: 'F3' });
+    await new Promise(res => setTimeout(res, 20));
+    assert.equal(row(m7.id).held_fingerprint, 'F3', '派发前记下本次请求的指纹');
+    clock = new Date(clock.getTime() + 200_000);
+    const o7 = vision.acquireVisionLease(tg, clock)!;
+    vision.recoverVisionFiles(tg, mediaDir, clock, { owner: o7, fingerprint: 'F3' });
+    r = row(m7.id); assert.deepEqual([r.status, r.held_fingerprint], ['failed', 'F3']);
+    assert.equal(vision.maintainHeldMedia(tg, { mediaDir, now: clock, fingerprint: 'F3' }).released, 0, '被杀后遵守 12 小时等待');
+    vision.releaseVisionLease(tg, o7);
+    ok('B2：被杀的保留任务按本次请求的指纹恢复，不会被立即再次放回');
 
     // 条件回写：识别期间被采集器标为失效 → 不覆盖、不删文件
     const m5 = media();
@@ -342,7 +370,12 @@ try {
     const loop = (async () => new Response('', { status: 302, headers: { location: 'https://news2.example.com/x' } })) as any;
     const out2 = await traceFacts('标题', null, loop, safeCheck as any);
     assert.match(String(out2.error), /重定向次数过多/);
-    ok('fact-trace：逐跳校验重定向（指向内网的不请求），超过跳数上限报错');
+    // 第 5 轮审查：响应头已到、正文停滞 → 截止时间仍然生效
+    const stall = (async () => new Response(new ReadableStream({ start() { /* 永不推送、永不结束 */ } }), { status: 200 })) as any;
+    const t0 = Date.now();
+    const out3 = await traceFacts('标题', null, stall, safeCheck as any, 100);
+    assert.ok(Date.now() - t0 < 2000, '不会无限等待'); assert.match(String(out3.error), /请求超时/);
+    ok('fact-trace：逐跳校验重定向（指向内网的不请求），超过跳数上限报错；正文停滞也受截止时间约束');
   }
 
   // ================= A3 清理脚本 =================
@@ -361,7 +394,7 @@ try {
     assert.ok(!existsSync(join(dir, 'scrub-bak')), 'dry-run 不备份不写');
     const apply = spawnSync(process.execPath, ['scripts/scrub-error-text.mjs', '--apply'], { encoding: 'utf8', env });
     assert.equal(apply.status, 0, apply.stderr); noLeak(apply.stdout, '清理输出');
-    assert.deepEqual(readdirSync(join(dir, 'scrub-bak')).filter(f => f.endsWith('.bak')).sort(), ['brief.db.bak', 'tg.sqlite3.bak'], '两个库都已备份：' + readdirSync(join(dir, 'scrub-bak')).join(','));
+    assert.equal(readdirSync(join(dir, 'scrub-bak')).length, 1, '两个库都已备份到本次执行的新目录');
     const b2 = openDb(briefPath);
     assert.equal((b2.prepare(`SELECT error FROM runs`).get() as any).error, '[已清理] bad_request HTTP 400');
     const pl = JSON.parse((b2.prepare(`SELECT payload_json FROM audit_events WHERE action='ai_manual_audit'`).get() as any).payload_json);
@@ -371,6 +404,16 @@ try {
     assert.ok(String((tg.prepare(`SELECT error_message FROM telegram_media_tasks WHERE error_type='download_error'`).get() as any).error_message).includes(MARK), '采集器下载错误不动');
     const again = spawnSync(process.execPath, ['scripts/scrub-error-text.mjs', '--apply'], { encoding: 'utf8', env: { ...env, SCRUB_BACKUP_DIR: join(dir, 'scrub-bak2') } });
     assert.ok(again.stdout.split('\n').filter(l => l.startsWith('已改写')).every(l => /已改写\s+0 /.test(l)), '第二次 0 行：' + again.stdout);
+    // 第 5 轮审查：同一个备份父目录重复 --apply 不覆盖首次的原始备份
+    const again2 = spawnSync(process.execPath, ['scripts/scrub-error-text.mjs', '--apply'], { encoding: 'utf8', env });
+    assert.equal(again2.status, 0, again2.stderr);
+    const runs = readdirSync(join(dir, 'scrub-bak'));
+    assert.equal(runs.length, 2, '每次执行一个新目录');
+    const firstDir = join(dir, 'scrub-bak', runs.sort()[0]!);
+    assert.deepEqual(readdirSync(firstDir).filter(f => f.endsWith('.bak')).sort(), ['brief.sqlite3.bak', 'telegram.sqlite3.bak'], '两个库文件名不碰撞');
+    const orig = new (await import('better-sqlite3')).default(join(firstDir, 'brief.sqlite3.bak'), { readonly: true });
+    assert.ok(String((orig.prepare('SELECT error FROM runs').get() as any).error).includes(MARK), '首次备份保留清理前的原始数据');
+    orig.close();
     const bad = spawnSync(process.execPath, ['scripts/scrub-error-text.mjs'], { encoding: 'utf8', env: { ...env, DATABASE_PATH: join(dir, 'nope.db') } });
     assert.notEqual(bad.status, 0); assert.ok(!existsSync(join(dir, 'nope.db')), '路径不存在时拒绝且不新建');
     ok('A3 清理脚本：dry-run 不写；先备份再改写；JSON 只改 error 键；采集器错误不动；第二次 0 行；输出不含原值；路径不存在拒绝');

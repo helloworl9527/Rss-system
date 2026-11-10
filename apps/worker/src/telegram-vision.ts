@@ -18,8 +18,9 @@ try {
     return p.ok ? p.fingerprint : null;
   };
   // 清理与恢复先于配置错误、暂停判断：保留期与目录上限在故障期间也照常执行
-  const removed = recoverVisionFiles(db);
-  const held = maintainHeldMedia(db, { fingerprint: current() });
+  const fp = current();
+  const removed = recoverVisionFiles(db, undefined, new Date(), { owner, fingerprint: fp });
+  const held = maintainHeldMedia(db, { fingerprint: fp });
   let result: string;
   if (pick && !pick.ok) {
     result = 'config_error';

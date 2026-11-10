@@ -14,6 +14,7 @@ import Database from 'better-sqlite3';
 import { existsSync, mkdirSync, chmodSync } from 'node:fs';
 import { isAbsolute, join, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { randomBytes } from 'node:crypto';
 
 const APPLY = process.argv.includes('--apply');
 const MARK = '[已清理]';
@@ -57,8 +58,10 @@ function scrubJsonError(db, table, column, where = '1=1') {
   return db.transaction(() => { let n = 0; for (const r of select()) n += up.run(scrubbed(r.v, null), r.rid, r.v, MARK).changes; return n; }).immediate();
 }
 
-async function backup(db, path, dir) {
-  const dest = join(dir, `${basename(path)}.bak`);
+async function backup(db, label, dir) {
+  // 每次执行一个新目录、文件名区分两个库、绝不覆盖已有备份（保留清理前的原始数据）
+  const dest = join(dir, `${label}.sqlite3.bak`);
+  if (existsSync(dest)) throw new Error(`备份文件已存在，拒绝覆盖：${basename(dest)}`);
   await db.backup(dest);                // 在线备份，包含 WAL 中已提交的内容
   chmodSync(dest, 0o600);
   const b = new Database(dest, { readonly: true, fileMustExist: true });
@@ -74,10 +77,13 @@ async function main() {
   const tg = openExisting('TELEGRAM_DATABASE_PATH');
   try {
     if (APPLY) {
-      const dir = process.env.SCRUB_BACKUP_DIR ?? join(process.env.BACKUP_DIR ?? '/var/lib/briefing/backups', `prescrub-${new Date().toISOString().replace(/[:.]/g, '-')}`);
-      mkdirSync(dir, { recursive: true, mode: 0o700 }); chmodSync(dir, 0o700);
-      await backup(brief.db, brief.path, dir);
-      await backup(tg.db, tg.path, dir);
+      const parent = process.env.SCRUB_BACKUP_DIR ?? join(process.env.BACKUP_DIR ?? '/var/lib/briefing/backups', 'prescrub');
+      mkdirSync(parent, { recursive: true, mode: 0o700 });
+      // 独占新建：同名目录已存在（同一时刻重复执行）时 mkdir 失败，不会写进旧备份
+      const dir = join(parent, `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(4).toString('hex')}`);
+      mkdirSync(dir, { mode: 0o700 }); chmodSync(dir, 0o700);
+      await backup(brief.db, 'brief', dir);
+      await backup(tg.db, 'telegram', dir);
       console.log(`已备份到 ${dir}（0700 / 0600，完整性检查通过）`);
     }
     const report = [];
