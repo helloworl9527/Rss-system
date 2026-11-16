@@ -807,12 +807,19 @@ function modelStatus(enabled: boolean, tgSettings: any): ConsumerStatus[] {
       const r = resolveModel(snap, c);
       if (!r.ok) return { consumer: c, ok: false, text: CONFIG_ERROR_LABEL[r.error] };
       if (r.disabled) return { consumer: c, ok: true, text: c === 'sourceProfiler' ? '已停用（模拟画像）' : '已停用' };
-      return { consumer: c, ok: true, text: fmt(r.cfg.provider, r.cfg.baseUrl, r.cfg.model) };
+      const effort = c === 'embedding' || !r.reasoningEffort
+        ? (c === 'embedding' ? '不发送思考程度（向量接口不使用）' : '不发送思考程度（模型未核实支持）')
+        : r.reasoningSource === 'inherited'
+          ? `思考程度 ${r.reasoningEffort}（跟随 ${String(r.reasoningFrom ?? '').toUpperCase()}）`
+          : r.reasoningSource === 'default'
+            ? `思考程度 ${r.reasoningEffort}（已核实模型的默认，请求会带上）`
+            : `思考程度 ${r.reasoningEffort}`;
+      return { consumer: c, ok: true, text: `${fmt(r.cfg.provider, r.cfg.baseUrl, r.cfg.model)} · ${effort}` };
     });
   }
   return collectLegacy(tgSettings, workerEnvCopy()).map(p => p.reason ? { consumer: p.consumer, ok: false, text: p.reason }
     : p.disabled ? { consumer: p.consumer, ok: true, text: '旧配置：未启用 / 模拟' }
-    : { consumer: p.consumer, ok: true, text: `旧配置：${fmt(p.cfg!.provider, p.cfg!.baseUrl, p.cfg!.model)}${p.cfg!.apiKey ? '' : '（无密钥）'}` });
+    : { consumer: p.consumer, ok: true, text: `旧配置：${fmt(p.cfg!.provider, p.cfg!.baseUrl, p.cfg!.model)}${p.cfg!.apiKey ? '' : '（无密钥）'} · 不发送思考程度（旧配置）` });
 }
 
 function modelsSection(s: Session): { html: string; enabled: boolean } {
@@ -940,9 +947,9 @@ modelWrite('/settings/models/assignments', (b, rev) => {
   for (const c of CONSUMERS) {
     const t = String(b[`${c}_target`] ?? '');
     if (!t) continue;
-    if (t === 'disabled') inputs.push({ consumer: c, mode: 'disabled' });
-    else if (t.startsWith('follow:')) inputs.push({ consumer: c, mode: 'follow', follow: t.slice(7) });
-    else if (t.startsWith('p:')) inputs.push({ consumer: c, mode: 'provider', providerId: t.slice(2), model: b[`${c}_model`], strictness: b[`${c}_strictness`] });
+    if (t === 'disabled') inputs.push({ consumer: c, mode: 'disabled', reasoningEffort: b[`${c}_reasoning`] });
+    else if (t.startsWith('follow:')) inputs.push({ consumer: c, mode: 'follow', follow: t.slice(7), reasoningEffort: b[`${c}_reasoning`] });
+    else if (t.startsWith('p:')) inputs.push({ consumer: c, mode: 'provider', providerId: t.slice(2), model: b[`${c}_model`], strictness: b[`${c}_strictness`], reasoningEffort: b[`${c}_reasoning`] });
     else throw new ModelConfigError(`${CONSUMER_LABEL[c]}：选项无效`);
   }
   saveAssignments(db, inputs, rev);

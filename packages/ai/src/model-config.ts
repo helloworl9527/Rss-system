@@ -9,6 +9,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { ProviderConfig, ProviderName, Strictness } from './types.ts';
+import { reasoningRejection, reasoningSupport, type ReasoningEffort } from './reasoning.ts';
 
 type DB = Database.Database;
 
@@ -54,17 +55,23 @@ export type ProviderRow = {
 export type AssignmentRow = {
   consumer: Consumer; provider_id: string | null; model: string | null; strictness: Strictness | null;
   follow: 'l1' | 'l2' | null; disabled: number;
+  /** NULL：跟随，或未核实模型不发送。显式分配的已核实推理模型在保存时写成 medium。 */
+  reasoning_effort: ReasoningEffort | null;
 };
 
-export type ConfigError = 'key_unreadable' | 'key_missing' | 'capability' | 'not_assigned' | 'provider_missing' | 'follow_invalid';
+export type ConfigError = 'key_unreadable' | 'key_missing' | 'capability' | 'not_assigned' | 'provider_missing' | 'follow_invalid' | 'reasoning_unsupported';
 export const CONFIG_ERROR_LABEL: Record<ConfigError, string> = {
   key_unreadable: '密钥或地址无法解密（主密钥缺失或不匹配）', key_missing: '供应商没有设置密钥',
   capability: '所选供应商类型不支持该用途', not_assigned: '没有分配模型', provider_missing: '分配的供应商不存在',
   follow_invalid: '跟随关系无效',
+  reasoning_unsupported: '思考程度与当前模型不符，已拒绝调用（不会悄悄去掉该设置）',
 };
 
+export type ReasoningSource = 'explicit' | 'inherited' | 'default' | 'omit';
+
 export type Resolved =
-  | { ok: true; disabled?: false; cfg: ProviderConfig; providerId: string; fingerprint: string; host: string }
+  | { ok: true; disabled?: false; cfg: ProviderConfig; providerId: string; fingerprint: string; host: string;
+      reasoningEffort: ReasoningEffort | null; reasoningSource: ReasoningSource; reasoningFrom: 'l1' | 'l2' | null }
   | { ok: true; disabled: true }
   | { ok: false; error: ConfigError };
 
@@ -153,8 +160,64 @@ export function loadModelSnapshot(db: DB, key: Buffer | null = currentMasterKey(
 
 // ---------- 解析 ----------
 
-export function fingerprintOf(providerId: string, configVersion: number, model: string, strictness: string | null | undefined): string {
-  return createHash('sha256').update(JSON.stringify([providerId, configVersion, model, strictness ?? null])).digest('hex').slice(0, 16);
+export function fingerprintOf(providerId: string, configVersion: number, model: string, strictness: string | null | undefined, reasoningEffort?: string | null): string {
+  // 未发送思考程度时保持原指纹，非推理模型的缓存继续命中；一旦会发送，就把取值算进去。
+  const parts: unknown[] = [providerId, configVersion, model, strictness ?? null];
+  if (reasoningEffort) parts.push(reasoningEffort);
+  return createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16);
+}
+
+/**
+ * 某个使用方实际会发送的思考程度。
+ * 本行有值就用本行（跟随行上的值是覆盖）；否则跟随上游；显式分配且模型已核实、值为空时用 medium。
+ * 显式取值不被该模型支持时失败，不改成别的值，也不当成没设置。
+ */
+export function reasoningPlan(
+  providers: Array<{ id: string; type: string }>,
+  assignments: Map<Consumer, AssignmentRow>,
+  consumer: Consumer,
+): { ok: true; effort: ReasoningEffort | null; source: ReasoningSource; from: 'l1' | 'l2' | null } | { ok: false; message: string } {
+  const label = CONSUMER_LABEL[consumer];
+  const row = assignments.get(consumer);
+  if (!row) return { ok: false, message: `${label}：没有分配` };
+  if (row.disabled || consumer === 'embedding') {
+    if (row.reasoning_effort) {
+      return { ok: false, message: consumer === 'embedding'
+        ? `${label}：向量接口不接受思考程度，不能保存「${row.reasoning_effort}」。请改为不发送`
+        : `${label}：已停用，不能同时保存思考程度「${row.reasoning_effort}」` };
+    }
+    return { ok: true, effort: null, source: 'omit', from: null };
+  }
+  const terminal = effectiveAssignment(assignments, consumer);
+  if ('error' in terminal) return { ok: false, message: `${label}：${CONFIG_ERROR_LABEL[terminal.error]}` };
+  if (terminal.disabled) return { ok: false, message: `${label}：跟随到了已停用的用途` };
+  const provider = providers.find(p => p.id === terminal.provider_id);
+  if (!provider || !terminal.model) return { ok: false, message: `${label}：没有分配模型` };
+  const support = reasoningSupport(provider.type, terminal.model);
+
+  const origin = (cur: Consumer, hops: number): { ok: true; setter: Consumer; effort: ReasoningEffort | null } | { ok: false; message: string } => {
+    if (hops > 3) return { ok: false, message: `${label}：跟随关系无效` };
+    const current = assignments.get(cur);
+    if (!current) return { ok: false, message: `${CONSUMER_LABEL[cur]}：没有分配` };
+    if (current.reasoning_effort) {
+      const why = reasoningRejection(provider.type, terminal.model!, current.reasoning_effort);
+      if (why) return { ok: false, message: `${CONSUMER_LABEL[cur]}：${why}` };
+      return { ok: true, setter: cur, effort: current.reasoning_effort };
+    }
+    if (current.follow) return origin(current.follow, hops + 1);
+    if (support?.efforts.includes('medium')) return { ok: true, setter: cur, effort: 'medium' };
+    return { ok: true, setter: cur, effort: null };
+  };
+
+  const found = origin(consumer, 0);
+  if (!found.ok) return found;
+  if (!found.effort) return { ok: true, effort: null, source: 'omit', from: null };
+  if (found.setter !== consumer) {
+    const from = assignments.get(consumer)?.follow ?? null;
+    return { ok: true, effort: found.effort, source: 'inherited', from };
+  }
+  if (row.reasoning_effort) return { ok: true, effort: found.effort, source: 'explicit', from: null };
+  return { ok: true, effort: found.effort, source: 'default', from: null };
 }
 
 /** 把 follow 展开到最终的显式分配（最多两跳）。 */
@@ -182,13 +245,18 @@ export function resolveModel(snap: Snapshot, consumer: Consumer): Resolved {
   const allowed = CAPABILITY[consumer];
   if (allowed && !allowed.has(p.row.type)) return { ok: false, error: 'capability' };
   if (!p.apiKey) return { ok: false, error: 'key_missing' };
+  const plan = reasoningPlan([...snap.providers.values()].map(x => ({ id: x.row.id, type: x.row.type })), snap.assignments, consumer);
+  if (!plan.ok) return { ok: false, error: 'reasoning_unsupported' };
+  const effort = plan.effort;
+  const fingerprint = fingerprintOf(p.row.id, p.row.config_version, a.model!, a.strictness, effort);
   return {
-    ok: true, providerId: p.row.id, host: p.row.base_host,
-    fingerprint: fingerprintOf(p.row.id, p.row.config_version, a.model!, a.strictness),
+    ok: true, providerId: p.row.id, host: p.row.base_host, fingerprint,
+    reasoningEffort: effort, reasoningSource: plan.source, reasoningFrom: plan.from,
     cfg: {
       provider: p.row.type as ProviderName, model: a.model!, apiKey: p.apiKey,
       baseUrl: p.baseUrl || undefined, strictness: a.strictness ?? undefined, isolated: true,
-      cacheScope: fingerprintOf(p.row.id, p.row.config_version, a.model!, a.strictness),
+      cacheScope: fingerprint,
+      ...(effort ? { reasoningEffort: effort } : {}),
     },
   };
 }
@@ -254,7 +322,12 @@ export function validateGraph(providers: Array<Pick<ProviderRow, 'id' | 'type'>>
     }
     const eff = effectiveAssignment(map, c);
     if ('error' in eff) { if (map.has(c)) errs.push(`${CONSUMER_LABEL[c]}：${CONFIG_ERROR_LABEL[eff.error]}`); continue; }
-    if (eff.disabled) continue;
+    if (eff.disabled) {
+      if (a?.reasoning_effort) errs.push(`${CONSUMER_LABEL[c]}：已停用，不能同时保存思考程度「${a.reasoning_effort}」`);
+      continue;
+    }
+    const plan = reasoningPlan(providers.map(p => ({ id: p.id, type: p.type })), map, c);
+    if (!plan.ok) errs.push(plan.message);
     const p = byId.get(eff.provider_id!);
     const allowed = CAPABILITY[c];
     if (p && allowed && !allowed.has(p.type)) errs.push(`${CONSUMER_LABEL[c]}：${PROVIDER_TYPE_LABEL[p.type]} 不支持该用途（只能用 OpenAI 兼容协议的供应商）`);

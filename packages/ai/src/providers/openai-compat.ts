@@ -1,4 +1,5 @@
 import { httpError, networkError, refusalError, invalidJsonError, safeCount } from '../errors.ts';
+import { reasoningRejection, type ReasoningEffort } from '../reasoning.ts';
 import type { Provider, CompleteRequest, CompleteResult, ProviderConfig, Strictness } from '../types.ts';
 import { ProviderError } from '../types.ts';
 
@@ -74,6 +75,7 @@ export class OpenAICompatProvider implements Provider {
   readonly name;
   readonly model;
   readonly strictness: Strictness;
+  readonly reasoningEffort: ReasoningEffort | null;
   #key: string;
   #base: string;
   #timeout: number;
@@ -82,6 +84,11 @@ export class OpenAICompatProvider implements Provider {
     this.name = cfg.provider;
     this.model = cfg.model;
     this.strictness = cfg.strictness ?? DEFAULT_STRICTNESS[cfg.provider] ?? 'json';
+    this.reasoningEffort = cfg.reasoningEffort ?? null;
+    if (this.reasoningEffort) {
+      const why = reasoningRejection(cfg.provider, cfg.model, this.reasoningEffort);
+      if (why) throw new ProviderError('bad_request', `${why}。已拒绝发送，避免把不支持的参数交给供应商，也不会悄悄省略`);
+    }
     if (cfg.provider === 'openai_compatible' && !cfg.baseUrl)
       throw new ProviderError('bad_request', 'OpenAI 兼容格式必须填写 Base URL（例如 https://api.example.com/v1）');
     this.#base = (cfg.baseUrl ?? DEFAULT_BASE[cfg.provider] ?? DEFAULT_BASE.openai!).replace(/\/$/, '');
@@ -110,10 +117,14 @@ export class OpenAICompatProvider implements Provider {
           })),
         ]
       : req.userContent;
+    // 官方说明：思考程度不是 none 时，Chat Completions 不接受 temperature、top_p、logprobs。
+    // 这里只去掉采样参数，max_tokens 与 response_format 保持原样。没有设置思考程度时，temperature 照旧发送。
+    const blockSampling = this.reasoningEffort != null && this.reasoningEffort !== 'none';
     const body = {
       model: this.model,
       max_tokens: req.maxOutputTokens,
-      ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
+      ...(blockSampling || req.temperature === undefined ? {} : { temperature: req.temperature }),
+      ...(this.reasoningEffort ? { reasoning_effort: this.reasoningEffort } : {}),
       response_format: responseFormat,
       messages: [
         { role: 'system', content: system },
