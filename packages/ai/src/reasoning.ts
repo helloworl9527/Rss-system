@@ -18,9 +18,15 @@
  *   gpt-6-sol、gpt-6-luna：none、low、medium、high、xhigh、max
  * - https://developers.openai.com/api/docs/models/gpt-5
  *   gpt-5 与快照 gpt-5-2025-08-07：minimal、low、medium、high
+ * - https://developers.openai.com/api/docs/models/gpt-6.2-sol
+ *   https://developers.openai.com/api/docs/guides/latest-model
+ *   gpt-6.2-sol：官方拒绝 none；none/minimal 应改用 low；新接入从 medium 起。
+ *   模型选择页列出 medium 与 extra high。允许 low、medium、high、xhigh。
+ *   不把 max 放进名单（模型页没有列出）。默认仍是 medium，不是 high。
  * - https://developers.openai.com/api/docs/guides/latest-model
  *   思考程度不是 none 时，不要发送 temperature、top_p、top_logprobs；
- *   Chat Completions 还不要发送 logprobs。
+ *   Chat Completions 还不要发送 logprobs。GPT-6.2 的迁移说明同样要求
+ *   Chat Completions 去掉这些采样参数。
  */
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 export type ReasoningEffort = typeof REASONING_EFFORTS[number];
@@ -32,6 +38,7 @@ const ASTRA: ReasoningSupport = { efforts: ['low', 'medium', 'high', 'xhigh', 'm
 const SOL61: ReasoningSupport = { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] };
 const SOL6: ReasoningSupport = { efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] };
 const GPT5: ReasoningSupport = { efforts: ['minimal', 'low', 'medium', 'high'] };
+const SOL62: ReasoningSupport = { efforts: ['low', 'medium', 'high', 'xhigh'] };
 
 /** 精确模型 ID。网关若写成 vendor/模型，只认斜线后的这一段，且只允许一个斜线。 */
 export const VERIFIED_REASONING_MODELS: Record<string, ReasoningSupport> = {
@@ -42,6 +49,7 @@ export const VERIFIED_REASONING_MODELS: Record<string, ReasoningSupport> = {
   'gpt-6-luna': SOL6,
   'gpt-5': GPT5,
   'gpt-5-2025-08-07': GPT5,
+  'gpt-6.2-sol': SOL62,
 };
 
 const SENDABLE_PROVIDER = new Set(['openai', 'openai_compatible']);

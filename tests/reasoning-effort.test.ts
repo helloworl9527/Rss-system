@@ -58,8 +58,22 @@ try {
   assert.equal(reasoning.reasoningSupport('openai_compatible', 'gpt-6.1-terra-fast'), null);
   assert.ok(reasoning.reasoningRejection('openai_compatible', 'gpt-6.1-terra', 'minimal'));
   assert.equal(reasoning.reasoningRejection('openai_compatible', 'gpt-6.1-terra', 'medium'), null);
-  const sql = readFileSync('migrations/020_reasoning_effort.sql', 'utf8');
-  for (const id of Object.keys(reasoning.VERIFIED_REASONING_MODELS)) assert.ok(sql.includes(`'${id}'`), `迁移应包含 ${id}`);
+  const sol62 = reasoning.reasoningSupport('openai_compatible', 'gpt-6.2-sol');
+  assert.deepEqual(sol62?.efforts, ['low', 'medium', 'high', 'xhigh']);
+  assert.equal(reasoning.reasoningSupport('openai', 'openai/gpt-6.2-sol')?.efforts.includes('high'), true);
+  assert.equal(reasoning.reasoningSupport('gemini', 'gpt-6.2-sol'), null);
+  assert.equal(reasoning.reasoningSupport('openai_compatible', 'gpt-6.2-sol-fast'), null);
+  assert.equal(reasoning.reasoningSupport('openai_compatible', 'gpt-6.2-astra'), null, '不把未要求的 6.2 型号一并放开');
+  assert.ok(reasoning.reasoningRejection('openai_compatible', 'gpt-6.2-sol', 'none'));
+  assert.ok(reasoning.reasoningRejection('openai_compatible', 'gpt-6.2-sol', 'minimal'));
+  assert.ok(reasoning.reasoningRejection('openai_compatible', 'gpt-6.2-sol', 'max'));
+  assert.equal(reasoning.reasoningRejection('openai_compatible', 'gpt-6.2-sol', 'high'), null);
+  const sql020 = readFileSync('migrations/020_reasoning_effort.sql', 'utf8');
+  const sql021 = readFileSync('migrations/021_gpt_6_2_sol_reasoning.sql', 'utf8');
+  for (const id of Object.keys(reasoning.VERIFIED_REASONING_MODELS)) {
+    assert.ok(sql020.includes(`'${id}'`) || sql021.includes(`'${id}'`) || sql021.includes(`= '${id}'`), `迁移应包含 ${id}`);
+  }
+  assert.ok(!sql021.includes('gpt-6.1-terra'), '021 不改写其它已核实模型');
   console.log('  ✅ 目录只覆盖已核实的 GPT 推理模型，Grok / Gemini / 未知 ID 不在内');
 
   {
@@ -217,6 +231,99 @@ try {
   console.log('  ✅ 分配页把思考程度和结构化输出分开，默认与跟随的显示和将要发送的值一致');
 
   db.close();
+
+  {
+    const back = openDb(join(dir, 'sol62.db'));
+    back.exec(readFileSync('migrations/019_model_providers.sql', 'utf8'));
+    const now = new Date().toISOString();
+    back.prepare(`INSERT INTO model_providers (id,name,type,base_host,created_at,updated_at) VALUES ('p_aaaaaaaa','网关','openai_compatible','gw.example.com',?,?)`).run(now, now);
+    const ins = back.prepare(`INSERT INTO model_assignments (consumer,provider_id,model,strictness,follow,disabled) VALUES (?,?,?,?,?,?)`);
+    ins.run('l1', 'p_aaaaaaaa', 'gpt-6.1-terra', 'json', null, 0);
+    ins.run('l2', null, null, null, 'l1', 0);
+    ins.run('l3', 'p_aaaaaaaa', 'gpt-6.2-sol', 'json', null, 0);
+    ins.run('telegramSummary', null, null, null, 'l1', 0);
+    ins.run('telegramVision', 'p_aaaaaaaa', 'grok-4.7', null, null, 0);
+    ins.run('sourceProfiler', 'p_aaaaaaaa', 'openai/gpt-6.2-sol', 'json', null, 0);
+    ins.run('embedding', null, null, null, null, 1);
+    back.exec(sql020);
+    back.prepare(`UPDATE model_assignments SET reasoning_effort='high' WHERE consumer='l3'`).run();
+    back.exec(sql021);
+    const effort = (c: string) => (back.prepare(`SELECT reasoning_effort, follow, disabled FROM model_assignments WHERE consumer=?`).get(c) as any);
+    assert.equal(effort('l1').reasoning_effort, 'medium', '020 仍把 terra 写成 medium');
+    assert.equal(effort('l2').reasoning_effort, null);
+    assert.equal(effort('l2').follow, 'l1');
+    assert.equal(effort('l3').reasoning_effort, 'high', '021 不覆盖已经写上的 high');
+    assert.equal(effort('telegramSummary').follow, 'l1');
+    assert.equal(effort('telegramSummary').reasoning_effort, null);
+    assert.equal(effort('telegramVision').reasoning_effort, null, 'grok 保持不发送');
+    assert.equal(effort('sourceProfiler').reasoning_effort, 'medium', 'vendor/gpt-6.2-sol 的空值写成 medium');
+    assert.equal(effort('embedding').disabled, 1);
+    assert.equal(effort('embedding').reasoning_effort, null, '停用行保持空');
+    back.exec(sql021);
+    assert.equal(effort('l3').reasoning_effort, 'high', '021 可重复执行且不降级');
+    back.prepare(`UPDATE model_assignments SET reasoning_effort=NULL WHERE consumer='l3'`).run();
+    back.exec(sql021);
+    assert.equal(effort('l3').reasoning_effort, 'medium', '精确 ID 的空值写成 medium，不是 high');
+    back.close();
+    console.log('  ✅ 021 只补 gpt-6.2-sol 的空值，保留 high、跟随、停用和非推理模型');
+  }
+
+  {
+    const db2 = fresh('sol62-save.db');
+    let r = 0;
+    const gw = mp.createModelProvider(db2, key, { name: '86game', type: 'openai_compatible', baseUrl: 'https://gw.example.com/v1', apiKey: KEY }, r);
+    r = gw.revision;
+    r = mp.saveAssignments(db2, [
+      { consumer: 'l1', mode: 'provider', providerId: gw.id, model: 'gpt-6.2-sol', strictness: 'json', reasoningEffort: 'high' },
+      { consumer: 'l2', mode: 'follow', follow: 'l1' },
+      { consumer: 'l3', mode: 'follow', follow: 'l2' },
+      { consumer: 'telegramSummary', mode: 'follow', follow: 'l1' },
+      { consumer: 'telegramVision', mode: 'follow', follow: 'l1' },
+      { consumer: 'sourceProfiler', mode: 'disabled' },
+      { consumer: 'embedding', mode: 'disabled' },
+    ], r).revision;
+    r = mp.setModelConfigEnabled(db2, true, r).revision;
+    const snap2 = mc.loadModelSnapshot(db2);
+    const l1 = mc.resolveModel(snap2, 'l1') as any;
+    const l2 = mc.resolveModel(snap2, 'l2') as any;
+    const l3 = mc.resolveModel(snap2, 'l3') as any;
+    const tg = mc.resolveModel(snap2, 'telegramSummary') as any;
+    const vision = mc.resolveModel(snap2, 'telegramVision') as any;
+    assert.equal((db2.prepare(`SELECT reasoning_effort FROM model_assignments WHERE consumer='l1'`).get() as any).reasoning_effort, 'high');
+    assert.equal(l1.cfg.reasoningEffort, 'high');
+    assert.equal(l1.cfg.cacheScope, l1.fingerprint);
+    assert.notEqual(l1.fingerprint, mc.fingerprintOf(gw.id, 1, 'gpt-6.2-sol', 'json'));
+    assert.notEqual(l1.fingerprint, mc.fingerprintOf(gw.id, 1, 'gpt-6.2-sol', 'json', 'medium'));
+    assert.equal(l1.fingerprint, mc.fingerprintOf(gw.id, 1, 'gpt-6.2-sol', 'json', 'high'));
+    for (const row of [l2, l3, tg, vision]) {
+      assert.equal(row.cfg.reasoningEffort, 'high');
+      assert.equal(row.reasoningSource, 'inherited');
+      assert.equal(row.fingerprint, l1.fingerprint);
+    }
+    const sent = await ask(l1.cfg);
+    assert.equal(sent.body.model, 'gpt-6.2-sol');
+    assert.equal(sent.body.reasoning_effort, 'high');
+    assert.equal(sent.body.max_tokens, 80);
+    assert.equal(sent.body.response_format.type, 'json_object');
+    assert.equal('temperature' in sent.body, false);
+    assert.equal('top_p' in sent.body, false);
+    const kept = db2.prepare(`SELECT model, reasoning_effort FROM model_assignments WHERE consumer='l1'`).get();
+    assert.throws(() => mp.saveAssignments(db2, full({ consumer: 'l1', mode: 'provider', providerId: gw.id, model: 'gpt-6.2-sol', strictness: 'json', reasoningEffort: 'none' }), r), /不支持「none」/);
+    assert.deepEqual(db2.prepare(`SELECT model, reasoning_effort FROM model_assignments WHERE consumer='l1'`).get(), kept);
+    let fetched = 0;
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => { fetched++; throw new Error('should not send'); }) as any;
+    try {
+      assert.throws(() => new OpenAICompatProvider({ provider: 'openai_compatible', model: 'gpt-6.2-sol', apiKey: KEY, baseUrl: 'https://gw.example.com/v1', reasoningEffort: 'none' }), (e: any) => e instanceof ProviderError);
+    } finally { globalThis.fetch = origFetch; }
+    assert.equal(fetched, 0);
+    r = mp.saveAssignments(db2, full({ consumer: 'l1', mode: 'provider', providerId: gw.id, model: 'gpt-6.2-sol', strictness: 'json' }), r).revision;
+    assert.equal((db2.prepare(`SELECT reasoning_effort FROM model_assignments WHERE consumer='l1'`).get() as any).reasoning_effort, 'medium', '留空仍是 medium，不是 high');
+    const terra = mc.fingerprintOf(gw.id, 1, 'gpt-6.1-terra', 'json', 'medium');
+    assert.notEqual(terra, mc.fingerprintOf(gw.id, 1, 'gpt-6.1-terra', 'json', 'high'));
+    db2.close();
+    console.log('  ✅ gpt-6.2-sol 的 high 可保存、跟随继承、进入请求与缓存指纹；none 被拒绝且不降级');
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }
