@@ -1,4 +1,5 @@
 import { networkError, refusalError, invalidJsonError } from '../errors.ts';
+import { reasoningRejection } from '../reasoning.ts';
 import type { Provider, CompleteRequest, CompleteResult, ProviderConfig, Strictness } from '../types.ts';
 import { ProviderError } from '../types.ts';
 import { toError } from './openai-compat.ts';
@@ -23,6 +24,10 @@ export class GeminiProvider implements Provider {
   constructor(cfg: ProviderConfig) {
     this.model = cfg.model;
     this.strictness = cfg.strictness ?? 'strict';
+    if (cfg.reasoningEffort) {
+      const why = reasoningRejection(cfg.provider, cfg.model, cfg.reasoningEffort);
+      throw new ProviderError('bad_request', `${why ?? '该供应商不能携带思考程度'}。已拒绝调用，不会悄悄省略`);
+    }
     this.#base = (cfg.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '');
     this.#timeout = cfg.timeoutMs ?? 90_000;
     if (!cfg.apiKey) throw new ProviderError('auth', 'gemini 缺少 API key');

@@ -1,3 +1,5 @@
+import type { ReasoningEffort } from './reasoning.ts';
+
 /**
  * 供应商中立的模型调用接口。
  *
@@ -32,7 +34,8 @@ export type CompleteRequest = {
   /** Schema 名称，部分厂商要求。 */
   schemaName: string;
   maxOutputTokens: number;
-  /** 可选采样温度；未设置时沿用供应商默认。目前仅 openai_compatible 适配器透传。 */
+  /** 可选采样温度；未设置时沿用供应商默认。目前仅 openai_compatible 适配器透传。
+   *  已核实的推理模型在思考程度不是 none 时，适配器不会把 temperature 写入请求。 */
   temperature?: number;
   /** 是否请求缓存稳定前缀。 */
   cachePrefix?: boolean;
@@ -82,8 +85,13 @@ export type ProviderConfig = {
   /** 可选自定义 API 根地址；留空时各适配器使用厂商官方默认地址。 */
   baseUrl?: string;
   timeoutMs?: number;
-  /** 强制覆盖 strictness（例如某 Qwen 模型支持 json_schema）。 */
+  /** 强制覆盖 strictness（例如某 Qwen 模型支持 json_schema）。与思考程度无关。 */
   strictness?: Strictness;
+  /**
+   * Chat Completions 的 reasoning_effort。只应由模型分配解析后填入。
+   * 未设置时适配器不发送该参数。已设置但模型未核实支持时，适配器拒绝调用，不悄悄省略。
+   */
+  reasoningEffort?: ReasoningEffort;
   /**
    * 来自全局模型供应商（库内配置）：适配器不得从环境变量补任何东西（地址、鉴权、自定义头、调试日志），
    * 并禁止跟随重定向。旧配置路径不设置它，行为与原来一致。

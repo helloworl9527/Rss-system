@@ -7,6 +7,7 @@ import {
   CONSUMERS, CONSUMER_LABEL, PROVIDER_TYPES, PROVIDER_TYPE_LABEL, FOLLOW_RULES, DISABLE_ALLOWED, CAPABILITY, OFFICIAL_BASE,
   type AssignmentRow, type Consumer, type ProviderRow,
 } from '../../ai/src/model-config.ts';
+import { REASONING_EFFORTS, reasoningSupport } from '../../ai/src/reasoning.ts';
 import { MODELS_ERROR_LABEL } from './model-catalog.ts';
 
 export type ConsumerStatus = { consumer: Consumer; text: string; ok: boolean };
@@ -77,10 +78,18 @@ export function renderModelsSection(v: ModelsView): string {
       ...v.providers.filter(p => !allowed || allowed.has(p.type)).map(p => [`p:${p.id}`, `${p.name}（${PROVIDER_TYPE_LABEL[p.type]}）`]),
     ];
     const st = statusOf.get(c);
+    const providerType = a?.provider_id ? v.providers.find(p => p.id === a.provider_id)?.type : undefined;
+    const verifiedExplicit = c !== 'embedding' && !a?.disabled && !a?.follow && !!providerType && !!a?.model && !!reasoningSupport(providerType, a.model);
+    // 没分配或正在跟随的行保持「跟随/默认」，避免一次保存把跟随写成固定覆盖。已核实的显式模型即使库里还是空，也显示 medium。
+    const selectedEffort = a?.reasoning_effort || (verifiedExplicit ? 'medium' : '');
+    const effortOpts = [['', '跟随上游；已核实模型默认 medium；未核实则不发送'], ...REASONING_EFFORTS.map(e => [e, e === 'medium' ? 'medium（默认）' : e])];
     return `<tr><td>${esc(CONSUMER_LABEL[c])}${allowed ? '<div class="muted">只能用 OpenAI 兼容协议</div>' : ''}</td>
       <td><select name="${c}_target"><option value="">（未分配）</option>${opts.map(([val, label]) => `<option value="${esc(val)}"${val === cur ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select></td>
       <td><input name="${c}_model" list="model-candidates" value="${esc(a?.model ?? '')}" placeholder="模型 ID（跟随 / 停用时留空）" style="width:220px"></td>
-      <td><select name="${c}_strictness">${[['', '按类型默认'], ['strict', 'strict'], ['json', 'json'], ['none', 'none']].map(([val, label]) => `<option value="${val}"${(a?.strictness ?? '') === val ? ' selected' : ''}>${label}</option>`).join('')}</select></td>
+      <td><select name="${c}_strictness">${[['', '按类型默认'], ['strict', 'strict'], ['json', 'json'], ['none', 'none']].map(([val, label]) => `<option value="${val}"${(a?.strictness ?? '') === val ? ' selected' : ''}>${label}</option>`).join('')}</select>
+        <div class="muted">只控制 JSON 结构</div></td>
+      <td><select name="${c}_reasoning">${effortOpts.map(([val, label]) => `<option value="${esc(val)}"${val === selectedEffort ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>
+        <div class="muted">${c === 'embedding' ? '向量接口不使用' : '留空=跟随或默认'}</div></td>
       <td>${st ? `<span class="${st.ok ? 'muted' : 'bad'}">${esc(st.text)}</span>` : ''}</td></tr>`;
   }).join('');
 
@@ -104,9 +113,11 @@ export function renderModelsSection(v: ModelsView): string {
 
   <h2 id="model-assign">模型分配</h2>
   <p class="sub">每个用途选择供应商与模型，或跟随 L1 / L2。保存时会检查完整的跟随关系与类型限制（图片识别、向量只能用 OpenAI 兼容协议）。${v.enabled ? '' : '未启用时这里的分配不生效。'}</p>
+  <p class="sub">思考程度（reasoning_effort）只决定推理深度，和「结构化输出」不是一回事。已核实的 GPT 推理模型会把所选值写入 Chat Completions；显式分配留空时保存为 medium，跟随 L1/L2 时留空表示继承，单独选择则只覆盖本阶段。未核实的模型（包括以前用过的 Grok、Gemini）若选了具体程度，保存会被拒绝，不会悄悄丢掉，也不会把参数发给供应商。思考程度不是 none 时，请求不再附带 temperature 和 top_p；max_tokens 与输出 schema 不变。</p>
+  <p class="muted">已核实：gpt-6.1-terra 支持 none/low/medium/high/xhigh/max；gpt-6-astra 与 gpt-6.1-sol 不支持 none；gpt-6-sol、gpt-6-luna 支持 none 到 max；gpt-5 与 gpt-5-2025-08-07 支持 minimal/low/medium/high；gpt-6.2-sol 支持 low/medium/high/xhigh，官方拒绝 none，minimal 也不接受。留空仍保存为 medium，不会因为 gpt-6.2-sol 把其它模型改成 high。依据 OpenAI 文档（gpt-6.2-sol 为 2026-11-19）。网关模型写成 vendor/上述 ID 时同样认。其他模型一律不发送该参数。</p>
   <datalist id="model-candidates">${allModels.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
   <form method="post" action="/settings/models/assignments">${h}
-    <table><tr><th>用途</th><th>供应商</th><th>模型</th><th>结构化输出</th><th>当前生效</th></tr>${assignRows}</table>
+    <table><tr><th>用途</th><th>供应商</th><th>模型</th><th>结构化输出</th><th>思考程度</th><th>当前生效</th></tr>${assignRows}</table>
     <p><button class="primary">保存分配</button></p></form>
   <form method="post" action="/settings/models/test">${h}
     <p><select name="consumer">${CONSUMERS.map(c => `<option value="${c}">${esc(CONSUMER_LABEL[c])}</option>`).join('')}</select>

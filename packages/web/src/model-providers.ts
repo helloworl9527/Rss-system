@@ -8,6 +8,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { DB } from '../../db/src/index.ts';
 import { providerFromEnv } from '../../ai/src/registry.ts';
 import type { ProviderConfig } from '../../ai/src/types.ts';
+import { isReasoningEffort, reasoningSupport, type ReasoningEffort } from '../../ai/src/reasoning.ts';
 import {
   CONSUMERS, CONSUMER_LABEL, PROVIDER_TYPES, PROVIDER_TYPE_LABEL, OPENAI_LIKE, DISABLE_ALLOWED, FOLLOW_RULES,
   seal, unseal, hostOf, keyHint, normalizeBaseUrl, validateBaseUrl, validModelId, validateGraph, readModelConfig,
@@ -149,25 +150,39 @@ export function setManualModels(db: DB, id: string, models: string[], expected: 
   });
 }
 
-export type AssignmentInput = { consumer: Consumer; mode: 'provider' | 'follow' | 'disabled'; providerId?: string; model?: string; strictness?: string; follow?: string };
+export type AssignmentInput = {
+  consumer: Consumer; mode: 'provider' | 'follow' | 'disabled'; providerId?: string; model?: string;
+  strictness?: string; follow?: string; reasoningEffort?: string;
+};
+
+function parseEffort(label: string, raw: string | undefined): ReasoningEffort | null {
+  const effort = String(raw ?? '').trim();
+  if (!effort) return null;
+  if (!isReasoningEffort(effort)) throw new ModelConfigError(`${label}：思考程度「${effort}」不是允许的取值`);
+  return effort;
+}
 
 function toRow(i: AssignmentInput): AssignmentRow {
   if (!CONSUMERS.includes(i.consumer)) throw new ModelConfigError('未知使用方');
   const label = CONSUMER_LABEL[i.consumer];
+  const reasoning = parseEffort(label, i.reasoningEffort);
   if (i.mode === 'disabled') {
     if (!DISABLE_ALLOWED.has(i.consumer)) throw new ModelConfigError(`${label}不能停用`);
-    return { consumer: i.consumer, provider_id: null, model: null, strictness: null, follow: null, disabled: 1 };
+    if (reasoning) throw new ModelConfigError(`${label}：已停用，不能同时保存思考程度「${reasoning}」`);
+    return { consumer: i.consumer, provider_id: null, model: null, strictness: null, follow: null, disabled: 1, reasoning_effort: null };
   }
   if (i.mode === 'follow') {
     const f = i.follow as 'l1' | 'l2';
     if (!FOLLOW_RULES[i.consumer].includes(f)) throw new ModelConfigError(`${label}不能跟随该层`);
-    return { consumer: i.consumer, provider_id: null, model: null, strictness: null, follow: f, disabled: 0 };
+    if (i.consumer === 'embedding' && reasoning) throw new ModelConfigError(`${label}：向量接口不接受思考程度`);
+    return { consumer: i.consumer, provider_id: null, model: null, strictness: null, follow: f, disabled: 0, reasoning_effort: reasoning };
   }
   const model = String(i.model ?? '').trim();
   if (!i.providerId || !model) throw new ModelConfigError(`${label}：请选择供应商并填写模型`);
   const st = String(i.strictness ?? '').trim();
   if (st && !['strict', 'json', 'none'].includes(st)) throw new ModelConfigError(`${label}：结构化输出强度无效`);
-  return { consumer: i.consumer, provider_id: i.providerId, model, strictness: (st || null) as any, follow: null, disabled: 0 };
+  if (i.consumer === 'embedding' && reasoning) throw new ModelConfigError(`${label}：向量接口不接受思考程度，不能保存「${reasoning}」。请改为不发送`);
+  return { consumer: i.consumer, provider_id: i.providerId, model, strictness: (st || null) as any, follow: null, disabled: 0, reasoning_effort: reasoning };
 }
 
 /** 整表保存：提交内容就是完整的分配表（没提交的用途被清除）。开关打开时要求 7 行齐全，否则整次回滚。 */
@@ -177,17 +192,24 @@ export function saveAssignments(db: DB, inputs: AssignmentInput[], expected: num
   return tx(db, () => {
     const revision = bump(db, expected);
     const before = new Map((db.prepare('SELECT * FROM model_assignments').all() as AssignmentRow[]).map(a => [a.consumer, a]));
-    const ins = db.prepare(`INSERT INTO model_assignments (consumer,provider_id,model,strictness,follow,disabled) VALUES (?,?,?,?,?,?)
-      ON CONFLICT(consumer) DO UPDATE SET provider_id=excluded.provider_id, model=excluded.model, strictness=excluded.strictness, follow=excluded.follow, disabled=excluded.disabled`);
+    for (const r of rows) {
+      if (r.disabled || r.follow || r.reasoning_effort || !r.provider_id || !r.model) continue;
+      const type = (db.prepare('SELECT type FROM model_providers WHERE id=?').get(r.provider_id) as { type?: string } | undefined)?.type;
+      if (type && reasoningSupport(type, r.model)) r.reasoning_effort = 'medium';
+    }
+    const ins = db.prepare(`INSERT INTO model_assignments (consumer,provider_id,model,strictness,follow,disabled,reasoning_effort) VALUES (?,?,?,?,?,?,?)
+      ON CONFLICT(consumer) DO UPDATE SET provider_id=excluded.provider_id, model=excluded.model, strictness=excluded.strictness, follow=excluded.follow, disabled=excluded.disabled, reasoning_effort=excluded.reasoning_effort`);
     const keep = new Set(rows.map(r => r.consumer));
     const del = db.prepare('DELETE FROM model_assignments WHERE consumer=?');
     for (const c of before.keys()) if (!keep.has(c)) del.run(c);
     for (const r of rows) {
       if (r.provider_id && !db.prepare('SELECT 1 FROM model_providers WHERE id=?').get(r.provider_id)) throw new ModelConfigError(`${CONSUMER_LABEL[r.consumer]}：供应商不存在`);
-      ins.run(r.consumer, r.provider_id, r.model, r.strictness, r.follow, r.disabled);
+      ins.run(r.consumer, r.provider_id, r.model, r.strictness, r.follow, r.disabled, r.reasoning_effort);
     }
     checkGraph(db);
-    const describe = (a?: AssignmentRow) => !a ? 'none' : a.disabled ? 'disabled' : a.follow ? `follow:${a.follow}` : `${a.provider_id}/${a.model}${a.strictness ? `/${a.strictness}` : ''}`;
+    const describe = (a?: AssignmentRow) => !a ? 'none' : a.disabled ? 'disabled'
+      : a.follow ? `follow:${a.follow}${a.reasoning_effort ? `/think:${a.reasoning_effort}` : ''}`
+      : `${a.provider_id}/${a.model}${a.strictness ? `/${a.strictness}` : ''}${a.reasoning_effort ? `/think:${a.reasoning_effort}` : ''}`;
     const changes = [...rows.filter(r => describe(before.get(r.consumer)) !== describe(r)).map(r => ({ consumer: r.consumer, from: describe(before.get(r.consumer)), to: describe(r) })),
       ...[...before.keys()].filter(c => !keep.has(c)).map(c => ({ consumer: c, from: describe(before.get(c)), to: 'none' }))];
     audit(db, 'model_assignments_saved', 'assignments', { changes });
@@ -311,12 +333,13 @@ export function importLegacy(db: DB, key: Buffer | null, telegramSettings: any, 
   const groups = new Map<string, { id: string; cfg: ProviderConfig }>();
   for (const p of picks) if (p.cfg && !groups.has(identity(p.cfg))) groups.set(identity(p.cfg), { id: newId(), cfg: p.cfg });
   const rows: AssignmentRow[] = picks.map(p => {
-    const base = { consumer: p.consumer, provider_id: null, model: null, strictness: null, follow: null, disabled: 0 } as AssignmentRow;
+    const base = { consumer: p.consumer, provider_id: null, model: null, strictness: null, follow: null, disabled: 0, reasoning_effort: null } as AssignmentRow;
     if (p.disabled) return { ...base, disabled: 1 };
     const c = p.cfg!;
     if (p.consumer !== 'l1' && FOLLOW_RULES[p.consumer].includes('l1') && sameModel(c, l1)) return { ...base, follow: 'l1' };
     if (p.consumer === 'l3' && sameModel(c, l2)) return { ...base, follow: 'l2' };
-    return { ...base, provider_id: groups.get(identity(c))!.id, model: c.model, strictness: (c.strictness ?? null) as any };
+    const effort = p.consumer !== 'embedding' && reasoningSupport(c.provider, c.model) ? 'medium' as const : null;
+    return { ...base, provider_id: groups.get(identity(c))!.id, model: c.model, strictness: (c.strictness ?? null) as any, reasoning_effort: effort };
   });
 
   try {
@@ -334,8 +357,8 @@ export function importLegacy(db: DB, key: Buffer | null, telegramSettings: any, 
         db.prepare(`INSERT INTO model_providers (id,name,type,base_host,url_ct,url_iv,url_tag,key_ct,key_iv,key_tag,key_hint,config_version,created_at,updated_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?)`).run(g.id, name, g.cfg.provider, c.base_host, c.url_ct, c.url_iv, c.url_tag, c.key_ct, c.key_iv, c.key_tag, c.key_hint, now(), now());
       }
-      const ins = db.prepare('INSERT INTO model_assignments (consumer,provider_id,model,strictness,follow,disabled) VALUES (?,?,?,?,?,?)');
-      for (const r of rows) ins.run(r.consumer, r.provider_id, r.model, r.strictness, r.follow, r.disabled);
+      const ins = db.prepare('INSERT INTO model_assignments (consumer,provider_id,model,strictness,follow,disabled,reasoning_effort) VALUES (?,?,?,?,?,?,?)');
+      for (const r of rows) ins.run(r.consumer, r.provider_id, r.model, r.strictness, r.follow, r.disabled, r.reasoning_effort);
       db.prepare('UPDATE model_config_state SET enabled=1, enabled_at=? WHERE singleton=1').run(now());
       checkGraph(db);
       // 用新数据解析，与旧配置逐项比对；差异报告只列使用方与字段名，不输出任何值

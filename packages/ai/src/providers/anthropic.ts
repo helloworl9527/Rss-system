@@ -1,4 +1,5 @@
 import { networkError, refusalError, invalidJsonError, upstreamCode, retryAfterFrom } from '../errors.ts';
+import { reasoningRejection } from '../reasoning.ts';
 import type { Provider, CompleteRequest, CompleteResult, ProviderConfig, Strictness } from '../types.ts';
 import { ProviderError } from '../types.ts';
 
@@ -27,6 +28,10 @@ export class AnthropicProvider implements Provider {
     this.model = cfg.model;
     this.strictness = cfg.strictness ?? 'strict';
     this.#cfg = cfg;
+    if (cfg.reasoningEffort) {
+      const why = reasoningRejection(cfg.provider, cfg.model, cfg.reasoningEffort);
+      throw new ProviderError('bad_request', `${why ?? '该供应商不能携带思考程度'}。已拒绝调用，不会悄悄省略`);
+    }
   }
 
   async #getClient(): Promise<any> {

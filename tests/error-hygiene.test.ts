@@ -308,7 +308,8 @@ try {
     void run(hang, { fingerprint: 'F3' });
     await new Promise(res => setTimeout(res, 20));
     assert.equal(row(m7.id).held_fingerprint, 'F3', '派发前记下本次请求的指纹');
-    clock = new Date(clock.getTime() + 200_000);
+    // 恢复路径会用真实时间核对租约。模拟时钟若落后于当前日期，续租会被判定过期，任务会停在 running。
+    clock = new Date(Math.max(clock.getTime(), Date.now()) + 200_000);
     const o7 = vision.acquireVisionLease(tg, clock)!;
     vision.recoverVisionFiles(tg, mediaDir, clock, { owner: o7, fingerprint: 'F3' });
     r = row(m7.id); assert.deepEqual([r.status, r.held_fingerprint], ['failed', 'F3']);
